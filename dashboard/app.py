@@ -18,21 +18,40 @@ import streamlit as st
 
 from ingestion.ingest import load_file, IngestionError
 from analysis.access_review import analyze_access, summarize
+from analysis.hr_crossref import cross_reference_with_hr
+from analysis.sod_detection import detect_sod_conflicts
+from analysis.review_workflow import (
+    attach_review_status, review_summary, apply_review_decision, VALID_STATUSES,
+)
 from reporting.export import generate_excel_report, generate_pdf_report
 
 st.set_page_config(page_title="Access Review Toolkit", page_icon="🔐", layout="wide")
 
 RISK_ORDER = ["Critique", "Élevé", "Moyen", "Faible"]
+DECISIONS_STORE_PATH = Path(__file__).parent.parent / "data" / "review_decisions.json"
 
 
 @st.cache_data(show_spinner=False)
-def run_pipeline(file_bytes: bytes, filename: str) -> pd.DataFrame:
+def run_pipeline(
+    file_bytes: bytes, filename: str,
+    hr_file_bytes: bytes = None, hr_filename: str = None,
+) -> pd.DataFrame:
     suffix = Path(filename).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
     df = load_file(tmp_path)
-    return analyze_access(df)
+
+    if hr_file_bytes is not None:
+        hr_suffix = Path(hr_filename).suffix
+        with tempfile.NamedTemporaryFile(suffix=hr_suffix, delete=False) as hr_tmp:
+            hr_tmp.write(hr_file_bytes)
+            hr_tmp_path = hr_tmp.name
+        df = cross_reference_with_hr(df, hr_df_raw_path=hr_tmp_path)
+
+    df = analyze_access(df)
+    df = detect_sod_conflicts(df)
+    return df
 
 
 def main():
@@ -57,6 +76,17 @@ def main():
             use_sample = st.checkbox("Utiliser un fichier d'exemple", value=True)
 
         st.divider()
+        st.subheader("🔗 Croisement RH (optionnel)")
+        hr_uploaded_file = st.file_uploader(
+            "Export RH — source de vérité sur qui est employé",
+            type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml",
+                  "html", "htm", "ldif", "pdf", "zip"],
+            help="Corrige le statut RH réel des comptes, notamment pour les "
+                 "exports LDAP/AD qui ne contiennent pas nativement cette "
+                 "information. La source RH fait autorité sur le statut employé.",
+        )
+
+        st.divider()
         st.caption(
             "Un compte est considéré 'dormant' sans connexion depuis plus de "
             "90 jours (seuil standard du secteur)."
@@ -66,7 +96,9 @@ def main():
     try:
         if uploaded_file is not None:
             with st.spinner("Traitement du fichier..."):
-                df = run_pipeline(uploaded_file.getvalue(), uploaded_file.name)
+                hr_bytes = hr_uploaded_file.getvalue() if hr_uploaded_file else None
+                hr_name = hr_uploaded_file.name if hr_uploaded_file else None
+                df = run_pipeline(uploaded_file.getvalue(), uploaded_file.name, hr_bytes, hr_name)
         elif use_sample:
             sample_path = Path(__file__).parent.parent / "data" / "export_test_A.csv"
             with st.spinner("Traitement du fichier d'exemple..."):
@@ -84,14 +116,18 @@ def main():
         st.info("⬅️ Importez un fichier ou cochez 'Utiliser un fichier d'exemple' pour commencer.")
         return
 
+    df = attach_review_status(df, store_path=DECISIONS_STORE_PATH)
     summary = summarize(df)
+    workflow_summary = review_summary(df)
+    n_sod_conflicts = int(df["sod_conflict"].sum()) if "sod_conflict" in df.columns else 0
 
     st.subheader("Vue d'ensemble")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Comptes analysés", summary["total_accounts"])
     col2.metric("🔴 Employés partis, accès actif", summary["terminated_but_active"])
     col3.metric("Comptes dormants", summary["dormant_accounts"])
-    col4.metric("Privilégiés dormants", summary["privileged_dormant"])
+    col4.metric("⚠️ Conflits SoD", n_sod_conflicts)
+    col5.metric("Traité (revue)", f"{workflow_summary.get('taux_traitement', 0)}%")
 
     st.divider()
 
@@ -116,7 +152,8 @@ def main():
         c for c in [
             "username", "full_name", "department", "system", "manager",
             "account_status", "employee_status", "days_since_last_login",
-            "is_privileged_flag", "review_action", "risk_level",
+            "is_privileged_flag", "sod_conflict_detail", "review_action",
+            "risk_level", "review_status",
         ] if c in filtered.columns
     ]
     risk_rank = {"Critique": 0, "Élevé": 1, "Moyen": 2, "Faible": 3}
@@ -132,6 +169,53 @@ def main():
         file_name="revue_acces.csv",
         mime="text/csv",
     )
+
+    st.divider()
+    st.subheader("✅ Validation de la revue")
+    st.caption(
+        "Change le statut de chaque compte, puis clique sur 'Enregistrer les "
+        "décisions'. Les décisions sont conservées d'une revue à l'autre."
+    )
+
+    editable_cols = ["username", "system", "risk_level", "review_status"]
+    editable_cols = [c for c in editable_cols if c in filtered.columns]
+    editable_df = filtered[editable_cols].copy().reset_index(drop=True)
+
+    edited_df = st.data_editor(
+        editable_df,
+        width="stretch",
+        hide_index=True,
+        disabled=["username", "system", "risk_level"],
+        column_config={
+            "review_status": st.column_config.SelectboxColumn(
+                "Statut de revue", options=VALID_STATUSES, required=True,
+            ),
+        },
+        key="review_editor",
+    )
+
+    validated_by = st.text_input("Validé par (ton nom)", value="")
+
+    if st.button("💾 Enregistrer les décisions"):
+        n_changes = 0
+        for i in range(len(edited_df)):
+            original_status = editable_df.loc[i, "review_status"]
+            new_status = edited_df.loc[i, "review_status"]
+            if new_status != original_status:
+                apply_review_decision(
+                    username=edited_df.loc[i, "username"],
+                    system=edited_df.loc[i, "system"],
+                    status=new_status,
+                    validated_by=validated_by,
+                    store_path=DECISIONS_STORE_PATH,
+                )
+                n_changes += 1
+        if n_changes:
+            st.success(f"{n_changes} décision(s) enregistrée(s).")
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.info("Aucun changement à enregistrer.")
 
     st.divider()
     st.subheader("📄 Rapports formatés")

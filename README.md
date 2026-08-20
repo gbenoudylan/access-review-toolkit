@@ -8,12 +8,68 @@ Projet mené en parallèle du stage Data Protection & IAM chez MTN Côte d'Ivoir
 
 ## Statut du projet
 
-- [x] **Phase 1 — Ingestion universelle** (adaptée du projet vulnerability tracker)
-- [x] **Phase 2 — Détection des anomalies d'accès** (terminée)
-- [x] **Phase 3 — Dashboard Streamlit** (terminée)
-- [x] **Phase 4 — Export du rapport de revue (Excel/PDF)** (terminée)
+- [x] **Phase 1 — Ingestion universelle** (11 formats)
+- [x] **Phase 2 — Détection des anomalies d'accès**
+- [x] **Phase 3 — Dashboard Streamlit**
+- [x] **Phase 4 — Export du rapport de revue (Excel/PDF)**
+- [x] **Phase 5 — Croisement IAM+RH, conflits SoD, workflow de validation**
 
 **Projet complet.**
+
+## Phase 5 : Croisement RH, conflits SoD, workflow de validation
+
+### Croisement IAM + RH (`analysis/hr_crossref.py`)
+
+**Convention de nommage** : dans `data/`, tout fichier préfixé `HR_` est un
+export RH (à passer en second argument des commandes de croisement, ou
+dans le champ dédié du dashboard) — jamais en fichier IAM principal, il
+lui manque volontairement les champs `username`/`system` au sens IAM.
+
+**Le problème résolu** : un export LDAP/AD pur ne contient jamais le statut
+RH réel d'un employé (parti ou non) — cette information vit dans le SIRH,
+pas dans l'annuaire. Sans croisement, la détection "employé parti mais
+compte actif" est structurellement impossible sur ce type d'export.
+
+Ce module prend un second fichier (export RH, n'importe lequel des 11
+formats supportés) et vient enrichir le statut employé réel de chaque
+compte IAM. Un compte IAM sans correspondance RH est marqué comme tel
+plutôt qu'ignoré — c'est en soi une anomalie potentielle (compte fantôme
+ou prestataire externe non déclaré).
+
+```bash
+python -m analysis.hr_crossref data/scenario_iam_export.ldif data/HR_scenario_hr_export.csv
+```
+
+### Conflits de séparation des tâches (`analysis/sod_detection.py`)
+
+**Le principe** : certaines combinaisons de rôles ne doivent jamais être
+cumulées par une même personne (ex. créer un paiement ET le valider) —
+contrôle standard en audit interne et conformité financière.
+
+La matrice de conflits par défaut (`DEFAULT_SOD_CONFLICTS`) est un point
+de départ générique, à adapter à la matrice de rôles réelle de ton
+organisation.
+
+```bash
+python -m analysis.sod_detection data/example_iam_with_sod_conflict.csv
+```
+
+### Workflow de validation (`analysis/review_workflow.py`)
+
+Chaque anomalie détectée doit être explicitement validée par un
+responsable — c'est le principe même d'une revue d'accès. Ce module ajoute
+un statut ("En attente" / "Validé - accès légitime" / "Révoqué"), avec
+horodatage et nom du validateur, **persisté localement** (`data/review_decisions.json`)
+pour survivre d'une revue mensuelle à l'autre.
+
+Intégré directement dans le dashboard : une table éditable permet de
+changer le statut de chaque compte et d'enregistrer les décisions en un
+clic.
+
+### Tests
+
+10 tests supplémentaires (`tests/test_enrichments.py`), portant le total
+du projet à **36 tests automatisés**.
 
 ## Le problème résolu
 

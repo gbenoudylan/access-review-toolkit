@@ -34,9 +34,10 @@ def _normalize(text: str) -> str:
     return str(text).strip().lower().replace("_", " ").replace("-", " ")
 
 
-def _score_header_row(row: pd.Series) -> int:
+def _score_header_row(row: pd.Series, column_mapping: dict = None) -> int:
+    column_mapping = column_mapping or COLUMN_MAPPING
     all_variants = {
-        _normalize(v) for variants in COLUMN_MAPPING.values() for v in variants
+        _normalize(v) for variants in column_mapping.values() for v in variants
     }
     score = 0
     for cell in row:
@@ -47,10 +48,10 @@ def _score_header_row(row: pd.Series) -> int:
     return score
 
 
-def _detect_header_row(raw: pd.DataFrame, max_scan_rows: int = 15) -> int:
+def _detect_header_row(raw: pd.DataFrame, column_mapping: dict = None, max_scan_rows: int = 15) -> int:
     best_row, best_score = 0, -1
     for i in range(min(max_scan_rows, len(raw))):
-        score = _score_header_row(raw.iloc[i])
+        score = _score_header_row(raw.iloc[i], column_mapping)
         if score > best_score:
             best_row, best_score = i, score
     if best_score <= 0:
@@ -60,16 +61,17 @@ def _detect_header_row(raw: pd.DataFrame, max_scan_rows: int = 15) -> int:
     return best_row
 
 
-def _match_column(col_name: str, threshold: int = 85) -> str | None:
+def _match_column(col_name: str, column_mapping: dict = None, threshold: int = 85) -> str | None:
+    column_mapping = column_mapping or COLUMN_MAPPING
     col_norm = _normalize(col_name)
 
-    for standard_name, variants in COLUMN_MAPPING.items():
+    for standard_name, variants in column_mapping.items():
         if col_norm in [_normalize(v) for v in variants]:
             return standard_name
 
     if _HAS_RAPIDFUZZ:
         best_field, best_score = None, 0
-        for standard_name, variants in COLUMN_MAPPING.items():
+        for standard_name, variants in column_mapping.items():
             for v in variants:
                 # token_sort_ratio : insensible à l'ordre des mots
                 # (ex. "Statut compte" vs "Compte statut")
@@ -83,10 +85,10 @@ def _match_column(col_name: str, threshold: int = 85) -> str | None:
     return None
 
 
-def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
+def standardize_columns(df: pd.DataFrame, column_mapping: dict = None) -> pd.DataFrame:
     rename_map, unmatched = {}, []
     for col in df.columns:
-        matched = _match_column(col)
+        matched = _match_column(col, column_mapping)
         if matched:
             rename_map[col] = matched
         else:
@@ -96,8 +98,9 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=rename_map)
 
 
-def validate_required_fields(df: pd.DataFrame) -> None:
-    missing = [f for f in REQUIRED_FIELDS if f not in df.columns]
+def validate_required_fields(df: pd.DataFrame, required_fields: list = None) -> None:
+    required_fields = required_fields if required_fields is not None else REQUIRED_FIELDS
+    missing = [f for f in required_fields if f not in df.columns]
     if missing:
         raise IngestionError(
             f"Champs obligatoires manquants après mapping : {missing}. "
@@ -121,7 +124,7 @@ def _read_ragged_csv(path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _try_delimited(lines: list[str]) -> pd.DataFrame | None:
+def _try_delimited(lines: list[str], column_mapping: dict = None) -> pd.DataFrame | None:
     """
     Tentative n°1 : le texte est en fait délimité (virgule, point-virgule,
     tabulation, pipe) mais juste enregistré en .txt plutôt qu'en .csv —
@@ -146,13 +149,13 @@ def _try_delimited(lines: list[str]) -> pd.DataFrame | None:
     rows = [r + [None] * (max_cols - len(r)) for r in rows]
     df = pd.DataFrame(rows)
 
-    best_score = max(_score_header_row(df.iloc[i]) for i in range(min(5, len(df))))
+    best_score = max(_score_header_row(df.iloc[i], column_mapping) for i in range(min(5, len(df))))
     if best_score <= 0:
         return None
     return df
 
 
-def _try_fixed_width(lines: list[str]) -> pd.DataFrame | None:
+def _try_fixed_width(lines: list[str], column_mapping: dict = None) -> pd.DataFrame | None:
     """
     Tentative n°2 : colonnes alignées par des espaces multiples, typique
     des rapports générés par des outils en ligne de commande ou des
@@ -168,13 +171,13 @@ def _try_fixed_width(lines: list[str]) -> pd.DataFrame | None:
     rows = [r + [None] * (max_cols - len(r)) for r in rows]
     df = pd.DataFrame(rows)
 
-    best_score = max(_score_header_row(df.iloc[i]) for i in range(min(5, len(df))))
+    best_score = max(_score_header_row(df.iloc[i], column_mapping) for i in range(min(5, len(df))))
     if best_score <= 0:
         return None
     return df
 
 
-def _try_key_value_blocks(raw_text: str) -> pd.DataFrame | None:
+def _try_key_value_blocks(raw_text: str, column_mapping: dict = None) -> pd.DataFrame | None:
     """
     Tentative n°3 : un enregistrement par bloc, séparé par des lignes
     vides, chaque ligne du bloc étant "clé: valeur" ou "clé= valeur"
@@ -216,13 +219,13 @@ def _try_key_value_blocks(raw_text: str) -> pd.DataFrame | None:
     # d'en-tête à détecter séparément) : on vérifie juste qu'au moins une
     # d'entre elles est reconnaissable, pour éviter de valider n'importe
     # quel texte structuré par erreur.
-    best_score = _score_header_row(pd.Series(df.columns))
+    best_score = _score_header_row(pd.Series(df.columns), column_mapping)
     if best_score <= 0:
         return None
     return df
 
 
-def _read_txt(path: Path) -> tuple[pd.DataFrame, bool]:
+def _read_txt(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, bool]:
     """
     Lit un fichier .txt en essayant plusieurs interprétations dans l'ordre
     de fiabilité décroissante, jusqu'à ce que l'une d'elles produise un
@@ -238,17 +241,17 @@ def _read_txt(path: Path) -> tuple[pd.DataFrame, bool]:
     lines = [l for l in raw_text.splitlines()]
     non_empty_lines = [l for l in lines if l.strip()]
 
-    df = _try_delimited(non_empty_lines)
+    df = _try_delimited(non_empty_lines, column_mapping)
     if df is not None:
         logger.info("Fichier texte interprété comme des données délimitées.")
         return df, False
 
-    df = _try_fixed_width(non_empty_lines)
+    df = _try_fixed_width(non_empty_lines, column_mapping)
     if df is not None:
         logger.info("Fichier texte interprété comme des colonnes alignées par espaces.")
         return df, False
 
-    df = _try_key_value_blocks(raw_text)
+    df = _try_key_value_blocks(raw_text, column_mapping)
     if df is not None:
         logger.info(f"Fichier texte interprété comme {len(df)} bloc(s) clé-valeur.")
         return df, True
@@ -261,7 +264,7 @@ def _read_txt(path: Path) -> tuple[pd.DataFrame, bool]:
     )
 
 
-def _read_docx(path: Path) -> tuple[pd.DataFrame, bool]:
+def _read_docx(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, bool]:
     """
     Lit un fichier Word. Essaie d'abord d'y trouver un tableau ; si aucun
     tableau n'est présent, retombe sur les mêmes stratégies de lecture de
@@ -284,7 +287,7 @@ def _read_docx(path: Path) -> tuple[pd.DataFrame, bool]:
             if not rows:
                 continue
             table_df = pd.DataFrame(rows)
-            score = max(_score_header_row(table_df.iloc[i]) for i in range(min(3, len(table_df))))
+            score = max(_score_header_row(table_df.iloc[i], column_mapping) for i in range(min(3, len(table_df))))
             if score > best_score:
                 best_table_rows, best_score = rows, score
 
@@ -302,17 +305,17 @@ def _read_docx(path: Path) -> tuple[pd.DataFrame, bool]:
     paragraphs_with_blanks = [p.text for p in doc.paragraphs]
     non_empty = [p for p in paragraphs_with_blanks if p.strip()]
 
-    df = _try_delimited(non_empty)
+    df = _try_delimited(non_empty, column_mapping)
     if df is not None:
         logger.info("Contenu du document interprété comme des données délimitées.")
         return df, False
 
-    df = _try_fixed_width(non_empty)
+    df = _try_fixed_width(non_empty, column_mapping)
     if df is not None:
         logger.info("Contenu du document interprété comme des colonnes alignées.")
         return df, False
 
-    df = _try_key_value_blocks("\n".join(paragraphs_with_blanks))
+    df = _try_key_value_blocks("\n".join(paragraphs_with_blanks), column_mapping)
     if df is not None:
         logger.info(f"Contenu du document interprété comme {len(df)} bloc(s) clé-valeur.")
         return df, True
@@ -395,7 +398,7 @@ def _read_xml(path: Path) -> pd.DataFrame:
     return df
 
 
-def _read_html(path: Path) -> pd.DataFrame:
+def _read_html(path: Path, column_mapping: dict = None) -> pd.DataFrame:
     """
     Lit un fichier HTML contenant un ou plusieurs tableaux (ex. export copié
     depuis une page web/intranet). Garde le tableau le plus pertinent, même
@@ -415,7 +418,7 @@ def _read_html(path: Path) -> pd.DataFrame:
     for table_df in tables:
         raw_rows = [list(table_df.columns)] + table_df.astype(object).values.tolist()
         candidate = pd.DataFrame(raw_rows)
-        score = max(_score_header_row(candidate.iloc[i]) for i in range(min(3, len(candidate))))
+        score = max(_score_header_row(candidate.iloc[i], column_mapping) for i in range(min(3, len(candidate))))
         if score > best_score:
             best_raw_rows, best_score = raw_rows, score
 
@@ -499,7 +502,7 @@ def _read_ldif(path: Path) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def _read_pdf(path: Path) -> pd.DataFrame:
+def _read_pdf(path: Path, column_mapping: dict = None) -> pd.DataFrame:
     """
     Extrait un tableau depuis un PDF. Moins fiable que les autres formats
     (mise en page PDF non garantie), donc on prend le tableau le plus
@@ -539,7 +542,7 @@ def _read_pdf(path: Path) -> pd.DataFrame:
                     continue
                 table_df = pd.DataFrame(table)
                 score = max(
-                    _score_header_row(table_df.iloc[i]) for i in range(min(3, len(table_df)))
+                    _score_header_row(table_df.iloc[i], column_mapping) for i in range(min(3, len(table_df)))
                 )
                 if score > best_score:
                     best_rows, best_score = table, score
@@ -565,7 +568,9 @@ SUPPORTED_EXTENSIONS = [
 ]
 
 
-def _load_single_file(path: Path) -> pd.DataFrame:
+def _load_single_file(
+    path: Path, column_mapping: dict = None, required_fields: list = None
+) -> pd.DataFrame:
     """Charge un unique fichier (tous formats sauf .zip) et retourne un DataFrame standardisé."""
     logger.info(f"Lecture du fichier : {path.name}")
 
@@ -577,9 +582,9 @@ def _load_single_file(path: Path) -> pd.DataFrame:
     elif suffix == ".csv":
         raw = _read_ragged_csv(path)
     elif suffix == ".docx":
-        raw, header_already_named = _read_docx(path)
+        raw, header_already_named = _read_docx(path, column_mapping)
     elif suffix == ".txt":
-        raw, header_already_named = _read_txt(path)
+        raw, header_already_named = _read_txt(path, column_mapping)
     elif suffix == ".json":
         raw = _read_json(path)
         header_already_named = True
@@ -587,12 +592,12 @@ def _load_single_file(path: Path) -> pd.DataFrame:
         raw = _read_xml(path)
         header_already_named = True
     elif suffix in [".html", ".htm"]:
-        raw = _read_html(path)
+        raw = _read_html(path, column_mapping)
     elif suffix == ".ldif":
         raw = _read_ldif(path)
         header_already_named = True
     elif suffix == ".pdf":
-        raw = _read_pdf(path)
+        raw = _read_pdf(path, column_mapping)
     else:
         raise IngestionError(
             f"Format de fichier non supporté : {path.suffix}. "
@@ -602,19 +607,21 @@ def _load_single_file(path: Path) -> pd.DataFrame:
     if header_already_named:
         df = raw.reset_index(drop=True)
     else:
-        header_row_idx = _detect_header_row(raw)
+        header_row_idx = _detect_header_row(raw, column_mapping)
         df = raw.iloc[header_row_idx + 1:].copy()
         df.columns = raw.iloc[header_row_idx]
         df = df.dropna(how="all").reset_index(drop=True)
 
-    df = standardize_columns(df)
-    validate_required_fields(df)
+    df = standardize_columns(df, column_mapping)
+    validate_required_fields(df, required_fields)
 
     logger.info(f"Ingestion réussie : {len(df)} lignes, colonnes finales : {list(df.columns)}")
     return df
 
 
-def _read_zip(path: Path) -> pd.DataFrame:
+def _read_zip(
+    path: Path, column_mapping: dict = None, required_fields: list = None
+) -> pd.DataFrame:
     """
     Extrait une archive ZIP et traite chaque fichier supporté qu'elle
     contient, puis concatène tous les résultats. Utile pour un export
@@ -648,7 +655,7 @@ def _read_zip(path: Path) -> pd.DataFrame:
 
         for f in candidate_files:
             try:
-                df = _load_single_file(f)
+                df = _load_single_file(f, column_mapping, required_fields)
                 df["_source_file"] = f.name
                 dfs.append(df)
             except IngestionError as e:
@@ -667,6 +674,10 @@ def _read_zip(path: Path) -> pd.DataFrame:
 
 
 def load_file(path: str | Path) -> pd.DataFrame:
+    """
+    Point d'entrée standard : charge un fichier d'export IAM/accès, avec
+    le référentiel de colonnes par défaut (config/column_mapping.py).
+    """
     path = Path(path)
     if not path.exists():
         raise IngestionError(f"Fichier introuvable : {path}")
@@ -676,6 +687,26 @@ def load_file(path: str | Path) -> pd.DataFrame:
         return _read_zip(path)
 
     return _load_single_file(path)
+
+
+def load_file_with_mapping(
+    path: str | Path, column_mapping: dict, required_fields: list
+) -> pd.DataFrame:
+    """
+    Variante de load_file() pour un domaine différent de celui des exports
+    d'accès (ex. un export RH), avec son propre référentiel de colonnes et
+    ses propres champs obligatoires. Réutilise exactement la même logique
+    de lecture universelle (tous formats, détection d'en-tête, etc.).
+    """
+    path = Path(path)
+    if not path.exists():
+        raise IngestionError(f"Fichier introuvable : {path}")
+
+    if path.suffix.lower() == ".zip":
+        logger.info(f"Lecture de l'archive : {path.name}")
+        return _read_zip(path, column_mapping, required_fields)
+
+    return _load_single_file(path, column_mapping, required_fields)
 
 
 if __name__ == "__main__":

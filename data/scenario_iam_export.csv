@@ -1,0 +1,51 @@
+username,full_name,system,role,account_status,last_login_date
+user1864,Employee_1864,ERP,Consultation,Active,2026-08-15
+user1010,Employee_1010,GitLab,Développeur,Disabled,2026-01-04
+user0097,Employee_97,GitLab,Consultation,Active,2026-07-29
+user1598,Employee_1598,ERP,Consultation,Active,2026-08-05
+user1471,Employee_1471,GitLab,Consultation,Active,2026-08-14
+user1720,Employee_1720,GitLab,Consultation,Active,2026-07-25
+user0933,Employee_933,GitLab,Consultation,Active,2026-08-06
+user1004,Employee_1004,GitLab,Consultation,Disabled,2025-11-20
+user1768,Employee_1768,GitLab,Consultation,Active,2026-07-27
+user0550,Employee_550,GitLab,Déploiement production,Active,2026-08-12
+user0791,Employee_791,GitLab,Consultation,Active,2026-08-09
+user1369,Employee_1369,GitLab,Consultation,Active,2026-08-06
+user0367,Employee_367,GitLab,Consultation,Active,2026-08-06
+user1467,Employee_1467,HRIS,Consultation,Disabled,2026-01-22
+user0649,Employee_649,GitLab,Consultation,Active,2026-07-28
+user0901,Employee_901,GitLab,Consultation,Active,2026-08-15
+user0501,Employee_501,GitLab,Consultation,Active,2026-08-19
+user0388,Employee_388,ERP,Valider commande,Active,2026-07-25
+user1314,Employee_1314,HRIS,Consultation,Active,2026-07-31
+user1196,Employee_1196,GitLab,Déploiement production,Active,2026-08-08
+user0922,Employee_922,ERP,Consultation,Active,2026-04-14
+user1725,Employee_1725,GitLab,Consultation,Active,2026-08-03
+user1434,Employee_1434,GitLab,Consultation,Active,2026-08-09
+user0984,Employee_984,ERP,Consultation,Active,2026-08-19
+user0679,Employee_679,GitLab,Consultation,Active,2026-07-28
+user1779,Employee_1779,ERP,Consultation,Active,2026-04-17
+user0850,Employee_850,GitLab,Développeur,Active,2026-08-07
+user0410,Employee_410,ERP,Valider commande,Active,2026-08-10
+user0248,Employee_248,ERP,Consultation,Disabled,2026-01-01
+user0947,Employee_947,ERP,"Créer commande, Valider commande",Active,2026-08-18
+user1737,Employee_1737,GitLab,Consultation,Active,2026-05-05
+user0075,Employee_75,GitLab,Déploiement production,Active,2026-07-25
+user1961,Employee_1961,ERP,Consultation,Active,2026-07-25
+user1979,Employee_1979,GitLab,Développeur,Active,2026-08-19
+user0055,Employee_55,GitLab,Consultation,Disabled,2025-10-20
+user1372,Employee_1372,ERP,Consultation,Active,2026-01-17
+user0534,Employee_534,ERP,Consultation,Active,2026-07-24
+user0643,Employee_643,GitLab,Consultation,Active,2026-07-27
+user0361,Employee_361,ERP,Consultation,Active,2026-08-13
+user0417,Employee_417,GitLab,Déploiement production,Active,2026-08-18
+user1814,Employee_1814,GitLab,Consultation,Active,2026-07-22
+user1352,Employee_1352,HRIS,Consultation,Active,2026-07-30
+user1937,Employee_1937,GitLab,Consultation,Active,2026-08-03
+user0622,Employee_622,GitLab,Déploiement production,Disabled,2025-12-15
+user1803,Employee_1803,GitLab,Consultation,Active,2026-08-01
+user0743,Employee_743,GitLab,Déploiement production,Active,2026-08-01
+user0308,Employee_308,GitLab,Consultation,Active,2026-07-29
+user1297,Employee_1297,GitLab,Consultation,Active,2026-07-23
+user1607,Employee_1607,GitLab,Développeur,Active,2026-07-29
+user2068,Employee_2068,GitLab,Développeur,Active,2026-07-30
