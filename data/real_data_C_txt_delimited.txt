@@ -1,0 +1,61 @@
+Username|Department|System|Account Status|Is Privileged|Last Login Date|Employee Status
+user0094|Research & Development|Jira|Active|Non|2026-08-08|Active
+user0355|Research & Development|Active Directory|Active|Non|2025-08-11|Terminated
+user0485|Sales|CRM|Disabled|Non|2026-04-13|Terminated
+user0252|Research & Development|GitLab|Active|Non|2026-01-26|Active
+user1431|Research & Development|VPN|Active|Non|2026-04-24|Active
+user0550|Research & Development|VPN|Active|Oui|2025-12-24|Active
+user1933|Sales|CRM|Disabled|Non|2025-07-18|Terminated
+user0998|Research & Development|Active Directory|Active|Non|2026-08-08|Active
+user0611|Research & Development|Active Directory|Active|Oui|2026-08-19|Active
+user0134|Research & Development|GitLab|Active|Non|2026-08-16|Active
+user2022|Research & Development|Active Directory|Active|Oui|2026-08-03|Active
+user0526|Research & Development|GitLab|Active|Non|2025-12-22|Active
+user1735|Research & Development|GitLab|Active|Non|2026-08-03|Active
+user0548|Research & Development|Active Directory|Active|Oui|2026-08-01|Active
+user0911|Research & Development|GitLab|Disabled|Non|2025-08-13|Terminated
+user0076|Research & Development|VPN|Active|Non|2026-08-06|Active
+user0522|Research & Development|VPN|Active|Oui|2026-08-13|Active
+user1941|Research & Development|GitLab|Active|Oui|2026-08-13|Active
+user1985|Research & Development|Active Directory|Active|Non|2026-08-04|Active
+user1333|Research & Development|VPN|Disabled|Non|2025-09-25|Terminated
+user1162|Research & Development|Jira|Active|Non|2026-08-18|Active
+user0571|Research & Development|Active Directory|Active|Non|2026-08-15|Active
+user0258|Research & Development|Jira|Active|Oui|2026-08-05|Active
+user0996|Research & Development|VPN|Active|Non|2025-11-27|Active
+user1547|Research & Development|Active Directory|Active|Non|2026-08-02|Active
+user0709|Sales|Salesforce|Active|Non|2026-08-09|Active
+user0579|Research & Development|VPN|Active|Non|2026-08-06|Active
+user0638|Research & Development|Active Directory|Active|Oui|2026-07-21|Active
+user0885|Sales|Salesforce|Active|Non|2026-07-30|Active
+user0428|Research & Development|Active Directory|Active|Oui|2025-11-19|Active
+user0664|Research & Development|Jira|Active|Oui|2026-07-30|Active
+user0806|Research & Development|VPN|Active|Non|2026-08-08|Active
+user0291|Sales|Office 365|Active|Non|2025-09-18|Terminated
+user1960|Research & Development|Jira|Active|Non|2026-03-14|Terminated
+user0282|Research & Development|VPN|Active|Non|2025-12-16|Terminated
+user1109|Research & Development|GitLab|Active|Oui|2026-08-08|Active
+user0154|Sales|Salesforce|Active|Non|2026-08-05|Active
+user0605|Research & Development|Active Directory|Active|Oui|2026-08-08|Active
+user1594|Research & Development|Jira|Active|Non|2026-07-25|Active
+user0446|Sales|Salesforce|Active|Non|2026-08-12|Active
+user1975|Sales|Office 365|Active|Oui|2026-08-09|Active
+user1025|Research & Development|VPN|Active|Oui|2026-08-16|Active
+user1981|Research & Development|Active Directory|Active|Non|2026-08-13|Active
+user1438|Research & Development|GitLab|Active|Non|2025-12-18|Active
+user1379|Sales|CRM|Active|Non|2026-05-10|Terminated
+user1150|Research & Development|GitLab|Active|Oui|2026-08-09|Active
+user1070|Sales|Office 365|Active|Non|2026-07-21|Active
+user1669|Sales|CRM|Active|Non|2026-08-04|Active
+user0872|Research & Development|Active Directory|Active|Oui|2026-07-24|Active
+user0228|Sales|Office 365|Active|Non|2026-08-08|Active
+user1671|Research & Development|VPN|Active|Non|2026-08-17|Active
+user1572|Research & Development|VPN|Disabled|Oui|2026-04-11|Terminated
+user2008|Research & Development|GitLab|Active|Non|2026-03-25|Active
+user0274|Research & Development|VPN|Active|Oui|2026-08-10|Active
+user1598|Sales|Office 365|Active|Non|2026-05-17|Active
+user0078|Research & Development|GitLab|Active|Oui|2026-07-21|Active
+user1918|Research & Development|Jira|Active|Non|2026-08-18|Active
+user0081|Sales|CRM|Active|Non|2026-08-16|Active
+user0013|Research & Development|Jira|Active|Non|2026-08-01|Active
+user0987|Research & Development|Jira|Active|Oui|2026-08-17|Active

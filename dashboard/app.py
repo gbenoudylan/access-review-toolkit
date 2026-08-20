@@ -45,9 +45,10 @@ def main():
     with st.sidebar:
         st.header("📁 Import")
         uploaded_file = st.file_uploader(
-            "Export d'accès (CSV ou Excel)",
-            type=["csv", "xlsx", "xls"],
-            help="N'importe quel format de colonnes est accepté.",
+            "Export d'accès (CSV, Excel, Word ou texte)",
+            type=["csv", "xlsx", "xls", "docx", "txt"],
+            help="N'importe quel format est accepté : tableau structuré, "
+                 "colonnes alignées, ou blocs 'clé: valeur'.",
         )
         use_sample = False
         if uploaded_file is None:

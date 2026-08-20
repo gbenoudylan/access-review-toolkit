@@ -11,6 +11,7 @@ COLUMN_MAPPING = {
     "username": [
         "username", "user_id", "login", "identifiant", "compte", "account",
         "sam_account_name", "user_principal_name", "upn",
+        "nom d'utilisateur", "nom utilisateur", "identifiant utilisateur",
     ],
     "full_name": [
         "full_name", "fullname", "nom_complet", "nom", "name", "display_name",

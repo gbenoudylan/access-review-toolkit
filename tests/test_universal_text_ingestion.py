@@ -1,0 +1,119 @@
+"""
+Tests de la lecture universelle des fichiers .txt et .docx sans tableau.
+
+Valide les 3 stratégies de lecture en cascade : délimité, colonnes
+alignées par espaces, blocs clé-valeur — ainsi que le rejet propre d'un
+texte réellement non structuré.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from ingestion.ingest import load_file, IngestionError
+
+
+def test_txt_delimited(tmp_path):
+    content = (
+        "Username|System|Account Status|Employee Status\n"
+        "jkonan|Active Directory|Active|Active\n"
+        "bafolabi|SAP|Active|Terminated\n"
+    )
+    path = tmp_path / "delimited.txt"
+    path.write_text(content, encoding="utf-8")
+
+    df = load_file(path)
+    assert len(df) == 2
+    assert "username" in df.columns
+    assert "system" in df.columns
+    print("OK - test_txt_delimited")
+
+
+def test_txt_fixed_width(tmp_path):
+    content = (
+        "Username    System              Account Status    Employee Status\n"
+        "mkeita      Active Directory    Active            Active\n"
+        "pyao        VPN                 Active            Terminated\n"
+    )
+    path = tmp_path / "fixedwidth.txt"
+    path.write_text(content, encoding="utf-8")
+
+    df = load_file(path)
+    assert len(df) == 2
+    assert "username" in df.columns
+    print("OK - test_txt_fixed_width")
+
+
+def test_txt_key_value_blocks(tmp_path):
+    content = (
+        "Nom d'utilisateur: sagbato\n"
+        "Systeme: SIEM ArcSight\n"
+        "Statut compte: Actif\n"
+        "Statut RH: Actif\n"
+        "\n"
+        "Nom d'utilisateur: rzongo\n"
+        "Systeme: CRM\n"
+        "Statut compte: Actif\n"
+        "Statut RH: Parti\n"
+    )
+    path = tmp_path / "keyvalue.txt"
+    path.write_text(content, encoding="utf-8")
+
+    df = load_file(path)
+    assert len(df) == 2
+    assert "username" in df.columns
+    assert set(df["username"]) == {"sagbato", "rzongo"}
+    print("OK - test_txt_key_value_blocks")
+
+
+def test_txt_unreadable_raises_clear_error(tmp_path):
+    content = (
+        "Ceci est un simple paragraphe de texte libre, sans structure "
+        "reconnaissable, comme le contenu d'un email ou d'une note."
+    )
+    path = tmp_path / "unreadable.txt"
+    path.write_text(content, encoding="utf-8")
+
+    try:
+        load_file(path)
+        assert False, "Une IngestionError aurait dû être levée"
+    except IngestionError as e:
+        assert "Impossible d'interpréter" in str(e)
+        print("OK - test_txt_unreadable_raises_clear_error")
+
+
+def test_docx_freetext_keyvalue(tmp_path):
+    """.docx sans aucun tableau, données en paragraphes clé-valeur."""
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading("Fiches comptes", level=1)
+    for username, system, status in [
+        ("dyao", "Active Directory", "Parti"),
+        ("kboni", "SAP", "Actif"),
+    ]:
+        doc.add_paragraph(f"Nom d'utilisateur: {username}")
+        doc.add_paragraph(f"Systeme: {system}")
+        doc.add_paragraph(f"Statut RH: {status}")
+        doc.add_paragraph("")
+
+    path = tmp_path / "freetext.docx"
+    doc.save(str(path))
+
+    df = load_file(path)
+    assert len(df) == 2
+    assert "username" in df.columns
+    print("OK - test_docx_freetext_keyvalue")
+
+
+if __name__ == "__main__":
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        test_txt_delimited(tmp_path)
+        test_txt_fixed_width(tmp_path)
+        test_txt_key_value_blocks(tmp_path)
+        test_txt_unreadable_raises_clear_error(tmp_path)
+        test_docx_freetext_keyvalue(tmp_path)
+    print("\nTous les tests sont passés.")

@@ -1,0 +1,480 @@
+Username: user0094
+Department: Research & Development
+System: Jira
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-08
+Employee Status: Active
+
+Username: user0355
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2025-08-11
+Employee Status: Terminated
+
+Username: user0485
+Department: Sales
+System: CRM
+Account Status: Disabled
+Is Privileged: Non
+Last Login Date: 2026-04-13
+Employee Status: Terminated
+
+Username: user0252
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-01-26
+Employee Status: Active
+
+Username: user1431
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-04-24
+Employee Status: Active
+
+Username: user0550
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2025-12-24
+Employee Status: Active
+
+Username: user1933
+Department: Sales
+System: CRM
+Account Status: Disabled
+Is Privileged: Non
+Last Login Date: 2025-07-18
+Employee Status: Terminated
+
+Username: user0998
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-08
+Employee Status: Active
+
+Username: user0611
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-19
+Employee Status: Active
+
+Username: user0134
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-16
+Employee Status: Active
+
+Username: user2022
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-03
+Employee Status: Active
+
+Username: user0526
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2025-12-22
+Employee Status: Active
+
+Username: user1735
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-03
+Employee Status: Active
+
+Username: user0548
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-01
+Employee Status: Active
+
+Username: user0911
+Department: Research & Development
+System: GitLab
+Account Status: Disabled
+Is Privileged: Non
+Last Login Date: 2025-08-13
+Employee Status: Terminated
+
+Username: user0076
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-06
+Employee Status: Active
+
+Username: user0522
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-13
+Employee Status: Active
+
+Username: user1941
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-13
+Employee Status: Active
+
+Username: user1985
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-04
+Employee Status: Active
+
+Username: user1333
+Department: Research & Development
+System: VPN
+Account Status: Disabled
+Is Privileged: Non
+Last Login Date: 2025-09-25
+Employee Status: Terminated
+
+Username: user1162
+Department: Research & Development
+System: Jira
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-18
+Employee Status: Active
+
+Username: user0571
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-15
+Employee Status: Active
+
+Username: user0258
+Department: Research & Development
+System: Jira
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-05
+Employee Status: Active
+
+Username: user0996
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2025-11-27
+Employee Status: Active
+
+Username: user1547
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-02
+Employee Status: Active
+
+Username: user0709
+Department: Sales
+System: Salesforce
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-09
+Employee Status: Active
+
+Username: user0579
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-06
+Employee Status: Active
+
+Username: user0638
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-07-21
+Employee Status: Active
+
+Username: user0885
+Department: Sales
+System: Salesforce
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-07-30
+Employee Status: Active
+
+Username: user0428
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2025-11-19
+Employee Status: Active
+
+Username: user0664
+Department: Research & Development
+System: Jira
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-07-30
+Employee Status: Active
+
+Username: user0806
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-08
+Employee Status: Active
+
+Username: user0291
+Department: Sales
+System: Office 365
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2025-09-18
+Employee Status: Terminated
+
+Username: user1960
+Department: Research & Development
+System: Jira
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-03-14
+Employee Status: Terminated
+
+Username: user0282
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2025-12-16
+Employee Status: Terminated
+
+Username: user1109
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-08
+Employee Status: Active
+
+Username: user0154
+Department: Sales
+System: Salesforce
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-05
+Employee Status: Active
+
+Username: user0605
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-08
+Employee Status: Active
+
+Username: user1594
+Department: Research & Development
+System: Jira
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-07-25
+Employee Status: Active
+
+Username: user0446
+Department: Sales
+System: Salesforce
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-12
+Employee Status: Active
+
+Username: user1975
+Department: Sales
+System: Office 365
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-09
+Employee Status: Active
+
+Username: user1025
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-16
+Employee Status: Active
+
+Username: user1981
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-13
+Employee Status: Active
+
+Username: user1438
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2025-12-18
+Employee Status: Active
+
+Username: user1379
+Department: Sales
+System: CRM
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-05-10
+Employee Status: Terminated
+
+Username: user1150
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-09
+Employee Status: Active
+
+Username: user1070
+Department: Sales
+System: Office 365
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-07-21
+Employee Status: Active
+
+Username: user1669
+Department: Sales
+System: CRM
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-04
+Employee Status: Active
+
+Username: user0872
+Department: Research & Development
+System: Active Directory
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-07-24
+Employee Status: Active
+
+Username: user0228
+Department: Sales
+System: Office 365
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-08
+Employee Status: Active
+
+Username: user1671
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-17
+Employee Status: Active
+
+Username: user1572
+Department: Research & Development
+System: VPN
+Account Status: Disabled
+Is Privileged: Oui
+Last Login Date: 2026-04-11
+Employee Status: Terminated
+
+Username: user2008
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-03-25
+Employee Status: Active
+
+Username: user0274
+Department: Research & Development
+System: VPN
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-10
+Employee Status: Active
+
+Username: user1598
+Department: Sales
+System: Office 365
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-05-17
+Employee Status: Active
+
+Username: user0078
+Department: Research & Development
+System: GitLab
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-07-21
+Employee Status: Active
+
+Username: user1918
+Department: Research & Development
+System: Jira
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-18
+Employee Status: Active
+
+Username: user0081
+Department: Sales
+System: CRM
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-16
+Employee Status: Active
+
+Username: user0013
+Department: Research & Development
+System: Jira
+Account Status: Active
+Is Privileged: Non
+Last Login Date: 2026-08-01
+Employee Status: Active
+
+Username: user0987
+Department: Research & Development
+System: Jira
+Account Status: Active
+Is Privileged: Oui
+Last Login Date: 2026-08-17
+Employee Status: Active
+

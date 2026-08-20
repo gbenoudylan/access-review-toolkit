@@ -1,0 +1,81 @@
+Username,Full Name,Department,Job Role,Manager,System,Role,Account Status,Is Privileged,Last Login Date,Employee Status,Years At Company
+user1469,Employee_1469,Sales,Sales Executive,mgr_008,Office 365,Standard,Active,Non,2025-11-09,Active,5
+user0250,Employee_250,Research & Development,Manufacturing Director,mgr_018,GitLab,Admin,Active,Oui,2026-07-30,Active,4
+user1714,Employee_1714,Human Resources,Human Resources,,HRIS,Standard,Disabled,Non,2026-04-26,Terminated,1
+user0086,Employee_86,Research & Development,Research Scientist,,GitLab,Standard,Active,Non,2026-08-01,Active,1
+user0304,Employee_304,Research & Development,Laboratory Technician,mgr_008,GitLab,Standard,Active,Non,2026-07-29,Active,13
+user0666,Employee_666,Sales,Sales Representative,mgr_006,Salesforce,Standard,Active,Non,2026-07-26,Active,8
+user0577,Employee_577,Research & Development,Laboratory Technician,mgr_011,VPN,Standard,Active,Non,2026-08-16,Active,5
+user0332,Employee_332,Research & Development,Laboratory Technician,mgr_012,Active Directory,Standard,Active,Non,2026-04-23,Active,3
+user0302,Employee_302,Sales,Sales Executive,mgr_018,Office 365,Standard,Active,Non,2026-08-19,Active,19
+user0063,Employee_63,Research & Development,Laboratory Technician,mgr_010,Active Directory,Standard,Active,Non,2026-08-08,Active,1
+user0925,Employee_925,Sales,Sales Representative,mgr_007,Office 365,Standard,Active,Non,2026-07-24,Active,3
+user1293,Employee_1293,Sales,Sales Executive,mgr_010,Office 365,Standard,Active,Non,2025-11-29,Active,21
+user0852,Employee_852,Research & Development,Healthcare Representative,mgr_009,Active Directory,Standard,Active,Non,2026-07-24,Active,5
+user0483,Employee_483,Research & Development,Laboratory Technician,mgr_012,VPN,Standard,Active,Non,2026-08-09,Active,7
+user2007,Employee_2007,Research & Development,Research Scientist,mgr_003,GitLab,Standard,Active,Non,2026-07-29,Active,3
+user1745,Employee_1745,Research & Development,Research Scientist,mgr_013,GitLab,Standard,Active,Non,2026-08-13,Active,9
+user1753,Employee_1753,Research & Development,Healthcare Representative,mgr_008,Jira,Standard,Active,Non,2026-07-31,Active,3
+user1042,Employee_1042,Research & Development,Laboratory Technician,mgr_002,Jira,Standard,Disabled,Non,2026-04-14,Terminated,17
+user0376,Employee_376,Research & Development,Manager,mgr_019,Jira,Admin,Disabled,Oui,2026-04-09,Terminated,10
+user1485,Employee_1485,Research & Development,Research Director,mgr_015,Jira,Admin,Active,Oui,2026-08-05,Active,14
+user0355,Employee_355,Research & Development,Laboratory Technician,mgr_018,GitLab,Standard,Active,Non,2026-01-06,Terminated,5
+user0574,Employee_574,Research & Development,Manufacturing Director,mgr_013,Jira,Admin,Active,Oui,2026-08-07,Active,5
+user1446,Employee_1446,Sales,Sales Executive,mgr_003,Salesforce,Standard,Active,Non,2026-08-16,Active,4
+user0382,Employee_382,Sales,Sales Executive,mgr_014,CRM,Standard,Active,Non,2026-08-16,Active,8
+user1560,Employee_1560,Sales,Sales Executive,mgr_015,Office 365,Standard,Active,Non,2026-02-09,Active,2
+user1578,Employee_1578,Sales,Manager,mgr_001,Office 365,Admin,Active,Oui,2026-08-03,Active,36
+user0933,Employee_933,Research & Development,Research Scientist,mgr_011,Active Directory,Standard,Active,Non,2026-08-03,Active,1
+user0855,Employee_855,Sales,Sales Executive,mgr_009,CRM,Standard,Active,Non,2026-08-15,Active,9
+user1475,Employee_1475,Research & Development,Research Scientist,mgr_010,GitLab,Standard,Active,Non,2026-08-17,Active,5
+user0339,Employee_339,Research & Development,Manufacturing Director,mgr_017,GitLab,Admin,Active,Oui,2026-07-27,Active,11
+user1763,Employee_1763,Research & Development,Healthcare Representative,,Active Directory,Standard,Active,Non,2026-08-05,Active,7
+user1018,Employee_1018,Research & Development,Manufacturing Director,mgr_008,Jira,Admin,Active,Oui,2026-07-25,Active,8
+user0807,Employee_807,Research & Development,Healthcare Representative,mgr_003,Active Directory,Standard,Active,Non,2026-08-02,Active,8
+user0623,Employee_623,Research & Development,Manufacturing Director,mgr_005,VPN,Admin,Active,Oui,2026-07-27,Active,6
+user1733,Employee_1733,Sales,Sales Executive,mgr_017,CRM,Standard,Disabled,Non,2025-08-04,Terminated,2
+user0984,Employee_984,Sales,Sales Executive,mgr_007,Office 365,Standard,Active,Non,2026-08-14,Active,10
+user1468,Employee_1468,Research & Development,Research Director,mgr_015,Jira,Admin,Active,Oui,2026-07-30,Active,9
+user1210,Employee_1210,Research & Development,Research Scientist,mgr_001,VPN,Standard,Active,Non,2026-01-17,Terminated,1
+user0065,Employee_65,Research & Development,Laboratory Technician,mgr_002,GitLab,Standard,Disabled,Non,2026-05-09,Terminated,2
+user1834,Employee_1834,Research & Development,Research Scientist,mgr_003,GitLab,Standard,Active,Non,2026-05-09,Active,3
+user0230,Employee_230,Sales,Sales Executive,mgr_018,Office 365,Standard,Active,Non,2026-07-30,Active,8
+user1548,Employee_1548,Sales,Sales Executive,mgr_016,CRM,Standard,Active,Non,2026-07-23,Active,8
+user1574,Employee_1574,Research & Development,Research Scientist,mgr_004,GitLab,Standard,Active,Non,2026-07-26,Active,6
+user1060,Employee_1060,Research & Development,Research Scientist,mgr_015,Active Directory,Standard,Active,Non,2026-08-09,Active,2
+user0485,Employee_485,Sales,Sales Representative,mgr_011,Office 365,Standard,Active,Non,2026-03-23,Terminated,1
+user0361,Employee_361,Sales,Sales Executive,mgr_005,CRM,Standard,Active,Non,2026-08-14,Active,8
+user1318,Employee_1318,Sales,Sales Executive,mgr_003,Salesforce,Standard,Active,Non,2025-09-18,Terminated,5
+user0819,Employee_819,Sales,Sales Executive,mgr_018,Salesforce,Standard,Disabled,Non,2025-08-04,Terminated,3
+user0723,Employee_723,Sales,Sales Executive,mgr_016,CRM,Standard,Disabled,Non,2026-01-11,Terminated,4
+user1248,Employee_1248,Research & Development,Research Scientist,mgr_006,VPN,Standard,Active,Non,2025-10-19,Terminated,1
+user0575,Employee_575,Research & Development,Research Director,mgr_015,VPN,Admin,Active,Oui,2026-02-07,Active,3
+user0423,Employee_423,Research & Development,Research Scientist,mgr_018,Jira,Standard,Active,Non,2026-07-21,Active,5
+user0162,Employee_162,Research & Development,Research Director,mgr_002,VPN,Admin,Active,Oui,2026-08-11,Active,20
+user1356,Employee_1356,Sales,Sales Executive,mgr_002,Office 365,Standard,Active,Non,2026-08-19,Active,10
+user1709,Employee_1709,Research & Development,Laboratory Technician,mgr_017,Active Directory,Standard,Active,Non,2026-08-04,Active,5
+user1235,Employee_1235,Research & Development,Research Scientist,mgr_006,GitLab,Standard,Active,Non,2026-01-07,Active,8
+user0281,Employee_281,Research & Development,Laboratory Technician,mgr_013,Active Directory,Standard,Active,Non,2026-07-30,Active,7
+user1970,Employee_1970,Research & Development,Healthcare Representative,mgr_020,Active Directory,Standard,Active,Non,2026-08-02,Active,9
+user0757,Employee_757,Research & Development,Healthcare Representative,mgr_019,Active Directory,Standard,Active,Non,2026-08-07,Active,5
+user1633,Employee_1633,Research & Development,Manufacturing Director,mgr_011,Jira,Admin,Active,Oui,2026-08-14,Active,9
+user1744,Employee_1744,Human Resources,Human Resources,mgr_010,HRIS,Standard,Active,Non,2026-08-16,Active,5
+user1079,Employee_1079,Research & Development,Laboratory Technician,,VPN,Standard,Active,Non,2026-04-05,Terminated,1
+user1459,Employee_1459,Research & Development,Manufacturing Director,mgr_005,Active Directory,Admin,Active,Oui,2026-01-23,Terminated,10
+user0815,Employee_815,Research & Development,Research Director,mgr_010,Jira,Admin,Active,Oui,2026-07-23,Active,4
+user1033,Employee_1033,Research & Development,Healthcare Representative,mgr_020,GitLab,Standard,Disabled,Non,2025-08-07,Terminated,1
+user0261,Employee_261,Research & Development,Manufacturing Director,mgr_004,Active Directory,Admin,Disabled,Oui,2025-08-02,Terminated,1
+user0458,Employee_458,Sales,Sales Executive,mgr_018,CRM,Standard,Active,Non,2026-07-23,Active,8
+user1885,Employee_1885,Research & Development,Research Scientist,mgr_011,GitLab,Standard,Active,Non,2026-08-01,Active,5
+user0395,Employee_395,Research & Development,Research Scientist,mgr_016,GitLab,Standard,Active,Non,2026-07-24,Active,5
+user1550,Employee_1550,Human Resources,Manager,mgr_014,Office 365,Admin,Active,Oui,2026-07-24,Active,21
+user1908,Employee_1908,Sales,Sales Executive,mgr_009,Salesforce,Standard,Active,Non,2026-02-21,Active,4
+user0038,Employee_38,Sales,Manager,mgr_018,CRM,Admin,Active,Oui,2026-08-03,Active,2
+user0656,Employee_656,Sales,Sales Executive,mgr_018,CRM,Standard,Active,Non,2025-11-22,Active,3
+user0100,Employee_100,Sales,Sales Executive,mgr_014,CRM,Standard,Active,Non,2026-08-02,Active,15
+user1260,Employee_1260,Research & Development,Healthcare Representative,mgr_002,GitLab,Standard,Active,Non,2026-02-13,Active,6
+user0084,Employee_84,Research & Development,Manager,mgr_012,Jira,Admin,Active,Oui,2026-08-13,Active,5
+user1615,Employee_1615,Research & Development,Manufacturing Director,mgr_008,VPN,Admin,Active,Oui,2026-07-28,Active,9
+user0808,Employee_808,Sales,Sales Executive,mgr_014,CRM,Standard,Active,Non,2026-07-26,Active,3
+user1237,Employee_1237,Research & Development,Manufacturing Director,mgr_014,Active Directory,Admin,Active,Oui,2026-07-22,Active,7
+user1321,Employee_1321,Research & Development,Manager,mgr_013,GitLab,Admin,Active,Oui,2026-07-26,Active,9

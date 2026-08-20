@@ -1,0 +1,3 @@
+Username    System              Account Status    Employee Status
+mkeita      Active Directory    Active            Active
+pyao        VPN                 Active            Terminated

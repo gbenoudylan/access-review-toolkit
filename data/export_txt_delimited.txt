@@ -1,0 +1,3 @@
+Username|System|Account Status|Employee Status|Last Login Date
+jkonan|Active Directory|Active|Active|2026-08-15
+bafolabi|SAP|Active|Terminated|2025-06-01

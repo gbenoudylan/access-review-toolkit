@@ -54,6 +54,29 @@ Export d'accès (n'importe quel format)
  analysis/access_review.py  -> détection des anomalies, scoring de risque
 ```
 
+### Formats de fichiers acceptés en entrée
+
+- **CSV** (`.csv`)
+- **Excel** (`.xlsx`, `.xls`)
+- **Word** (`.docx`) :
+  1. Cherche d'abord un tableau dans le document (le plus pertinent s'il y
+     en a plusieurs), même entouré de texte libre (titre, intro, notes).
+  2. Si aucun tableau, retombe sur la même lecture en cascade que le texte
+     libre (voir ci-dessous), appliquée au contenu des paragraphes.
+- **Texte brut** (`.txt`) : trois stratégies essayées dans l'ordre, la
+  première qui produit un résultat exploitable est retenue :
+  1. **Délimité** : virgule, point-virgule, tabulation ou pipe — cas d'un
+     export brut simplement enregistré en `.txt`.
+  2. **Colonnes alignées par espaces** : rapports générés en ligne de
+     commande ou exports de systèmes legacy.
+  3. **Blocs clé-valeur** : une fiche par enregistrement, séparée par des
+     lignes vides, au format `clé: valeur` ou `clé= valeur` (avec ou sans
+     puce) — ex. des fiches individuelles collées dans un compte-rendu.
+
+  Si aucune des trois stratégies ne produit de structure reconnaissable,
+  l'erreur l'indique clairement plutôt que d'échouer silencieusement ou de
+  produire des données incohérentes.
+
 ### Colonnes reconnues
 
 `username`, `full_name`, `email`, `department`, `job_title`, `manager`,

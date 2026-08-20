@@ -1,0 +1,9 @@
+Nom d'utilisateur: sagbato
+Systeme: SIEM ArcSight
+Statut compte: Actif
+Statut RH: Actif
+
+Nom d'utilisateur: rzongo
+Systeme: CRM
+Statut compte: Actif
+Statut RH: Parti
