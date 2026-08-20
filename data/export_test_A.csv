@@ -1,0 +1,7 @@
+Username,Full Name,Email,Department,Manager,System,Role,Account Status,Is Privileged,Last Login Date,Employee Status
+jkouassi,Jean Kouassi,jkouassi@example.com,IT Security,Marie Diallo,Active Directory,Admin,Active,Oui,2026-08-15,Active
+adoumbia,Awa Doumbia,adoumbia@example.com,Finance,Paul Nguessan,SAP,Standard,Active,Non,2026-08-18,Active
+kbrou,Konan Brou,kbrou@example.com,IT Security,,SIEM ArcSight,Admin,Active,Oui,2026-02-01,Active
+mfofana,Marc Fofana,mfofana@example.com,Sales,Marie Diallo,CRM,Standard,Active,Non,2025-11-10,Terminated
+sassoum,Sara Assoum,sassoum@example.com,HR,Paul Nguessan,HRIS,Standard,Active,Non,2026-08-19,Active
+tkone,Théo Koné,tkone@example.com,IT Security,Marie Diallo,Active Directory,Admin,Active,Oui,2025-09-01,Active
