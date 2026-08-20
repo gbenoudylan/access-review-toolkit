@@ -10,8 +10,10 @@ Projet mené en parallèle du stage Data Protection & IAM chez MTN Côte d'Ivoir
 
 - [x] **Phase 1 — Ingestion universelle** (adaptée du projet vulnerability tracker)
 - [x] **Phase 2 — Détection des anomalies d'accès** (terminée)
-- [ ] Phase 3 — Dashboard Streamlit
-- [ ] Phase 4 — Export du rapport de revue (Excel/PDF)
+- [x] **Phase 3 — Dashboard Streamlit** (terminée)
+- [x] **Phase 4 — Export du rapport de revue (Excel/PDF)** (terminée)
+
+**Projet complet.**
 
 ## Le problème résolu
 
@@ -89,7 +91,23 @@ colonnes optionnelles, et l'exactitude du résumé chiffré.
 
 ## Prochaines étapes
 
-- **Phase 3** : dashboard Streamlit pour visualiser et filtrer les résultats
-  (repris du projet vuln_tracker).
-- **Phase 4** : export Excel/PDF du plan de revue d'accès, prêt pour
-  validation par les owners métier.
+- ~~Phase 3 : dashboard Streamlit~~ ✅
+- ~~Phase 4 : export Excel/PDF~~ ✅
+
+## Utilisation du dashboard
+
+```bash
+streamlit run dashboard/app.py
+```
+
+Upload d'un fichier (ou utilisation du fichier d'exemple), visualisation des
+comptes par niveau de risque, filtres, et génération de rapports Excel/PDF
+directement depuis l'interface — en ne gardant que la sélection filtrée
+(par exemple, uniquement les comptes "Critique" pour un rapport ciblé).
+
+## Utilisation en ligne de commande (export direct)
+
+```bash
+python -m reporting.export data/export_test_A.csv
+```
+Génère `output/rapport_revue_acces.xlsx` et `.pdf`.
