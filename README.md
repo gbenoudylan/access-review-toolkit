@@ -56,26 +56,30 @@ Export d'accès (n'importe quel format)
 
 ### Formats de fichiers acceptés en entrée
 
-- **CSV** (`.csv`)
-- **Excel** (`.xlsx`, `.xls`)
-- **Word** (`.docx`) :
-  1. Cherche d'abord un tableau dans le document (le plus pertinent s'il y
-     en a plusieurs), même entouré de texte libre (titre, intro, notes).
-  2. Si aucun tableau, retombe sur la même lecture en cascade que le texte
-     libre (voir ci-dessous), appliquée au contenu des paragraphes.
-- **Texte brut** (`.txt`) : trois stratégies essayées dans l'ordre, la
-  première qui produit un résultat exploitable est retenue :
-  1. **Délimité** : virgule, point-virgule, tabulation ou pipe — cas d'un
-     export brut simplement enregistré en `.txt`.
-  2. **Colonnes alignées par espaces** : rapports générés en ligne de
-     commande ou exports de systèmes legacy.
-  3. **Blocs clé-valeur** : une fiche par enregistrement, séparée par des
-     lignes vides, au format `clé: valeur` ou `clé= valeur` (avec ou sans
-     puce) — ex. des fiches individuelles collées dans un compte-rendu.
+| Format | Comportement |
+|---|---|
+| **CSV** (`.csv`) | Détection automatique du séparateur, gestion des lignes de longueur inégale |
+| **Excel** (`.xlsx`, `.xls`) | Lecture directe de la première feuille |
+| **Word** (`.docx`) | Cherche un tableau (le plus pertinent s'il y en a plusieurs) ; à défaut, retombe sur la lecture en cascade du texte des paragraphes (voir Texte brut) |
+| **Texte brut** (`.txt`) | 3 stratégies en cascade — voir détail ci-dessous |
+| **JSON** (`.json`) | Liste d'objets, ou objet contenant une liste sous une clé courante (`results`, `data`, `users`, `accounts`, `records`, `items`, `value`) |
+| **XML** (`.xml`) | Éléments répétitifs représentant chacun un compte (ex. `<user>...</user>`) |
+| **HTML** (`.html`, `.htm`) | Le tableau le plus pertinent parmi ceux présents dans la page (export copié depuis une page web/intranet) |
+| **LDIF** (`.ldif`) | Export natif LDAP/Active Directory. Décode automatiquement `userAccountControl` (bitmask) en statut Active/Disabled lisible. Ajoute une colonne `system` par défaut (un LDIF représente un seul annuaire, donc l'info n'existe structurellement pas dans les données) |
+| **PDF** (`.pdf`) | Extraction de tableau par bordures visibles, avec repli sur une détection par alignement de texte si aucune bordure n'est trouvée (moins fiable — un avertissement est loggé dans ce cas) |
+| **ZIP** (`.zip`) | Extrait et traite chaque fichier supporté à l'intérieur, puis combine tous les résultats en un seul jeu de données. Un fichier illisible dans l'archive est ignoré (avec avertissement) sans faire échouer les autres |
 
-  Si aucune des trois stratégies ne produit de structure reconnaissable,
-  l'erreur l'indique clairement plutôt que d'échouer silencieusement ou de
-  produire des données incohérentes.
+**Stratégies pour le texte brut** (`.txt`, et repli du Word/LDIF sans structure claire), essayées dans l'ordre jusqu'à ce que l'une fonctionne :
+1. **Délimité** : virgule, point-virgule, tabulation ou pipe.
+2. **Colonnes alignées par espaces** : rapports en ligne de commande, exports legacy.
+3. **Blocs clé-valeur** : une fiche par enregistrement, séparée par des lignes vides, au format `clé: valeur`.
+
+Si aucune stratégie ne produit de structure reconnaissable, l'erreur l'indique clairement plutôt que d'échouer silencieusement ou de produire des données incohérentes.
+
+### Limites connues, assumées
+
+- **PDF sans bordures visibles** : l'extraction par alignement de texte peut mal découper certaines colonnes ou lignes. Un PDF avec un vrai tableau (bordures) est toujours plus fiable.
+- **Formats volontairement exclus** : OCR sur image/scan (peu fiable, hors périmètre), fichiers `.eml` (mieux vaut en extraire la pièce jointe séparément). Ces cas sont rares et mieux traités au cas par cas qu'en complexifiant le pipeline pour un gain marginal.
 
 ### Colonnes reconnues
 

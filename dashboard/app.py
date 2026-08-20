@@ -45,10 +45,12 @@ def main():
     with st.sidebar:
         st.header("📁 Import")
         uploaded_file = st.file_uploader(
-            "Export d'accès (CSV, Excel, Word ou texte)",
-            type=["csv", "xlsx", "xls", "docx", "txt"],
-            help="N'importe quel format est accepté : tableau structuré, "
-                 "colonnes alignées, ou blocs 'clé: valeur'.",
+            "Export d'accès (tous formats supportés)",
+            type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml",
+                  "html", "htm", "ldif", "pdf", "zip"],
+            help="CSV, Excel, Word, texte libre, JSON, XML, HTML, LDIF "
+                 "(export LDAP/AD), PDF, ou une archive ZIP contenant "
+                 "plusieurs de ces fichiers.",
         )
         use_sample = False
         if uploaded_file is None:

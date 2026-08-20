@@ -95,6 +95,23 @@ def test_summarize_counts_correctly():
     print(f"OK - test_summarize_counts_correctly ({summary})")
 
 
+def test_ldap_generalized_time_parsed_correctly():
+    """
+    Le format de date LDAP/AD ('20260807120000.0Z') doit être reconnu,
+    même si ce n'est pas un format ISO standard.
+    """
+    from analysis.access_review import _days_since
+    from datetime import datetime, timedelta
+
+    old_date = datetime.now() - timedelta(days=200)
+    ldap_formatted = old_date.strftime("%Y%m%d%H%M%S") + ".0Z"
+
+    days = _days_since(ldap_formatted)
+    assert days is not None
+    assert 199 <= days <= 201  # tolérance d'un jour pour l'exécution du test
+    print(f"OK - test_ldap_generalized_time_parsed_correctly ({days} jours détectés)")
+
+
 if __name__ == "__main__":
     test_terminated_but_active_flagged_critical()
     test_dormant_account_detected()
@@ -102,4 +119,5 @@ if __name__ == "__main__":
     test_privileged_dormant_is_critical()
     test_missing_optional_columns_no_crash()
     test_summarize_counts_correctly()
+    test_ldap_generalized_time_parsed_correctly()
     print("\nTous les tests sont passés.")

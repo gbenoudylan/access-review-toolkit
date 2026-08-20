@@ -339,31 +339,267 @@ def _read_ragged_csv(path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def load_file(path: str | Path) -> pd.DataFrame:
-    path = Path(path)
-    if not path.exists():
-        raise IngestionError(f"Fichier introuvable : {path}")
+def _read_json(path: Path) -> pd.DataFrame:
+    """
+    Lit un fichier JSON. Accepte :
+        - une liste d'objets : [{"username": "...", ...}, ...]
+        - un objet unique contenant une liste sous une clé courante
+          (results, data, users, accounts, records, items, value)
+        - un objet unique représentant un seul compte
+    """
+    import json
 
+    with open(path, encoding="utf-8-sig") as f:
+        data = json.load(f)
+
+    if isinstance(data, list):
+        records = data
+    elif isinstance(data, dict):
+        list_keys = ["results", "data", "users", "accounts", "records", "items", "value"]
+        records = None
+        for key in list_keys:
+            if key in data and isinstance(data[key], list):
+                records = data[key]
+                break
+        if records is None:
+            # objet unique = un seul enregistrement
+            records = [data]
+    else:
+        raise IngestionError(f"Structure JSON non reconnue dans {path.name}.")
+
+    if not records:
+        raise IngestionError(f"Aucun enregistrement trouvé dans {path.name}.")
+
+    # Aplatit les dictionnaires imbriqués simples (ex. {"user": {"name": "..."}})
+    df = pd.json_normalize(records, sep="_")
+    return df
+
+
+def _read_xml(path: Path) -> pd.DataFrame:
+    """
+    Lit un fichier XML. Suppose une structure répétitive classique
+    (une balise par enregistrement, ex. <user>...</user> ou <account>...</account>),
+    avec les champs en sous-balises ou en attributs.
+    """
+    try:
+        df = pd.read_xml(path)
+    except Exception as e:
+        raise IngestionError(
+            f"Impossible d'interpréter la structure XML de {path.name} ({e}). "
+            "Le fichier doit contenir des éléments répétitifs représentant "
+            "chacun un compte (ex. <user>...</user>)."
+        ) from e
+
+    if df.empty:
+        raise IngestionError(f"Aucun enregistrement exploitable trouvé dans {path.name}.")
+    return df
+
+
+def _read_html(path: Path) -> pd.DataFrame:
+    """
+    Lit un fichier HTML contenant un ou plusieurs tableaux (ex. export copié
+    depuis une page web/intranet). Garde le tableau le plus pertinent, même
+    logique que pour les tableaux Word multiples.
+
+    pandas détecte déjà l'en-tête via les balises <th>/<thead> : on
+    reconstruit une forme "brute" (en-tête recollé comme première ligne)
+    pour rester cohérent avec les autres lecteurs et laisser la détection
+    d'en-tête standard s'appliquer une seule fois, au bon endroit.
+    """
+    try:
+        tables = pd.read_html(path)
+    except ValueError as e:
+        raise IngestionError(f"Aucun tableau trouvé dans {path.name} ({e}).") from e
+
+    best_raw_rows, best_score = None, -1
+    for table_df in tables:
+        raw_rows = [list(table_df.columns)] + table_df.astype(object).values.tolist()
+        candidate = pd.DataFrame(raw_rows)
+        score = max(_score_header_row(candidate.iloc[i]) for i in range(min(3, len(candidate))))
+        if score > best_score:
+            best_raw_rows, best_score = raw_rows, score
+
+    if best_raw_rows is None:
+        raise IngestionError(f"Aucun tableau exploitable trouvé dans {path.name}.")
+
+    logger.info(f"{len(tables)} tableau(x) HTML détecté(s), le plus pertinent retenu (score={best_score}).")
+    return pd.DataFrame(best_raw_rows)
+
+
+_UAC_ACCOUNTDISABLE_BIT = 0x2  # bit standard Active Directory pour "compte désactivé"
+
+
+def _read_ldif(path: Path) -> pd.DataFrame:
+    """
+    Lit un fichier LDIF (export natif LDAP/Active Directory).
+
+    Structure LDIF : des entrées séparées par des lignes vides, chaque
+    ligne étant "attribut: valeur" (ou "attribut:: valeur_base64" pour les
+    valeurs encodées). Un attribut peut apparaître plusieurs fois (valeurs
+    multiples) — on garde alors la première occurrence pour rester simple.
+
+    Cas particulier traité : 'userAccountControl' est un bitmask numérique
+    (pas un statut texte). On le décode ici pour en tirer directement un
+    statut Active/Disabled exploitable par le reste du pipeline.
+    """
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
+        raw_text = f.read()
+
+    # Les lignes de continuation LDIF commencent par un espace : elles
+    # prolongent la ligne précédente et doivent être recollées avant parsing.
+    unfolded_lines = []
+    for line in raw_text.splitlines():
+        if line.startswith(" ") and unfolded_lines:
+            unfolded_lines[-1] += line[1:]
+        else:
+            unfolded_lines.append(line)
+
+    entries_text = re.split(r"\n\s*\n", "\n".join(unfolded_lines))
+    records = []
+
+    for entry_text in entries_text:
+        record = {}
+        for line in entry_text.split("\n"):
+            line = line.rstrip()
+            if not line or line.startswith("#"):
+                continue
+            # "attribut:: valeur" = base64, on ignore le décodage (rare
+            # pour les champs texte qui nous intéressent ici)
+            match = re.match(r"^([\w;-]+)::?\s*(.*)$", line)
+            if not match:
+                continue
+            key, value = match.group(1), match.group(2).strip()
+            if key.lower() == "useraccountcontrol":
+                try:
+                    flags = int(value)
+                    value = "Disabled" if (flags & _UAC_ACCOUNTDISABLE_BIT) else "Active"
+                except ValueError:
+                    pass
+            if key not in record:  # garde la première valeur si attribut répété
+                record[key] = value
+        if record:
+            records.append(record)
+
+    if not records:
+        raise IngestionError(
+            f"Aucune entrée LDIF exploitable trouvée dans {path.name}. "
+            "Format attendu : entrées séparées par des lignes vides, "
+            "lignes 'attribut: valeur'."
+        )
+
+    # Un export LDIF représente par nature un seul système (l'annuaire
+    # LDAP/AD lui-même) : il n'y a jamais de colonne "système" explicite
+    # dans les données, contrairement à un export multi-systèmes. On
+    # l'ajoute donc nous-mêmes plutôt que d'échouer sur un champ obligatoire
+    # qui n'a structurellement aucune raison d'exister dans ce format.
+    for record in records:
+        record.setdefault("system", "Active Directory / LDAP")
+
+    logger.info(f"{len(records)} entrée(s) LDIF décodée(s).")
+    return pd.DataFrame(records)
+
+
+def _read_pdf(path: Path) -> pd.DataFrame:
+    """
+    Extrait un tableau depuis un PDF. Moins fiable que les autres formats
+    (mise en page PDF non garantie), donc on prend le tableau le plus
+    riche trouvé sur l'ensemble des pages plutôt que de se limiter à la
+    première page.
+    """
+    try:
+        import pdfplumber
+    except ImportError as e:
+        raise IngestionError(
+            "La bibliothèque 'pdfplumber' est requise pour lire les PDF. "
+            "Installez-la avec : pip install pdfplumber"
+        ) from e
+
+    best_rows, best_score = None, -1
+    with pdfplumber.open(str(path)) as pdf:
+        for page in pdf.pages:
+            # Stratégie 1 : détection par lignes visibles (tableaux avec bordures)
+            tables = page.extract_tables()
+            # Stratégie 2 : si rien trouvé, détection par alignement du texte
+            # (beaucoup de PDF réels n'ont pas de bordures visibles, juste
+            # des colonnes alignées visuellement)
+            if not tables:
+                logger.warning(
+                    "Aucune bordure de tableau détectée : tentative par "
+                    "alignement du texte, moins fiable (peut mal découper "
+                    "des colonnes ou des lignes) — vérifiez le résultat."
+                )
+                tables = page.extract_tables(
+                    table_settings={
+                        "vertical_strategy": "text",
+                        "horizontal_strategy": "text",
+                    }
+                )
+            for table in tables:
+                if not table:
+                    continue
+                table_df = pd.DataFrame(table)
+                score = max(
+                    _score_header_row(table_df.iloc[i]) for i in range(min(3, len(table_df)))
+                )
+                if score > best_score:
+                    best_rows, best_score = table, score
+
+    if best_rows is None:
+        raise IngestionError(
+            f"Aucun tableau détecté dans {path.name}. L'extraction de tableaux "
+            "PDF est fiable uniquement si le PDF contient une vraie grille "
+            "(pas une image scannée ni une mise en page libre)."
+        )
+
+    logger.info(f"Tableau PDF retenu (score={best_score}).")
+    max_cols = max(len(r) for r in best_rows)
+    rows = [list(r) + [None] * (max_cols - len(r)) for r in best_rows]
+    return pd.DataFrame(rows)
+
+
+# Extensions traitées nativement par _load_single_file (utilisé aussi par
+# _read_zip pour savoir quels fichiers internes tenter d'ouvrir).
+SUPPORTED_EXTENSIONS = [
+    ".csv", ".xlsx", ".xls", ".docx", ".txt", ".json", ".xml", ".html", ".htm",
+    ".ldif", ".pdf",
+]
+
+
+def _load_single_file(path: Path) -> pd.DataFrame:
+    """Charge un unique fichier (tous formats sauf .zip) et retourne un DataFrame standardisé."""
     logger.info(f"Lecture du fichier : {path.name}")
 
     header_already_named = False
+    suffix = path.suffix.lower()
 
-    if path.suffix.lower() in [".xlsx", ".xls"]:
+    if suffix in [".xlsx", ".xls"]:
         raw = pd.read_excel(path, header=None, sheet_name=0)
-    elif path.suffix.lower() == ".csv":
+    elif suffix == ".csv":
         raw = _read_ragged_csv(path)
-    elif path.suffix.lower() == ".docx":
+    elif suffix == ".docx":
         raw, header_already_named = _read_docx(path)
-    elif path.suffix.lower() == ".txt":
+    elif suffix == ".txt":
         raw, header_already_named = _read_txt(path)
+    elif suffix == ".json":
+        raw = _read_json(path)
+        header_already_named = True
+    elif suffix == ".xml":
+        raw = _read_xml(path)
+        header_already_named = True
+    elif suffix in [".html", ".htm"]:
+        raw = _read_html(path)
+    elif suffix == ".ldif":
+        raw = _read_ldif(path)
+        header_already_named = True
+    elif suffix == ".pdf":
+        raw = _read_pdf(path)
     else:
         raise IngestionError(
             f"Format de fichier non supporté : {path.suffix}. "
-            f"Formats acceptés : .csv, .xlsx, .xls, .docx, .txt"
+            f"Formats acceptés : {', '.join(SUPPORTED_EXTENSIONS)}, .zip"
         )
 
     if header_already_named:
-        # Les colonnes portent déjà leurs vrais noms (cas des blocs clé-valeur)
         df = raw.reset_index(drop=True)
     else:
         header_row_idx = _detect_header_row(raw)
@@ -376,6 +612,70 @@ def load_file(path: str | Path) -> pd.DataFrame:
 
     logger.info(f"Ingestion réussie : {len(df)} lignes, colonnes finales : {list(df.columns)}")
     return df
+
+
+def _read_zip(path: Path) -> pd.DataFrame:
+    """
+    Extrait une archive ZIP et traite chaque fichier supporté qu'elle
+    contient, puis concatène tous les résultats. Utile pour un export
+    mensuel regroupant plusieurs systèmes (un fichier par système) dans
+    une seule archive.
+
+    Les fichiers dans un format non supporté ou illisibles sont ignorés
+    avec un avertissement, plutôt que de faire échouer tout le traitement.
+    """
+    import zipfile
+    import tempfile
+
+    dfs = []
+    skipped = []
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir_path = Path(tmp_dir)
+        with zipfile.ZipFile(path) as zf:
+            zf.extractall(tmp_dir_path)
+
+        candidate_files = sorted(
+            p for p in tmp_dir_path.rglob("*")
+            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+            and not p.name.startswith(".") and "__MACOSX" not in str(p)
+        )
+
+        if not candidate_files:
+            raise IngestionError(
+                f"Aucun fichier de format supporté trouvé dans l'archive {path.name}."
+            )
+
+        for f in candidate_files:
+            try:
+                df = _load_single_file(f)
+                df["_source_file"] = f.name
+                dfs.append(df)
+            except IngestionError as e:
+                skipped.append((f.name, str(e)))
+                logger.warning(f"Fichier ignoré dans l'archive ({f.name}) : {e}")
+
+    if not dfs:
+        raise IngestionError(
+            f"Aucun fichier exploitable dans l'archive {path.name}. "
+            f"Fichiers trouvés mais ignorés : {[s[0] for s in skipped]}"
+        )
+
+    logger.info(f"{len(dfs)} fichier(s) traité(s) avec succès dans l'archive (sur {len(candidate_files)}).")
+    combined = pd.concat(dfs, ignore_index=True, sort=False)
+    return combined
+
+
+def load_file(path: str | Path) -> pd.DataFrame:
+    path = Path(path)
+    if not path.exists():
+        raise IngestionError(f"Fichier introuvable : {path}")
+
+    if path.suffix.lower() == ".zip":
+        logger.info(f"Lecture de l'archive : {path.name}")
+        return _read_zip(path)
+
+    return _load_single_file(path)
 
 
 if __name__ == "__main__":

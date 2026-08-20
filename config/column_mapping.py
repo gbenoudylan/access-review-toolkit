@@ -12,10 +12,12 @@ COLUMN_MAPPING = {
         "username", "user_id", "login", "identifiant", "compte", "account",
         "sam_account_name", "user_principal_name", "upn",
         "nom d'utilisateur", "nom utilisateur", "identifiant utilisateur",
+        "samaccountname", "uid",  # attributs LDAP/AD (LDIF)
     ],
     "full_name": [
         "full_name", "fullname", "nom_complet", "nom", "name", "display_name",
         "nom prenom", "employee_name",
+        "displayname", "givenname", "sn", "cn",  # LDAP
     ],
     "email": [
         "email", "e-mail", "mail", "adresse_email", "adresse mail",
@@ -23,6 +25,7 @@ COLUMN_MAPPING = {
     "department": [
         "department", "departement", "département", "service", "direction",
         "business_unit", "bu",
+        "departmentnumber", "ou",  # LDAP
     ],
     "job_title": [
         "job_title", "poste", "fonction", "title", "intitule_poste",
@@ -38,10 +41,12 @@ COLUMN_MAPPING = {
     "role": [
         "role", "permission", "access_level", "niveau_acces", "droit",
         "droits", "group", "groupe", "profil",
+        "memberof",  # LDAP : groupes d'appartenance
     ],
     "account_status": [
         "account_status", "status", "statut", "etat_compte", "compte_status",
         "account_enabled", "statut_compte", "statut compte", "etat du compte",
+        "useraccountcontrol",  # LDAP (décodé au parsing LDIF, voir ingestion)
     ],
     "is_privileged": [
         "is_privileged", "privileged", "admin", "is_admin", "compte_privilegie",
@@ -50,10 +55,12 @@ COLUMN_MAPPING = {
     "last_login_date": [
         "last_login_date", "last_login", "derniere_connexion",
         "date_derniere_connexion", "last_logon",
+        "lastlogontimestamp", "whenchanged",  # LDAP
     ],
     "account_created_date": [
         "account_created_date", "date_creation", "created_date", "creation_date",
         "date_creation_compte",
+        "whencreated",  # LDAP
     ],
     "employee_status": [
         "employee_status", "statut_employe", "hr_status", "statut_rh",

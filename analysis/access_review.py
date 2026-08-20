@@ -19,6 +19,7 @@ produire une liste priorisée plutôt qu'un simple export brut.
 
 from __future__ import annotations
 import logging
+import re
 from datetime import datetime
 
 import pandas as pd
@@ -33,6 +34,11 @@ TERMINATED_STATUS_VALUES = {
     "inactive", "inactif", "resigned", "démissionné",
 }
 PRIVILEGED_VALUES = {"oui", "yes", "true", "1", "admin", "administrateur"}
+
+# Format "Generalized Time" utilisé par LDAP/Active Directory pour les dates
+# (ex. whenChanged, whenCreated) : YYYYMMDDHHMMSS[.f]Z — non reconnu
+# automatiquement par le parseur de dates générique de pandas.
+_LDAP_GENERALIZED_TIME_RE = re.compile(r"^(\d{14})(\.\d+)?Z?$")
 
 
 def _is_active_account(value) -> bool:
@@ -54,9 +60,24 @@ def _is_privileged(value) -> bool:
 
 
 def _days_since(date_value) -> float | None:
-    """Retourne le nombre de jours écoulés depuis une date, ou None si non calculable."""
+    """
+    Retourne le nombre de jours écoulés depuis une date, ou None si non
+    calculable. Gère aussi le format de date LDAP/Active Directory
+    (Generalized Time, ex. '20260807120000.0Z'), non reconnu nativement
+    par le parseur de dates générique.
+    """
     if pd.isna(date_value) or date_value is None:
         return None
+
+    text_value = str(date_value).strip()
+    ldap_match = _LDAP_GENERALIZED_TIME_RE.match(text_value)
+    if ldap_match:
+        try:
+            parsed_dt = datetime.strptime(ldap_match.group(1), "%Y%m%d%H%M%S")
+            return (datetime.now() - parsed_dt).days
+        except ValueError:
+            return None
+
     try:
         parsed = pd.to_datetime(date_value, errors="coerce")
         if pd.isna(parsed):
