@@ -353,6 +353,9 @@ def generate_pdf_report(
     output_path: str | Path,
     period: str | None = None,
     dormant_threshold_days: int = 90,
+    prepared_by: str | None = None,
+    reviewed_by: str | None = None,
+    approved_by: str | None = None,
 ) -> Path:
     """
     Génère un rapport PDF de revue d'accès structuré et réutilisable d'un
@@ -363,6 +366,10 @@ def generate_pdf_report(
     en-tête du rapport ; par défaut, le trimestre courant est déduit
     automatiquement, pour que la fonction reste utilisable telle quelle à
     chaque exécution sans argument supplémentaire.
+
+    `prepared_by`, `reviewed_by`, `approved_by` : noms affichés dans le
+    tableau de validation en fin de rapport. Laissés vides, ils affichent
+    un espace à remplir à la main plutôt que de faire échouer la génération.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -394,6 +401,46 @@ def generate_pdf_report(
         Paragraph(f"Période : {period_label} — généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", subtitle_style),
         Spacer(1, 0.5 * cm),
     ]
+
+    # ---- Objectifs (standards génériques d'une revue d'accès, valables
+    # quel que soit le système ou l'entreprise concernée) ----
+    elements.append(Paragraph("Objectifs", section_style))
+    elements.append(Paragraph(
+        "Cette revue vise à s'assurer que les comptes existants respectent les "
+        "critères de sécurité attendus, notamment :",
+        note_style,
+    ))
+    objectives = [
+        "Absence de comptes non documentés ou non autorisés.",
+        "Cohérence des privilèges accordés avec le besoin réel.",
+        "Identification et traitement des comptes inactifs ou orphelins.",
+        "Accès restreints de façon à limiter le risque de compromission.",
+    ]
+    for obj in objectives:
+        elements.append(Paragraph(f"•&nbsp;&nbsp;{obj}", note_style))
+    elements.append(Spacer(1, 0.2 * cm))
+
+    # ---- Procédure (méthodologie standard, en 4 étapes) ----
+    elements.append(Paragraph("Procédure", section_style))
+    procedure_steps = [
+        "Collecte de la liste des comptes et des journaux d'activité auprès des équipes concernées.",
+        "Revue des accès et des événements au regard des objectifs ci-dessus.",
+        "Constitution du rapport des exceptions.",
+        "Validation du rapport et clôture des exceptions.",
+    ]
+    for i, step in enumerate(procedure_steps, 1):
+        elements.append(Paragraph(f"{i}. {step}", note_style))
+    elements.append(Spacer(1, 0.2 * cm))
+
+    # ---- Scope (dérivé des données réelles, pas déclaratif) ----
+    elements.append(Paragraph("Périmètre (Scope)", section_style))
+    if "system" in df.columns:
+        systems_in_scope = sorted(df["system"].dropna().unique().tolist())
+        scope_text = ", ".join(systems_in_scope) if systems_in_scope else "Non renseigné"
+    else:
+        scope_text = "Non renseigné (colonne 'system' absente)"
+    elements.append(Paragraph(f"Systèmes couverts par cette revue : {scope_text}.", note_style))
+    elements.append(Spacer(1, 0.3 * cm))
 
     # ---- Méthodologie (courte, pour rappeler le seuil appliqué) ----
     elements.append(Paragraph(
@@ -464,6 +511,27 @@ def generate_pdf_report(
     else:
         elements.append(Paragraph("Détail des comptes (triés par risque)", system_style))
         elements.append(_risk_styled_table(export_df_full, available_width))
+
+    # ---- Sign-off (validation) ----
+    elements.append(Paragraph("Validation", section_style))
+    placeholder = "[À compléter]"
+    signoff_data = [
+        ["Rôle", "Nom", "Date"],
+        ["Préparé par", prepared_by or placeholder, datetime.now().strftime("%d/%m/%Y")],
+        ["Revu par", reviewed_by or placeholder, ""],
+        ["Approuvé par", approved_by or placeholder, ""],
+    ]
+    signoff_table = Table(signoff_data, colWidths=[5 * cm, 8 * cm, 4 * cm])
+    signoff_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(signoff_table)
 
     doc.build(elements)
     logger.info(f"Rapport PDF généré ({period_label}) : {output_path}")

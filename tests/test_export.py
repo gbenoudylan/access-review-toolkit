@@ -83,3 +83,27 @@ def test_pdf_report_handles_missing_values_without_crashing():
     output = generate_pdf_report(result, "output/test_missing_values.pdf")
     assert output.exists()
     print("OK - test_pdf_report_handles_missing_values_without_crashing")
+
+
+def test_pdf_report_includes_signoff_names_when_provided():
+    """Les noms de validation fournis doivent apparaître dans le PDF généré."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    df = pd.DataFrame({"username": ["jdupont"], "system": ["Active Directory"]})
+    result = analyze_access(df)
+    output = generate_pdf_report(
+        result, "output/test_signoff.pdf",
+        prepared_by="Test Preparateur", reviewed_by="Test Revu", approved_by="Test Approuve",
+    )
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "Test Preparateur" in full_text
+    assert "Test Revu" in full_text
+    assert "Test Approuve" in full_text
+    assert "Objectifs" in full_text
+    assert "Procédure" in full_text
+    assert "Périmètre" in full_text
+    print("OK - test_pdf_report_includes_signoff_names_when_provided")

@@ -241,6 +241,15 @@ def main():
              "sans modifier le code.",
     )
 
+    with st.expander("Validation (sign-off) — optionnel"):
+        signoff_col1, signoff_col2, signoff_col3 = st.columns(3)
+        with signoff_col1:
+            prepared_by = st.text_input("Préparé par", placeholder="Nom, Prénom")
+        with signoff_col2:
+            reviewed_by = st.text_input("Revu par", placeholder="Nom, Prénom")
+        with signoff_col3:
+            approved_by = st.text_input("Approuvé par", placeholder="Nom, Prénom")
+
     report_col1, report_col2 = st.columns(2)
     with report_col1:
         if st.button("Générer le rapport Excel", use_container_width=True):
@@ -258,7 +267,12 @@ def main():
         if st.button("Générer le rapport PDF", use_container_width=True):
             with st.spinner("Génération..."):
                 tmp_pdf = Path(tempfile.gettempdir()) / "rapport_revue_acces.pdf"
-                generate_pdf_report(filtered, tmp_pdf, period=period_label or None)
+                generate_pdf_report(
+                    filtered, tmp_pdf, period=period_label or None,
+                    prepared_by=prepared_by or None,
+                    reviewed_by=reviewed_by or None,
+                    approved_by=approved_by or None,
+                )
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(
                 "⬇️ Télécharger le rapport PDF", data=buf.getvalue(),
