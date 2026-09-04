@@ -9,11 +9,19 @@ exports RH, ServiceNow IGA, etc.).
 
 COLUMN_MAPPING = {
     "username": [
-        "username", "user_id", "login", "identifiant", "compte", "account",
+        "username", "login", "identifiant", "compte", "account",
         "sam_account_name", "user_principal_name", "upn",
         "nom d'utilisateur", "nom utilisateur", "identifiant utilisateur",
         "samaccountname", "uid",  # attributs LDAP/AD (LDIF)
         "sam account name", "logon name", "user logon name",  # variantes espacées (exports AD)
+    ],
+    "user_id": [
+        # Distinct du nom de connexion : souvent un identifiant employé/
+        # matricule interne (numérique ou non), utilisé pour le
+        # rapprochement avec les systèmes RH plutôt que pour se connecter.
+        "user_id", "employee_id", "matricule", "id_employe", "staff_id",
+        "badge_number", "numero_employe", "employee number", "staff id",
+        "id employe", "matricule employe",
     ],
     "full_name": [
         "full_name", "fullname", "nom_complet", "nom", "name", "display_name",

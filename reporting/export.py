@@ -35,8 +35,48 @@ RISK_COLORS_HEX = {
     "Faible": "2CA02C",
 }
 
+# Formulation générique associée à chaque action recommandée, pour la
+# section narrative "Rapport des exceptions" — inspirée des standards du
+# secteur (revue trimestrielle des accès), jamais copiée d'un document
+# précis : ces recommandations sont volontairement génériques pour rester
+# valables quelle que soit l'entreprise ou le système concerné.
+ACTION_NARRATIVE = {
+    "Révoquer immédiatement": (
+        "Ces comptes restent actifs alors que la personne associée a quitté "
+        "l'entreprise. Action recommandée : révocation immédiate des accès."
+    ),
+    "Désactiver (privilégié dormant)": (
+        "Ces comptes disposent de privilèges élevés et n'ont enregistré aucune "
+        "connexion depuis le seuil de dormance retenu. Action recommandée : "
+        "désactivation, le niveau d'accès concerné justifie une vigilance "
+        "renforcée."
+    ),
+    "Forcer l'expiration du mot de passe (privilégié)": (
+        "Ces comptes à privilèges élevés ont un mot de passe configuré pour "
+        "ne jamais expirer. Action recommandée : appliquer une politique "
+        "d'expiration standard, et documenter toute exception justifiée "
+        "(compte de service avec surveillance dédiée)."
+    ),
+    "Désactiver (dormant)": (
+        "Ces comptes n'ont enregistré aucune connexion depuis le seuil de "
+        "dormance retenu. Action recommandée : vérifier auprès du "
+        "propriétaire métier, puis désactiver si l'usage n'est plus justifié."
+    ),
+    "Exiger un changement de mot de passe": (
+        "Le mot de passe de ces comptes n'a pas été renouvelé depuis le seuil "
+        "retenu. Action recommandée : forcer le changement à la prochaine "
+        "connexion."
+    ),
+    "Identifier un owner": (
+        "Aucun manager ou propriétaire métier n'est identifié pour ces "
+        "comptes. Action recommandée : désigner un responsable chargé de "
+        "valider la légitimité de l'accès."
+    ),
+}
+
 DISPLAY_COLUMNS = [
     ("username", "Compte"),
+    ("user_id", "ID employé"),
     ("full_name", "Nom"),
     ("department", "Département"),
     ("system", "Système"),
@@ -164,11 +204,63 @@ def _current_quarter_label() -> str:
     return f"T{quarter} {now.year}"
 
 
-def _risk_styled_table(export_df: pd.DataFrame, col_widths=None) -> Table:
+# Poids relatifs de largeur par colonne (les colonnes non listées ont un
+# poids par défaut de 1.0). "Action recommandée" et "Nom" sont plus larges
+# car elles contiennent le texte le plus long — sans ça, ReportLab
+# dimensionne les colonnes selon leur seul contenu, sans jamais tenir
+# compte de la largeur réelle de la page, d'où un tableau qui déborde.
+COLUMN_WIDTH_WEIGHTS = {
+    "Compte": 1.1,
+    "Nom": 1.4,
+    "Département": 1.0,
+    "Système": 1.0,
+    "Manager": 1.0,
+    "Statut compte": 0.9,
+    "Statut RH": 0.9,
+    "Jours sans connexion": 0.9,
+    "Jours sans changement MDP": 1.1,
+    "Privilégié": 0.7,
+    "MDP n'expire jamais": 1.0,
+    "Action recommandée": 2.2,
+    "Risque": 0.8,
+}
+# Colonnes dont le texte doit pouvoir revenir à la ligne plutôt que
+# déborder ou être tronqué.
+WRAP_COLUMNS = {"Nom", "Système", "Action recommandée"}
+
+
+def _compute_column_widths(columns: list[str], available_width: float) -> list[float]:
+    weights = [COLUMN_WIDTH_WEIGHTS.get(col, 1.0) for col in columns]
+    total_weight = sum(weights)
+    return [available_width * w / total_weight for w in weights]
+
+
+def _risk_styled_table(export_df: pd.DataFrame, available_width: float) -> Table:
     """Construit une table stylée (en-tête sombre, lignes alternées, cellule
-    Risque colorée) à partir d'un DataFrame déjà préparé pour l'export."""
-    table_data = [list(export_df.columns)] + export_df.astype(str).values.tolist()
-    table = Table(table_data, repeatRows=1, colWidths=col_widths)
+    Risque colorée), avec des largeurs de colonnes proportionnelles à la
+    largeur réelle de la page plutôt qu'au seul contenu, et un retour à la
+    ligne automatique — sur les en-têtes ET sur les colonnes de texte long
+    (sans quoi un libellé de colonne trop long déborde silencieusement sur
+    la colonne voisine plutôt que de simplement passer à la ligne)."""
+    cell_style = ParagraphStyle("Cell", fontSize=7.5, leading=9, fontName="Helvetica")
+    header_style = ParagraphStyle(
+        "CellHeader", fontSize=7.5, leading=9, fontName="Helvetica-Bold", textColor=colors.white,
+    )
+    columns = list(export_df.columns)
+    col_widths = _compute_column_widths(columns, available_width)
+
+    header_row = [Paragraph(str(col), header_style) for col in columns]
+    data_rows = []
+    for record in export_df.astype(str).values.tolist():
+        row = []
+        for col_name, value in zip(columns, record):
+            if col_name in WRAP_COLUMNS:
+                row.append(Paragraph(value, cell_style))
+            else:
+                row.append(value)
+        data_rows.append(row)
+
+    table = Table([header_row] + data_rows, repeatRows=1, colWidths=col_widths)
 
     style_commands = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
@@ -177,10 +269,12 @@ def _risk_styled_table(export_df: pd.DataFrame, col_widths=None) -> Table:
         ("FONTSIZE", (0, 0), (-1, -1), 7.5),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9F9F9")]),
     ]
     if "Risque" in export_df.columns:
-        risk_col_idx = list(export_df.columns).index("Risque")
+        risk_col_idx = columns.index("Risque")
         for row_idx, risk_value in enumerate(export_df["Risque"], 1):
             hex_color = RISK_COLORS_HEX.get(risk_value)
             if hex_color:
@@ -193,6 +287,46 @@ def _risk_styled_table(export_df: pd.DataFrame, col_widths=None) -> Table:
                 ))
     table.setStyle(TableStyle(style_commands))
     return table
+
+
+def _build_exceptions_section(df: pd.DataFrame, section_style, exception_style, action_style) -> list:
+    """
+    Construit la section narrative "Rapport des exceptions" : les comptes
+    signalés sont regroupés par (système, action recommandée), puis
+    numérotés "Exception N : ... Action : ...", au format d'un rapport
+    d'audit classique — plutôt que le tableau brut de la section suivante.
+    """
+    elements = [Paragraph("Rapport des exceptions", section_style)]
+
+    if "system" not in df.columns or "review_action" not in df.columns:
+        elements.append(Paragraph(
+            "Champs insuffisants pour générer le rapport des exceptions "
+            "(système et action recommandée requis).",
+            action_style,
+        ))
+        return elements
+
+    flagged = df[df["review_action"] != "Aucune action"]
+    if flagged.empty:
+        elements.append(Paragraph("Aucune exception à signaler sur ce cycle.", action_style))
+        return elements
+
+    counter = 1
+    for system_name, system_group in flagged.groupby("system"):
+        for action, action_group in system_group.groupby("review_action"):
+            count = len(action_group)
+            elements.append(Paragraph(
+                f"<b>Exception {counter} — {system_name} :</b> {count} compte(s) "
+                f"avec le statut « {action} ».",
+                exception_style,
+            ))
+            narrative = ACTION_NARRATIVE.get(
+                action, "Action recommandée : voir le détail par système ci-dessous."
+            )
+            elements.append(Paragraph(narrative, action_style))
+            counter += 1
+
+    return elements
 
 
 def generate_pdf_report(
@@ -219,6 +353,7 @@ def generate_pdf_report(
         str(output_path), pagesize=landscape(A4),
         topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.5 * cm, rightMargin=1.5 * cm,
     )
+    available_width = doc.pagesize[0] - doc.leftMargin - doc.rightMargin
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("TitleCustom", parent=styles["Title"], fontSize=18, spaceAfter=4)
     subtitle_style = ParagraphStyle("Subtitle", parent=styles["Normal"], fontSize=10, textColor=colors.grey)
@@ -228,6 +363,12 @@ def generate_pdf_report(
         spaceBefore=12, spaceAfter=4,
     )
     note_style = ParagraphStyle("Note", parent=styles["Normal"], fontSize=8.5, textColor=colors.grey, spaceAfter=10)
+    exception_style = ParagraphStyle(
+        "Exception", parent=styles["Normal"], fontSize=9.5, spaceBefore=8, spaceAfter=2,
+    )
+    action_style = ParagraphStyle(
+        "ActionText", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#374151"), spaceAfter=4,
+    )
 
     elements = [
         Paragraph("Rapport de revue d'accès", title_style),
@@ -283,9 +424,12 @@ def generate_pdf_report(
             section_style,
         ))
         if len(priority_df):
-            elements.append(_risk_styled_table(priority_df))
+            elements.append(_risk_styled_table(priority_df, available_width))
         else:
             elements.append(Paragraph("Aucun compte en risque Critique ou Élevé sur ce cycle.", styles["Normal"]))
+
+    # ---- Rapport des exceptions (narratif, format audit classique) ----
+    elements.extend(_build_exceptions_section(df, section_style, exception_style, action_style))
 
     # ---- Détail par système ----
     elements.append(Paragraph("Détail par système", section_style))
@@ -294,11 +438,11 @@ def generate_pdf_report(
         for system_name in systems:
             system_df = export_df_full[export_df_full["Système"] == system_name]
             elements.append(Paragraph(f"{system_name} — {len(system_df)} compte(s)", system_style))
-            elements.append(_risk_styled_table(system_df))
+            elements.append(_risk_styled_table(system_df, available_width))
             elements.append(Spacer(1, 0.4 * cm))
     else:
         elements.append(Paragraph("Détail des comptes (triés par risque)", system_style))
-        elements.append(_risk_styled_table(export_df_full))
+        elements.append(_risk_styled_table(export_df_full, available_width))
 
     doc.build(elements)
     logger.info(f"Rapport PDF généré ({period_label}) : {output_path}")

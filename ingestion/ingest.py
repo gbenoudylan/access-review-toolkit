@@ -30,6 +30,28 @@ class IngestionError(Exception):
     """Erreur levée quand un fichier ne peut pas être exploité de façon fiable."""
 
 
+def _detect_encoding(path: Path) -> str:
+    """
+    Détecte l'encodage texte d'un fichier plutôt que d'imposer l'UTF-8.
+
+    Beaucoup d'exports réels (notamment depuis Excel ou des outils Windows)
+    sont en Windows-1252/Latin-1, pas en UTF-8 — les lire en UTF-8 strict
+    échoue ou corrompt les caractères accentués. On essaie plusieurs
+    encodages courants dans l'ordre et on garde le premier qui décode le
+    fichier sans erreur ; Latin-1 en dernier recours ne lève jamais
+    d'erreur (il associe un caractère à chaque octet), donc la fonction
+    retourne toujours un encodage utilisable.
+    """
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            raw.decode(encoding)
+            return encoding
+        except UnicodeDecodeError:
+            continue
+    return "latin-1"  # filet de sécurité théorique, jamais atteint en pratique
+
+
 def _normalize(text: str) -> str:
     return str(text).strip().lower().replace("_", " ").replace("-", " ")
 
@@ -136,7 +158,7 @@ def validate_required_fields(df: pd.DataFrame, required_fields: list = None) -> 
 
 def _read_ragged_csv(path: Path) -> pd.DataFrame:
     import csv
-    with open(path, newline="", encoding="utf-8-sig") as f:
+    with open(path, newline="", encoding=_detect_encoding(path)) as f:
         sample = f.read(4096)
         f.seek(0)
         try:
@@ -260,7 +282,7 @@ def _read_txt(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, bo
     si les colonnes du DataFrame ont déjà leurs vrais noms (cas des blocs
     clé-valeur) ou si une détection d'en-tête classique reste à faire.
     """
-    with open(path, encoding="utf-8-sig", errors="replace") as f:
+    with open(path, encoding=_detect_encoding(path), errors="replace") as f:
         raw_text = f.read()
 
     lines = [l for l in raw_text.splitlines()]
@@ -306,24 +328,48 @@ def _read_docx(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, b
     doc = Document(str(path))
 
     if doc.tables:
-        best_table_rows, best_score = None, -1
+        # Un document peut contenir plusieurs tableaux légitimes (ex. un
+        # par système/application, comme dans un rapport d'audit multi-
+        # systèmes). Ne garder que "le meilleur" en perdrait silencieusement
+        # tous les autres. On repère d'abord la ligne d'en-tête de référence
+        # (meilleur score), puis on concatène tous les tableaux dont le
+        # nombre de colonnes correspond — en excluant les répétitions
+        # d'en-tête plutôt que de les traiter comme des données.
+        best_header_row, best_score, ref_ncols = None, -1, None
+        all_table_rows = []
         for table in doc.tables:
             rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
             if not rows:
                 continue
+            all_table_rows.append(rows)
             table_df = pd.DataFrame(rows)
-            score = max(_score_header_row(table_df.iloc[i], column_mapping) for i in range(min(3, len(table_df))))
-            if score > best_score:
-                best_table_rows, best_score = rows, score
+            for i in range(min(3, len(table_df))):
+                score = _score_header_row(table_df.iloc[i], column_mapping)
+                if score > best_score:
+                    best_score = score
+                    best_header_row = rows[i]
+                    ref_ncols = len(rows[i])
 
-        if best_table_rows is not None:
+        if best_header_row is not None:
+            combined_rows = []
+            for rows in all_table_rows:
+                for row in rows:
+                    if len(row) != ref_ncols:
+                        continue
+                    row_score = _score_header_row(pd.Series(row), column_mapping)
+                    if row_score >= best_score * 0.9:
+                        continue  # répétition de l'en-tête dans un autre tableau
+                    combined_rows.append(row)
+
             logger.info(
                 f"{len(doc.tables)} tableau(x) détecté(s) dans le document, "
-                f"le plus pertinent a été retenu (score={best_score})."
+                f"{len(combined_rows)} ligne(s) de données assemblées "
+                f"(en-tête score={best_score})."
             )
-            max_cols = max(len(r) for r in best_table_rows)
-            rows = [r + [None] * (max_cols - len(r)) for r in best_table_rows]
-            return pd.DataFrame(rows), False
+            final_rows = [best_header_row] + combined_rows
+            max_cols = max(len(r) for r in final_rows)
+            final_rows = [r + [None] * (max_cols - len(r)) for r in final_rows]
+            return pd.DataFrame(final_rows), False
 
     # Aucun tableau exploitable : on retombe sur le texte des paragraphes
     logger.info("Aucun tableau exploitable — tentative de lecture en texte libre.")
@@ -352,20 +398,6 @@ def _read_docx(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, b
     )
 
 
-def _read_ragged_csv(path: Path) -> pd.DataFrame:
-    import csv
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        sample = f.read(4096)
-        f.seek(0)
-        try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
-        except csv.Error:
-            dialect = csv.excel
-        rows = list(csv.reader(f, dialect))
-    max_cols = max(len(r) for r in rows) if rows else 0
-    rows = [r + [None] * (max_cols - len(r)) for r in rows]
-    return pd.DataFrame(rows)
-
 
 def _read_json(path: Path) -> pd.DataFrame:
     """
@@ -377,7 +409,7 @@ def _read_json(path: Path) -> pd.DataFrame:
     """
     import json
 
-    with open(path, encoding="utf-8-sig") as f:
+    with open(path, encoding=_detect_encoding(path)) as f:
         data = json.load(f)
 
     if isinstance(data, list):
@@ -470,7 +502,7 @@ def _read_ldif(path: Path) -> pd.DataFrame:
     (pas un statut texte). On le décode ici pour en tirer directement un
     statut Active/Disabled exploitable par le reste du pipeline.
     """
-    with open(path, encoding="utf-8-sig", errors="replace") as f:
+    with open(path, encoding=_detect_encoding(path), errors="replace") as f:
         raw_text = f.read()
 
     # Les lignes de continuation LDIF commencent par un espace : elles
@@ -529,10 +561,16 @@ def _read_ldif(path: Path) -> pd.DataFrame:
 
 def _read_pdf(path: Path, column_mapping: dict = None) -> pd.DataFrame:
     """
-    Extrait un tableau depuis un PDF. Moins fiable que les autres formats
-    (mise en page PDF non garantie), donc on prend le tableau le plus
-    riche trouvé sur l'ensemble des pages plutôt que de se limiter à la
-    première page.
+    Extrait un tableau depuis un PDF, sur l'ensemble de ses pages.
+
+    Un tableau réel s'étale très souvent sur plusieurs pages (un export de
+    800 lignes ne tient jamais sur une seule page) : l'en-tête n'apparaît
+    en général qu'une fois, en haut de la première page, parfois répété en
+    haut de chaque page suivante. On identifie d'abord la page contenant le
+    véritable en-tête (meilleur score de reconnaissance de colonnes), puis
+    on concatène les lignes de TOUTES les pages dont le nombre de colonnes
+    correspond à ce même tableau — en ignorant les répétitions de l'en-tête
+    sur les pages suivantes plutôt que de les traiter comme des données.
     """
     try:
         import pdfplumber
@@ -542,17 +580,13 @@ def _read_pdf(path: Path, column_mapping: dict = None) -> pd.DataFrame:
             "Installez-la avec : pip install pdfplumber"
         ) from e
 
-    best_rows, best_score = None, -1
+    all_tables = []  # toutes les tables trouvées, toutes pages confondues, dans l'ordre
     with pdfplumber.open(str(path)) as pdf:
         for page in pdf.pages:
-            # Stratégie 1 : détection par lignes visibles (tableaux avec bordures)
             tables = page.extract_tables()
-            # Stratégie 2 : si rien trouvé, détection par alignement du texte
-            # (beaucoup de PDF réels n'ont pas de bordures visibles, juste
-            # des colonnes alignées visuellement)
             if not tables:
                 logger.warning(
-                    "Aucune bordure de tableau détectée : tentative par "
+                    "Aucune bordure de tableau détectée sur une page : tentative par "
                     "alignement du texte, moins fiable (peut mal découper "
                     "des colonnes ou des lignes) — vérifiez le résultat."
                 )
@@ -562,26 +596,56 @@ def _read_pdf(path: Path, column_mapping: dict = None) -> pd.DataFrame:
                         "horizontal_strategy": "text",
                     }
                 )
-            for table in tables:
-                if not table:
-                    continue
-                table_df = pd.DataFrame(table)
-                score = max(
-                    _score_header_row(table_df.iloc[i], column_mapping) for i in range(min(3, len(table_df)))
-                )
-                if score > best_score:
-                    best_rows, best_score = table, score
+            all_tables.extend(t for t in tables if t)
 
-    if best_rows is None:
+    if not all_tables:
         raise IngestionError(
             f"Aucun tableau détecté dans {path.name}. L'extraction de tableaux "
             "PDF est fiable uniquement si le PDF contient une vraie grille "
             "(pas une image scannée ni une mise en page libre)."
         )
 
-    logger.info(f"Tableau PDF retenu (score={best_score}).")
-    max_cols = max(len(r) for r in best_rows)
-    rows = [list(r) + [None] * (max_cols - len(r)) for r in best_rows]
+    # 1) Repérer la ligne d'en-tête de référence : le meilleur score, tous
+    #    tableaux/pages confondus.
+    best_header_row, best_score, ref_ncols = None, -1, None
+    for table in all_tables:
+        table_df = pd.DataFrame(table)
+        for i in range(min(3, len(table_df))):
+            score = _score_header_row(table_df.iloc[i], column_mapping)
+            if score > best_score:
+                best_score = score
+                best_header_row = table[i]
+                ref_ncols = len(table[i])
+
+    if best_header_row is None:
+        raise IngestionError(
+            f"Aucun en-tête reconnaissable dans les tableaux de {path.name}."
+        )
+
+    # 2) Concaténer les lignes de TOUTES les pages ayant le même nombre de
+    #    colonnes que la référence (les petits tableaux annexes, type
+    #    bloc de signature, ont généralement un nombre de colonnes
+    #    différent et sont donc naturellement exclus). On saute les lignes
+    #    qui ressemblent fortement à une répétition de l'en-tête (score
+    #    proche du meilleur score) plutôt que de les garder comme données.
+    combined_rows = []
+    for table in all_tables:
+        for row in table:
+            if len(row) != ref_ncols:
+                continue
+            row_score = _score_header_row(pd.Series(row), column_mapping)
+            if row_score >= best_score * 0.9:
+                continue  # répétition de l'en-tête sur cette page, pas une donnée
+            combined_rows.append(row)
+
+    logger.info(
+        f"Tableau PDF assemblé sur {len(all_tables)} fragment(s) de page(s) : "
+        f"{len(combined_rows)} ligne(s) de données (en-tête score={best_score})."
+    )
+
+    rows = [best_header_row] + combined_rows
+    max_cols = max(len(r) for r in rows)
+    rows = [list(r) + [None] * (max_cols - len(r)) for r in rows]
     return pd.DataFrame(rows)
 
 

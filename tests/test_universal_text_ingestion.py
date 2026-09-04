@@ -176,3 +176,26 @@ def test_duplicate_mapped_columns_are_merged_not_duplicated():
     assert len(result.columns) == len(set(result.columns)), "Colonnes dupliquées détectées"
     assert list(result["username"]) == ["jdupont", "kbrou"]
     print("OK - test_duplicate_mapped_columns_are_merged_not_duplicated")
+
+
+def test_username_and_user_id_stay_separate():
+    """
+    'username' (nom de connexion) et 'user_id' (identifiant employé/
+    matricule) sont deux informations distinctes : elles ne doivent pas
+    être fusionnées en un seul champ, contrairement aux vraies variantes
+    d'un même champ (ex. SAM Account Name / Logon Name).
+    """
+    import pandas as pd
+    from ingestion.ingest import standardize_columns
+
+    df = pd.DataFrame({
+        "SAM Account Name": ["jdupont"],
+        "Employee ID": ["EMP-4821"],
+        "Display Name": ["Jean Dupont"],
+    })
+    result = standardize_columns(df)
+    assert "username" in result.columns
+    assert "user_id" in result.columns
+    assert result.loc[0, "username"] == "jdupont"
+    assert result.loc[0, "user_id"] == "EMP-4821"
+    print("OK - test_username_and_user_id_stay_separate")
