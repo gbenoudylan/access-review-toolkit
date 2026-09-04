@@ -199,3 +199,32 @@ def test_username_and_user_id_stay_separate():
     assert result.loc[0, "username"] == "jdupont"
     assert result.loc[0, "user_id"] == "EMP-4821"
     print("OK - test_username_and_user_id_stay_separate")
+
+
+def test_server_export_headers_recognized():
+    """
+    En-têtes d'un export serveur/Linux (User, Sudo Privileges, Assigned
+    User Roles, Last Password Reset Date) — un contexte différent des
+    exports Active Directory déjà couverts, avec un vocabulaire propre.
+    """
+    from ingestion.ingest import _match_column
+
+    assert _match_column("User") == "username"
+    assert _match_column("Sudo Privileges") == "is_privileged"
+    assert _match_column("Assigned User Roles") == "role"
+    assert _match_column("Last Password Reset Date") == "password_last_set"
+    print("OK - test_server_export_headers_recognized")
+
+
+def test_user_variant_does_not_break_user_id_mapping():
+    """
+    Ajouter 'user' comme variante de username ne doit pas faire dévier
+    'user_id'/'User ID'/'Employee ID' vers 'username' par accident — la
+    correspondance exacte sur son propre champ doit toujours l'emporter.
+    """
+    from ingestion.ingest import _match_column
+
+    assert _match_column("user_id") == "user_id"
+    assert _match_column("User ID") == "user_id"
+    assert _match_column("Employee ID") == "user_id"
+    print("OK - test_user_variant_does_not_break_user_id_mapping")

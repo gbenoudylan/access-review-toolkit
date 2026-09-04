@@ -9,7 +9,7 @@ exports RH, ServiceNow IGA, etc.).
 
 COLUMN_MAPPING = {
     "username": [
-        "username", "login", "identifiant", "compte", "account",
+        "username", "login", "identifiant", "compte", "account", "user",
         "sam_account_name", "user_principal_name", "upn",
         "nom d'utilisateur", "nom utilisateur", "identifiant utilisateur",
         "samaccountname", "uid",  # attributs LDAP/AD (LDIF)
@@ -52,6 +52,7 @@ COLUMN_MAPPING = {
         "role", "permission", "access_level", "niveau_acces", "droit",
         "droits", "group", "groupe", "profil",
         "memberof",  # LDAP : groupes d'appartenance
+        "assigned user roles", "user roles", "assigned roles",  # variantes espacées
     ],
     "account_status": [
         "account_status", "status", "statut", "etat_compte", "compte_status",
@@ -60,7 +61,7 @@ COLUMN_MAPPING = {
     ],
     "is_privileged": [
         "is_privileged", "privileged", "admin", "is_admin", "compte_privilegie",
-        "acces_privilegie",
+        "acces_privilegie", "sudo privileges", "sudo", "root access",  # exports serveurs Linux/Unix
     ],
     "last_login_date": [
         "last_login_date", "last_login", "derniere_connexion",
@@ -84,6 +85,7 @@ COLUMN_MAPPING = {
     "password_last_set": [
         "password_last_set", "password last set", "derniere_modif_mdp",
         "dernier changement mot de passe", "pwdlastset",
+        "last password reset date", "password reset date",  # variantes espacées
     ],
     "password_expiry_date": [
         "password_expiry_date", "password expiry date", "expiration_mdp",
