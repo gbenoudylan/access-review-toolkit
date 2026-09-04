@@ -117,3 +117,40 @@ if __name__ == "__main__":
         test_txt_unreadable_raises_clear_error(tmp_path)
         test_docx_freetext_keyvalue(tmp_path)
     print("\nTous les tests sont passés.")
+
+
+def test_missing_system_column_falls_back_to_filename():
+    """
+    Un export brut d'un seul système (ex. extraction AD pure) sans colonne
+    'system' ne doit plus faire échouer l'ingestion : le nom du fichier
+    sert de repli automatique.
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "SAM Account Name,Display Name,Account Status\nadmin_test,Compte Test,Active\n"
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".csv", delete=False, prefix="ActiveDirectory_export_"
+    ) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    df = load_file(tmp_path)
+    assert "system" in df.columns
+    assert df.loc[0, "system"] == Path(tmp_path).stem
+    print(f"OK - test_missing_system_column_falls_back_to_filename (system={df.loc[0, 'system']!r})")
+
+
+def test_missing_system_column_uses_explicit_default():
+    """Un nom de système fourni explicitement prime sur le nom de fichier."""
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "SAM Account Name,Display Name,Account Status\nadmin_test,Compte Test,Active\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    df = load_file(tmp_path, default_system="Active Directory")
+    assert df.loc[0, "system"] == "Active Directory"
+    print("OK - test_missing_system_column_uses_explicit_default")

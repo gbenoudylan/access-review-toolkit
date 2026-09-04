@@ -35,12 +35,13 @@ DECISIONS_STORE_PATH = Path(__file__).parent.parent / "data" / "review_decisions
 def run_pipeline(
     file_bytes: bytes, filename: str,
     hr_file_bytes: bytes = None, hr_filename: str = None,
+    default_system: str = None,
 ) -> pd.DataFrame:
     suffix = Path(filename).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
-    df = load_file(tmp_path)
+    df = load_file(tmp_path, default_system=default_system or None)
 
     if hr_file_bytes is not None:
         hr_suffix = Path(hr_filename).suffix
@@ -71,6 +72,14 @@ def main():
                  "(export LDAP/AD), PDF, ou une archive ZIP contenant "
                  "plusieurs de ces fichiers.",
         )
+        default_system = st.text_input(
+            "Nom du système (si absent du fichier)",
+            placeholder="ex. Active Directory, SIEM, CRM...",
+            help="Certains exports bruts (ex. extraction AD pure) ne "
+                 "précisent pas eux-mêmes de quel système ils viennent. "
+                 "Renseigne un nom ici s'il manque — sinon, le nom du "
+                 "fichier sera utilisé par défaut.",
+        )
         use_sample = False
         if uploaded_file is None:
             use_sample = st.checkbox("Utiliser un fichier d'exemple", value=True)
@@ -98,7 +107,10 @@ def main():
             with st.spinner("Traitement du fichier..."):
                 hr_bytes = hr_uploaded_file.getvalue() if hr_uploaded_file else None
                 hr_name = hr_uploaded_file.name if hr_uploaded_file else None
-                df = run_pipeline(uploaded_file.getvalue(), uploaded_file.name, hr_bytes, hr_name)
+                df = run_pipeline(
+                    uploaded_file.getvalue(), uploaded_file.name, hr_bytes, hr_name,
+                    default_system=default_system,
+                )
         elif use_sample:
             sample_path = Path(__file__).parent.parent / "data" / "export_test_A.csv"
             with st.spinner("Traitement du fichier d'exemple..."):

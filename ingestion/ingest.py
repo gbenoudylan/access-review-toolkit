@@ -569,7 +569,8 @@ SUPPORTED_EXTENSIONS = [
 
 
 def _load_single_file(
-    path: Path, column_mapping: dict = None, required_fields: list = None
+    path: Path, column_mapping: dict = None, required_fields: list = None,
+    default_system: str | None = None,
 ) -> pd.DataFrame:
     """Charge un unique fichier (tous formats sauf .zip) et retourne un DataFrame standardisé."""
     logger.info(f"Lecture du fichier : {path.name}")
@@ -613,6 +614,21 @@ def _load_single_file(
         df = df.dropna(how="all").reset_index(drop=True)
 
     df = standardize_columns(df, column_mapping)
+
+    # Un export "brut" d'un seul système (ex. extraction Active Directory
+    # pure) ne contient souvent aucune colonne identifiant le système lui-
+    # même : cette information est implicite (tout le fichier = ce système),
+    # pas une donnée par ligne. Plutôt que d'échouer, on comble ce vide :
+    # priorité au nom explicite passé à l'appel (ex. depuis le dashboard),
+    # sinon repli automatique sur le nom du fichier — jamais d'échec pour
+    # cette seule raison. Uniquement si 'system' est effectivement requis
+    # pour ce domaine (inutile, par ex., pour un référentiel RH).
+    effective_required = required_fields if required_fields is not None else REQUIRED_FIELDS
+    if "system" not in df.columns and "system" in effective_required:
+        resolved_system = default_system or path.stem
+        df["system"] = resolved_system
+        logger.info(f"Colonne 'system' absente du fichier : valeur par défaut appliquée ('{resolved_system}').")
+
     validate_required_fields(df, required_fields)
 
     logger.info(f"Ingestion réussie : {len(df)} lignes, colonnes finales : {list(df.columns)}")
@@ -620,7 +636,8 @@ def _load_single_file(
 
 
 def _read_zip(
-    path: Path, column_mapping: dict = None, required_fields: list = None
+    path: Path, column_mapping: dict = None, required_fields: list = None,
+    default_system: str | None = None,
 ) -> pd.DataFrame:
     """
     Extrait une archive ZIP et traite chaque fichier supporté qu'elle
@@ -630,6 +647,12 @@ def _read_zip(
 
     Les fichiers dans un format non supporté ou illisibles sont ignorés
     avec un avertissement, plutôt que de faire échouer tout le traitement.
+
+    Si un fichier interne n'a pas de colonne 'system', son propre nom de
+    fichier sert de valeur par défaut (plus pertinent que `default_system`
+    partagé, vu qu'un ZIP regroupe typiquement un système par fichier) —
+    sauf si `default_system` est explicitement fourni, auquel cas il
+    s'applique à tous les fichiers de l'archive.
     """
     import zipfile
     import tempfile
@@ -655,7 +678,7 @@ def _read_zip(
 
         for f in candidate_files:
             try:
-                df = _load_single_file(f, column_mapping, required_fields)
+                df = _load_single_file(f, column_mapping, required_fields, default_system=default_system)
                 df["_source_file"] = f.name
                 dfs.append(df)
             except IngestionError as e:
@@ -673,10 +696,16 @@ def _read_zip(
     return combined
 
 
-def load_file(path: str | Path) -> pd.DataFrame:
+def load_file(path: str | Path, default_system: str | None = None) -> pd.DataFrame:
     """
     Point d'entrée standard : charge un fichier d'export IAM/accès, avec
     le référentiel de colonnes par défaut (config/column_mapping.py).
+
+    `default_system` : nom de système à appliquer si le fichier ne contient
+    aucune colonne l'identifiant lui-même (cas fréquent d'un export brut
+    d'un seul système). Sans valeur fournie, le nom du fichier sert de
+    repli automatique — la fonction ne lève jamais d'erreur pour ce seul
+    motif.
     """
     path = Path(path)
     if not path.exists():
@@ -684,13 +713,14 @@ def load_file(path: str | Path) -> pd.DataFrame:
 
     if path.suffix.lower() == ".zip":
         logger.info(f"Lecture de l'archive : {path.name}")
-        return _read_zip(path)
+        return _read_zip(path, default_system=default_system)
 
-    return _load_single_file(path)
+    return _load_single_file(path, default_system=default_system)
 
 
 def load_file_with_mapping(
-    path: str | Path, column_mapping: dict, required_fields: list
+    path: str | Path, column_mapping: dict, required_fields: list,
+    default_system: str | None = None,
 ) -> pd.DataFrame:
     """
     Variante de load_file() pour un domaine différent de celui des exports
@@ -704,9 +734,9 @@ def load_file_with_mapping(
 
     if path.suffix.lower() == ".zip":
         logger.info(f"Lecture de l'archive : {path.name}")
-        return _read_zip(path, column_mapping, required_fields)
+        return _read_zip(path, column_mapping, required_fields, default_system=default_system)
 
-    return _load_single_file(path, column_mapping, required_fields)
+    return _load_single_file(path, column_mapping, required_fields, default_system=default_system)
 
 
 if __name__ == "__main__":
