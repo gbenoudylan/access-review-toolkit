@@ -154,3 +154,25 @@ def test_missing_system_column_uses_explicit_default():
     df = load_file(tmp_path, default_system="Active Directory")
     assert df.loc[0, "system"] == "Active Directory"
     print("OK - test_missing_system_column_uses_explicit_default")
+
+
+def test_duplicate_mapped_columns_are_merged_not_duplicated():
+    """
+    Deux colonnes sources distinctes qui pointent vers le même champ
+    standard (ex. 'SAM Account Name' et 'Logon Name' -> toutes deux
+    'username' dans un export AD) ne doivent jamais produire deux colonnes
+    de même nom après standardisation — ça fait planter l'affichage en
+    aval (Streamlit/Arrow). Elles doivent être fusionnées.
+    """
+    import pandas as pd
+    from ingestion.ingest import standardize_columns
+
+    df = pd.DataFrame({
+        "SAM Account Name": ["jdupont", "kbrou"],
+        "Logon Name": ["jdupont@corp.com", None],
+        "Display Name": ["Jean Dupont", "Konan Brou"],
+    })
+    result = standardize_columns(df)
+    assert len(result.columns) == len(set(result.columns)), "Colonnes dupliquées détectées"
+    assert list(result["username"]) == ["jdupont", "kbrou"]
+    print("OK - test_duplicate_mapped_columns_are_merged_not_duplicated")

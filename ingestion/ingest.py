@@ -86,13 +86,38 @@ def _match_column(col_name: str, column_mapping: dict = None, threshold: int = 8
 
 
 def standardize_columns(df: pd.DataFrame, column_mapping: dict = None) -> pd.DataFrame:
+    """
+    Renomme les colonnes reconnues vers leur nom standard.
+
+    Il arrive qu'un même export contienne deux colonnes distinctes qui
+    correspondent au même champ standard (ex. 'SAM Account Name' et
+    'Logon Name' pointent toutes deux vers 'username' dans un export AD
+    classique). Les mapper telles quelles produirait deux colonnes de même
+    nom après renommage — invalide pour pandas/Arrow en aval (l'affichage
+    Streamlit, notamment, lève une erreur sur des noms de colonnes
+    dupliqués). On fusionne donc ces cas : la première colonne rencontrée
+    fait foi, complétée par les valeurs non vides de la seconde là où elle
+    a des trous, puis la seconde est supprimée.
+    """
     rename_map, unmatched = {}, []
+    claimed_by: dict[str, str] = {}  # nom standard -> colonne originale déjà utilisée
+
     for col in df.columns:
         matched = _match_column(col, column_mapping)
-        if matched:
+        if not matched:
+            unmatched.append(col)
+            continue
+        if matched not in claimed_by:
+            claimed_by[matched] = col
             rename_map[col] = matched
         else:
-            unmatched.append(col)
+            primary_col = claimed_by[matched]
+            df[primary_col] = df[primary_col].combine_first(df[col])
+            df = df.drop(columns=[col])
+            logger.info(
+                f"Colonne '{col}' fusionnée dans '{primary_col}' (toutes deux -> '{matched}')."
+            )
+
     if unmatched:
         logger.info(f"Colonnes non reconnues (ignorées) : {unmatched}")
     return df.rename(columns=rename_map)
