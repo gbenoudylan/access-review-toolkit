@@ -112,6 +112,72 @@ def test_ldap_generalized_time_parsed_correctly():
     print(f"OK - test_ldap_generalized_time_parsed_correctly ({days} jours détectés)")
 
 
+def test_password_stale_detected():
+    """Un mot de passe non changé depuis > seuil doit être signalé périmé."""
+    df = pd.DataFrame({
+        "username": ["old_pwd_user"],
+        "system": ["Active Directory"],
+        "password_last_set": ["2025-01-01"],  # largement > 180 jours avant aujourd'hui
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_password_stale"] == True
+    assert result.loc[0, "review_action"] == "Exiger un changement de mot de passe"
+    print("OK - test_password_stale_detected")
+
+
+def test_recent_password_not_stale():
+    """Un mot de passe changé récemment ne doit pas être signalé périmé."""
+    df = pd.DataFrame({
+        "username": ["fresh_pwd_user"],
+        "system": ["Active Directory"],
+        "password_last_set": [pd.Timestamp.now().strftime("%Y-%m-%d")],
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_password_stale"] == False
+    print("OK - test_recent_password_not_stale")
+
+
+def test_privileged_non_expiring_password_is_critical():
+    """
+    Un compte privilégié dont le mot de passe n'expire jamais est un risque
+    critique, même sans autre anomalie (dormance, statut RH...).
+    """
+    df = pd.DataFrame({
+        "username": ["admin_svc"],
+        "system": ["Active Directory"],
+        "is_privileged": ["Admin"],
+        "password_status": ["Never Expires"],
+        "last_login_date": [pd.Timestamp.now().strftime("%Y-%m-%d")],  # connexion récente, pas dormant
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "has_non_expiring_password"] == True
+    assert result.loc[0, "risk_level"] == "Critique"
+    assert result.loc[0, "review_action"] == "Forcer l'expiration du mot de passe (privilégié)"
+    print("OK - test_privileged_non_expiring_password_is_critical")
+
+
+def test_column_mapping_recognizes_ad_export_headers():
+    """
+    Les en-têtes standard d'un export Active Directory (avec espaces, tels
+    qu'ils apparaissent réellement à l'export) doivent être reconnus, y
+    compris ceux dont le score de similarité avec la variante existante
+    passait sous le seuil de correspondance (ex. 'SAM Account Name' vs
+    'samaccountname' : 73% < 85% de seuil) avant l'ajout des variantes
+    espacées explicites.
+    """
+    from ingestion.ingest import _match_column
+
+    assert _match_column("SAM Account Name") == "username"
+    assert _match_column("Display Name") == "full_name"
+    assert _match_column("Logon Name") == "username"
+    assert _match_column("When Created") == "account_created_date"
+    assert _match_column("Password Last Set") == "password_last_set"
+    assert _match_column("Password Expiry Date") == "password_expiry_date"
+    assert _match_column("Account Expiry Time") == "account_expiry_date"
+    assert _match_column("Password Status") == "password_status"
+    print("OK - test_column_mapping_recognizes_ad_export_headers")
+
+
 if __name__ == "__main__":
     test_terminated_but_active_flagged_critical()
     test_dormant_account_detected()
@@ -120,4 +186,8 @@ if __name__ == "__main__":
     test_missing_optional_columns_no_crash()
     test_summarize_counts_correctly()
     test_ldap_generalized_time_parsed_correctly()
+    test_password_stale_detected()
+    test_recent_password_not_stale()
+    test_privileged_non_expiring_password_is_critical()
+    test_column_mapping_recognizes_ad_export_headers()
     print("\nTous les tests sont passés.")

@@ -13,11 +13,13 @@ COLUMN_MAPPING = {
         "sam_account_name", "user_principal_name", "upn",
         "nom d'utilisateur", "nom utilisateur", "identifiant utilisateur",
         "samaccountname", "uid",  # attributs LDAP/AD (LDIF)
+        "sam account name", "logon name", "user logon name",  # variantes espacées (exports AD)
     ],
     "full_name": [
         "full_name", "fullname", "nom_complet", "nom", "name", "display_name",
         "nom prenom", "employee_name",
         "displayname", "givenname", "sn", "cn",  # LDAP
+        "display name",  # variante espacée (export AD)
     ],
     "email": [
         "email", "e-mail", "mail", "adresse_email", "adresse mail",
@@ -61,10 +63,30 @@ COLUMN_MAPPING = {
         "account_created_date", "date_creation", "created_date", "creation_date",
         "date_creation_compte",
         "whencreated",  # LDAP
+        "when created",  # variante espacée (export AD) — score fuzzy insuffisant sans elle
     ],
     "employee_status": [
         "employee_status", "statut_employe", "hr_status", "statut_rh",
         "employment_status",
+    ],
+    # --- Hygiène des mots de passe : absent du référentiel jusqu'ici, alors
+    # que c'est un axe de revue d'accès aussi standard que la dormance de
+    # connexion (ex. colonnes "Password Last Set", "Password Expiry Date"
+    # d'un export Active Directory classique). ---
+    "password_last_set": [
+        "password_last_set", "password last set", "derniere_modif_mdp",
+        "dernier changement mot de passe", "pwdlastset",
+    ],
+    "password_expiry_date": [
+        "password_expiry_date", "password expiry date", "expiration_mdp",
+        "date expiration mot de passe",
+    ],
+    "account_expiry_date": [
+        "account_expiry_date", "account expiry date", "account expiry time",
+        "expiration_compte", "date expiration compte",
+    ],
+    "password_status": [
+        "password_status", "password status", "statut_mdp", "statut mot de passe",
     ],
 }
 

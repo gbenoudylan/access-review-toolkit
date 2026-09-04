@@ -122,12 +122,13 @@ def main():
     n_sod_conflicts = int(df["sod_conflict"].sum()) if "sod_conflict" in df.columns else 0
 
     st.subheader("Vue d'ensemble")
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Comptes analysés", summary["total_accounts"])
     col2.metric("🔴 Employés partis, accès actif", summary["terminated_but_active"])
     col3.metric("Comptes dormants", summary["dormant_accounts"])
     col4.metric("⚠️ Conflits SoD", n_sod_conflicts)
     col5.metric("Traité (revue)", f"{workflow_summary.get('taux_traitement', 0)}%")
+    col6.metric("🔑 Privilégiés, MDP n'expire jamais", summary["privileged_non_expiring_password"])
 
     st.divider()
 
@@ -220,6 +221,14 @@ def main():
     st.divider()
     st.subheader("📄 Rapports formatés")
 
+    period_label = st.text_input(
+        "Période couverte par ce rapport",
+        placeholder="ex. T1 2026, Mars 2026...",
+        help="Laisser vide pour utiliser automatiquement le trimestre courant. "
+             "Ce champ permet de relancer ce même rapport à chaque cycle de revue "
+             "sans modifier le code.",
+    )
+
     report_col1, report_col2 = st.columns(2)
     with report_col1:
         if st.button("Générer le rapport Excel", use_container_width=True):
@@ -237,7 +246,7 @@ def main():
         if st.button("Générer le rapport PDF", use_container_width=True):
             with st.spinner("Génération..."):
                 tmp_pdf = Path(tempfile.gettempdir()) / "rapport_revue_acces.pdf"
-                generate_pdf_report(filtered, tmp_pdf)
+                generate_pdf_report(filtered, tmp_pdf, period=period_label or None)
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(
                 "⬇️ Télécharger le rapport PDF", data=buf.getvalue(),

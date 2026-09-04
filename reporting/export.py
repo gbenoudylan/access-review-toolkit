@@ -44,7 +44,9 @@ DISPLAY_COLUMNS = [
     ("account_status", "Statut compte"),
     ("employee_status", "Statut RH"),
     ("days_since_last_login", "Jours sans connexion"),
+    ("days_since_password_change", "Jours sans changement MDP"),
     ("is_privileged_flag", "Privilégié"),
+    ("has_non_expiring_password", "MDP n'expire jamais"),
     ("review_action", "Action recommandée"),
     ("risk_level", "Risque"),
 ]
@@ -103,6 +105,12 @@ def generate_excel_report(df: pd.DataFrame, output_path: str | Path) -> Path:
     if "is_dormant" in df.columns:
         ws_summary[f"A{row + 4}"] = "Comptes dormants"
         ws_summary[f"B{row + 4}"] = int(df["is_dormant"].sum())
+    if "is_password_stale" in df.columns:
+        ws_summary[f"A{row + 5}"] = "Mots de passe périmés"
+        ws_summary[f"B{row + 5}"] = int(df["is_password_stale"].sum())
+    if "is_privileged_flag" in df.columns and "has_non_expiring_password" in df.columns:
+        ws_summary[f"A{row + 6}"] = "Comptes privilégiés à mot de passe n'expirant jamais"
+        ws_summary[f"B{row + 6}"] = int((df["is_privileged_flag"] & df["has_non_expiring_password"]).sum())
 
     for col, width in zip("AB", [32, 20]):
         ws_summary.column_dimensions[col].width = width
@@ -150,49 +158,17 @@ def generate_excel_report(df: pd.DataFrame, output_path: str | Path) -> Path:
 # PDF
 # ---------------------------------------------------------------------
 
-def generate_pdf_report(df: pd.DataFrame, output_path: str | Path) -> Path:
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+def _current_quarter_label() -> str:
+    now = datetime.now()
+    quarter = (now.month - 1) // 3 + 1
+    return f"T{quarter} {now.year}"
 
-    doc = SimpleDocTemplate(
-        str(output_path), pagesize=landscape(A4),
-        topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.5 * cm, rightMargin=1.5 * cm,
-    )
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("TitleCustom", parent=styles["Title"], fontSize=18, spaceAfter=6)
-    subtitle_style = ParagraphStyle("Subtitle", parent=styles["Normal"], fontSize=10, textColor=colors.grey)
 
-    elements = [
-        Paragraph("Rapport de revue d'accès", title_style),
-        Paragraph(f"Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", subtitle_style),
-        Spacer(1, 0.6 * cm),
-    ]
-
-    risk_counts = df["risk_level"].value_counts() if "risk_level" in df.columns else {}
-    summary_data = [["Indicateur", "Valeur"], ["Total comptes analysés", str(len(df))]]
-    for risk in RISK_COLORS_HEX:
-        summary_data.append([risk, str(int(risk_counts.get(risk, 0)))])
-    if "is_terminated_but_active" in df.columns:
-        summary_data.append(["Comptes actifs d'employés partis", str(int(df["is_terminated_but_active"].sum()))])
-
-    summary_table = Table(summary_data, colWidths=[9 * cm, 4 * cm])
-    summary_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
-    ]))
-    elements.append(summary_table)
-    elements.append(Spacer(1, 1 * cm))
-
-    export_df = _prepare_export_df(df)
-    elements.append(Paragraph("Détail des comptes (triés par risque)", styles["Heading2"]))
-    elements.append(Spacer(1, 0.3 * cm))
-
+def _risk_styled_table(export_df: pd.DataFrame, col_widths=None) -> Table:
+    """Construit une table stylée (en-tête sombre, lignes alternées, cellule
+    Risque colorée) à partir d'un DataFrame déjà préparé pour l'export."""
     table_data = [list(export_df.columns)] + export_df.astype(str).values.tolist()
-    detail_table = Table(table_data, repeatRows=1)
+    table = Table(table_data, repeatRows=1, colWidths=col_widths)
 
     style_commands = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
@@ -201,8 +177,8 @@ def generate_pdf_report(df: pd.DataFrame, output_path: str | Path) -> Path:
         ("FONTSIZE", (0, 0), (-1, -1), 7.5),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9F9F9")]),
     ]
-
     if "Risque" in export_df.columns:
         risk_col_idx = list(export_df.columns).index("Risque")
         for row_idx, risk_value in enumerate(export_df["Risque"], 1):
@@ -215,12 +191,117 @@ def generate_pdf_report(df: pd.DataFrame, output_path: str | Path) -> Path:
                 style_commands.append((
                     "TEXTCOLOR", (risk_col_idx, row_idx), (risk_col_idx, row_idx), colors.white,
                 ))
+    table.setStyle(TableStyle(style_commands))
+    return table
 
-    detail_table.setStyle(TableStyle(style_commands))
-    elements.append(detail_table)
+
+def generate_pdf_report(
+    df: pd.DataFrame,
+    output_path: str | Path,
+    period: str | None = None,
+    dormant_threshold_days: int = 90,
+) -> Path:
+    """
+    Génère un rapport PDF de revue d'accès structuré et réutilisable d'un
+    cycle à l'autre : résumé exécutif, méthodologie, actions prioritaires,
+    puis détail système par système — plutôt qu'un unique tableau brut.
+
+    `period` est un libellé libre (ex. "T1 2026", "Mars 2026") affiché en
+    en-tête du rapport ; par défaut, le trimestre courant est déduit
+    automatiquement, pour que la fonction reste utilisable telle quelle à
+    chaque exécution sans argument supplémentaire.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    period_label = period or _current_quarter_label()
+
+    doc = SimpleDocTemplate(
+        str(output_path), pagesize=landscape(A4),
+        topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.5 * cm, rightMargin=1.5 * cm,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("TitleCustom", parent=styles["Title"], fontSize=18, spaceAfter=4)
+    subtitle_style = ParagraphStyle("Subtitle", parent=styles["Normal"], fontSize=10, textColor=colors.grey)
+    section_style = ParagraphStyle("SectionH", parent=styles["Heading2"], spaceBefore=14, spaceAfter=6)
+    system_style = ParagraphStyle(
+        "SystemH", parent=styles["Heading3"], textColor=colors.HexColor("#1F2937"),
+        spaceBefore=12, spaceAfter=4,
+    )
+    note_style = ParagraphStyle("Note", parent=styles["Normal"], fontSize=8.5, textColor=colors.grey, spaceAfter=10)
+
+    elements = [
+        Paragraph("Rapport de revue d'accès", title_style),
+        Paragraph(f"Période : {period_label} — généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", subtitle_style),
+        Spacer(1, 0.5 * cm),
+    ]
+
+    # ---- Méthodologie (courte, pour rappeler le seuil appliqué) ----
+    elements.append(Paragraph(
+        f"Méthodologie : un compte est considéré « dormant » sans connexion depuis plus de "
+        f"{dormant_threshold_days} jours. Chaque compte reçoit un niveau de risque et une action "
+        f"recommandée selon son statut (compte actif d'un employé parti, compte privilégié "
+        f"dormant, absence de manager identifié).",
+        note_style,
+    ))
+
+    # ---- Résumé exécutif ----
+    elements.append(Paragraph("Résumé exécutif", section_style))
+    risk_counts = df["risk_level"].value_counts() if "risk_level" in df.columns else {}
+    summary_data = [["Indicateur", "Valeur"], ["Total comptes analysés", str(len(df))]]
+    for risk in RISK_COLORS_HEX:
+        summary_data.append([risk, str(int(risk_counts.get(risk, 0)))])
+    if "is_terminated_but_active" in df.columns:
+        summary_data.append(["Comptes actifs d'employés partis", str(int(df["is_terminated_but_active"].sum()))])
+    if "is_dormant" in df.columns:
+        summary_data.append(["Comptes dormants", str(int(df["is_dormant"].sum()))])
+    if "is_password_stale" in df.columns:
+        summary_data.append(["Mots de passe périmés", str(int(df["is_password_stale"].sum()))])
+    if "is_privileged_flag" in df.columns and "has_non_expiring_password" in df.columns:
+        summary_data.append([
+            "Comptes privilégiés à mot de passe n'expirant jamais",
+            str(int((df["is_privileged_flag"] & df["has_non_expiring_password"]).sum())),
+        ])
+
+    summary_table = Table(summary_data, colWidths=[9 * cm, 4 * cm])
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
+    ]))
+    elements.append(summary_table)
+
+    export_df_full = _prepare_export_df(df)
+
+    # ---- Actions prioritaires (Critique + Élevé, tous systèmes confondus) ----
+    if "Risque" in export_df_full.columns:
+        priority_df = export_df_full[export_df_full["Risque"].isin(["Critique", "Élevé"])]
+        elements.append(Paragraph(
+            f"Actions prioritaires ({len(priority_df)} compte(s) à traiter en premier)",
+            section_style,
+        ))
+        if len(priority_df):
+            elements.append(_risk_styled_table(priority_df))
+        else:
+            elements.append(Paragraph("Aucun compte en risque Critique ou Élevé sur ce cycle.", styles["Normal"]))
+
+    # ---- Détail par système ----
+    elements.append(Paragraph("Détail par système", section_style))
+    if "system" in df.columns and "Système" in export_df_full.columns:
+        systems = sorted(export_df_full["Système"].dropna().unique().tolist())
+        for system_name in systems:
+            system_df = export_df_full[export_df_full["Système"] == system_name]
+            elements.append(Paragraph(f"{system_name} — {len(system_df)} compte(s)", system_style))
+            elements.append(_risk_styled_table(system_df))
+            elements.append(Spacer(1, 0.4 * cm))
+    else:
+        elements.append(Paragraph("Détail des comptes (triés par risque)", system_style))
+        elements.append(_risk_styled_table(export_df_full))
 
     doc.build(elements)
-    logger.info(f"Rapport PDF généré : {output_path}")
+    logger.info(f"Rapport PDF généré ({period_label}) : {output_path}")
     return output_path
 
 

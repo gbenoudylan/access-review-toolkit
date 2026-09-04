@@ -27,6 +27,7 @@ import pandas as pd
 logger = logging.getLogger("access_review")
 
 DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
+PASSWORD_STALE_THRESHOLD_DAYS = 180  # rotation de mot de passe recommandée (politique courante : 90-180 jours)
 
 ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "true"}
 TERMINATED_STATUS_VALUES = {
@@ -34,6 +35,7 @@ TERMINATED_STATUS_VALUES = {
     "inactive", "inactif", "resigned", "démissionné",
 }
 PRIVILEGED_VALUES = {"oui", "yes", "true", "1", "admin", "administrateur"}
+NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais"}
 
 # Format "Generalized Time" utilisé par LDAP/Active Directory pour les dates
 # (ex. whenChanged, whenCreated) : YYYYMMDDHHMMSS[.f]Z — non reconnu
@@ -57,6 +59,12 @@ def _is_privileged(value) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in PRIVILEGED_VALUES
+
+
+def _has_non_expiring_password(value) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in NEVER_EXPIRES_VALUES
 
 
 def _days_since(date_value) -> float | None:
@@ -138,6 +146,21 @@ def analyze_access(
     else:
         df["has_no_manager"] = False
 
+    if "password_last_set" in df.columns:
+        df["days_since_password_change"] = df["password_last_set"].apply(_days_since)
+    else:
+        logger.warning("Colonne 'password_last_set' absente : détection de mot de passe périmé désactivée.")
+        df["days_since_password_change"] = None
+
+    df["is_password_stale"] = df["days_since_password_change"].apply(
+        lambda d: d is not None and d > PASSWORD_STALE_THRESHOLD_DAYS
+    )
+
+    if "password_status" in df.columns:
+        df["has_non_expiring_password"] = df["password_status"].apply(_has_non_expiring_password)
+    else:
+        df["has_non_expiring_password"] = False
+
     df["review_action"] = df.apply(_determine_action, axis=1)
     df["risk_level"] = df.apply(_determine_risk_level, axis=1)
 
@@ -154,8 +177,12 @@ def _determine_action(row) -> str:
         return "Révoquer immédiatement"
     if row["is_dormant"] and row["is_privileged_flag"]:
         return "Désactiver (privilégié dormant)"
+    if row["is_privileged_flag"] and row["has_non_expiring_password"]:
+        return "Forcer l'expiration du mot de passe (privilégié)"
     if row["is_dormant"]:
         return "Désactiver (dormant)"
+    if row["is_password_stale"]:
+        return "Exiger un changement de mot de passe"
     if row["has_no_manager"]:
         return "Identifier un owner"
     return "Aucune action"
@@ -166,7 +193,9 @@ def _determine_risk_level(row) -> str:
         return "Critique"
     if row["is_dormant"] and row["is_privileged_flag"]:
         return "Critique"
-    if row["is_dormant"] or row["has_no_manager"]:
+    if row["is_privileged_flag"] and row["has_non_expiring_password"]:
+        return "Critique"
+    if row["is_dormant"] or row["has_no_manager"] or row["is_password_stale"]:
         return "Élevé" if row["is_privileged_flag"] else "Moyen"
     return "Faible"
 
@@ -180,6 +209,10 @@ def summarize(df: pd.DataFrame) -> dict:
         "privileged_accounts": int(df["is_privileged_flag"].sum()),
         "privileged_dormant": int((df["is_dormant"] & df["is_privileged_flag"]).sum()),
         "accounts_without_manager": int(df["has_no_manager"].sum()),
+        "password_stale": int(df["is_password_stale"].sum()),
+        "privileged_non_expiring_password": int(
+            (df["is_privileged_flag"] & df["has_non_expiring_password"]).sum()
+        ),
         "critical_risk": int((df["risk_level"] == "Critique").sum()),
     }
 
