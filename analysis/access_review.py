@@ -67,6 +67,18 @@ def _has_non_expiring_password(value) -> bool:
     return str(value).strip().lower() in NEVER_EXPIRES_VALUES
 
 
+def _is_service_account_name(username) -> bool:
+    """
+    Convention de nommage standard du secteur pour les comptes de service :
+    préfixe ou suffixe 'svc_' (ex. 'svc_ise', 'ise_svc'), insensible à la
+    casse. Ne signale rien si la colonne est absente ou vide.
+    """
+    if username is None:
+        return False
+    name = str(username).strip().lower()
+    return name.startswith("svc_") or name.endswith("_svc") or name.startswith("svc-") or name.endswith("-svc")
+
+
 def _days_since(date_value) -> float | None:
     """
     Retourne le nombre de jours écoulés depuis une date, ou None si non
@@ -161,6 +173,33 @@ def analyze_access(
     else:
         df["has_non_expiring_password"] = False
 
+    # Convention de nommage standard du secteur pour les comptes de service
+    # (préfixe/suffixe "svc_"), pour les distinguer des comptes humains —
+    # un compte de service dormant n'appelle pas la même action qu'un
+    # compte utilisateur dormant (vérification technique plutôt que
+    # suppression pure et simple).
+    if "username" in df.columns:
+        df["is_service_account"] = df["username"].apply(_is_service_account_name)
+    else:
+        df["is_service_account"] = False
+
+    # Comptes en doublon : la même personne détient plusieurs comptes actifs
+    # pour un même usage. On approxime via le nom complet (à défaut d'un
+    # identifiant employé fiable et systématiquement présent) : si un même
+    # nom complet est associé à plusieurs comptes actifs sur un même
+    # système, c'est un doublon à signaler.
+    if "full_name" in df.columns and "account_status" in df.columns and "system" in df.columns:
+        active_mask = df["account_status"].apply(_is_active_account)
+        dup_counts = (
+            df[active_mask]
+            .groupby(["full_name", "system"])["username"]
+            .transform("nunique")
+        )
+        df["is_duplicate_account"] = False
+        df.loc[active_mask, "is_duplicate_account"] = dup_counts.reindex(df.index[active_mask]).fillna(0) > 1
+    else:
+        df["is_duplicate_account"] = False
+
     df["review_action"] = df.apply(_determine_action, axis=1)
     df["risk_level"] = df.apply(_determine_risk_level, axis=1)
 
@@ -179,8 +218,16 @@ def _determine_action(row) -> str:
         return "Désactiver (privilégié dormant)"
     if row["is_privileged_flag"] and row["has_non_expiring_password"]:
         return "Forcer l'expiration du mot de passe (privilégié)"
+    if row["is_dormant"] and row.get("is_service_account", False):
+        # Un compte de service dormant s'analyse différemment d'un compte
+        # humain : vérifier auprès du propriétaire technique avant toute
+        # décision, plutôt qu'une désactivation directe qui pourrait casser
+        # un processus automatisé encore utilisé.
+        return "Vérifier avec le propriétaire technique (compte de service)"
     if row["is_dormant"]:
         return "Désactiver (dormant)"
+    if row.get("is_duplicate_account", False):
+        return "Fusionner les doublons (ne garder qu'un compte actif)"
     if row["is_password_stale"]:
         return "Exiger un changement de mot de passe"
     if row["has_no_manager"]:
@@ -195,7 +242,7 @@ def _determine_risk_level(row) -> str:
         return "Critique"
     if row["is_privileged_flag"] and row["has_non_expiring_password"]:
         return "Critique"
-    if row["is_dormant"] or row["has_no_manager"] or row["is_password_stale"]:
+    if row["is_dormant"] or row["has_no_manager"] or row["is_password_stale"] or row.get("is_duplicate_account", False):
         return "Élevé" if row["is_privileged_flag"] else "Moyen"
     return "Faible"
 
@@ -213,6 +260,8 @@ def summarize(df: pd.DataFrame) -> dict:
         "privileged_non_expiring_password": int(
             (df["is_privileged_flag"] & df["has_non_expiring_password"]).sum()
         ),
+        "service_accounts": int(df.get("is_service_account", pd.Series(dtype=bool)).sum()),
+        "duplicate_accounts": int(df.get("is_duplicate_account", pd.Series(dtype=bool)).sum()),
         "critical_risk": int((df["risk_level"] == "Critique").sum()),
     }
 

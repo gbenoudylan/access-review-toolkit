@@ -72,6 +72,19 @@ ACTION_NARRATIVE = {
         "comptes. Action recommandée : désigner un responsable chargé de "
         "valider la légitimité de l'accès."
     ),
+    "Vérifier avec le propriétaire technique (compte de service)": (
+        "Ces comptes de service n'ont enregistré aucune activité depuis le "
+        "seuil de dormance retenu. Action recommandée : vérifier auprès du "
+        "propriétaire technique s'ils sont toujours utilisés par un "
+        "processus automatisé avant toute décision, une désactivation "
+        "directe pouvant casser un traitement encore actif."
+    ),
+    "Fusionner les doublons (ne garder qu'un compte actif)": (
+        "Plusieurs comptes actifs semblent appartenir à la même personne "
+        "sur le même système. Action recommandée : confirmer le doublon "
+        "auprès du titulaire, puis désactiver tous les comptes superflus "
+        "pour n'en garder qu'un seul actif."
+    ),
 }
 
 DISPLAY_COLUMNS = [
@@ -151,6 +164,9 @@ def generate_excel_report(df: pd.DataFrame, output_path: str | Path) -> Path:
     if "is_privileged_flag" in df.columns and "has_non_expiring_password" in df.columns:
         ws_summary[f"A{row + 6}"] = "Comptes privilégiés à mot de passe n'expirant jamais"
         ws_summary[f"B{row + 6}"] = int((df["is_privileged_flag"] & df["has_non_expiring_password"]).sum())
+    if "is_duplicate_account" in df.columns:
+        ws_summary[f"A{row + 7}"] = "Comptes en doublon"
+        ws_summary[f"B{row + 7}"] = int(df["is_duplicate_account"].sum())
 
     for col, width in zip("AB", [32, 20]):
         ws_summary.column_dimensions[col].width = width
@@ -251,7 +267,10 @@ def _risk_styled_table(export_df: pd.DataFrame, available_width: float) -> Table
 
     header_row = [Paragraph(str(col), header_style) for col in columns]
     data_rows = []
-    for record in export_df.astype(str).values.tolist():
+    # .astype(str) ne convertit pas les valeurs manquantes (NaN) en texte —
+    # elles restent des float et font planter Paragraph() plus bas, qui
+    # exige une vraie chaîne. On les remplace explicitement avant conversion.
+    for record in export_df.fillna("").astype(str).values.tolist():
         row = []
         for col_name, value in zip(columns, record):
             if col_name in WRAP_COLUMNS:
@@ -402,6 +421,8 @@ def generate_pdf_report(
             "Comptes privilégiés à mot de passe n'expirant jamais",
             str(int((df["is_privileged_flag"] & df["has_non_expiring_password"]).sum())),
         ])
+    if "is_duplicate_account" in df.columns:
+        summary_data.append(["Comptes en doublon", str(int(df["is_duplicate_account"].sum()))])
 
     summary_table = Table(summary_data, colWidths=[9 * cm, 4 * cm])
     summary_table.setStyle(TableStyle([

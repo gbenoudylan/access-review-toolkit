@@ -191,3 +191,50 @@ if __name__ == "__main__":
     test_privileged_non_expiring_password_is_critical()
     test_column_mapping_recognizes_ad_export_headers()
     print("\nTous les tests sont passés.")
+
+
+def test_service_account_naming_convention_detected():
+    """Convention svc_* / *_svc reconnue, générique au secteur."""
+    from analysis.access_review import _is_service_account_name
+    assert _is_service_account_name("svc_backup") == True
+    assert _is_service_account_name("backup_svc") == True
+    assert _is_service_account_name("jdupont") == False
+    print("OK - test_service_account_naming_convention_detected")
+
+
+def test_dormant_service_account_gets_verification_action_not_disable():
+    """
+    Un compte de service dormant doit être vérifié auprès du propriétaire
+    technique, pas désactivé directement comme un compte humain dormant.
+    """
+    df = pd.DataFrame({
+        "username": ["svc_backup"],
+        "system": ["Active Directory"],
+        "last_login_date": ["2025-01-01"],  # ancien -> dormant
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_service_account"] == True
+    assert result.loc[0, "review_action"] == "Vérifier avec le propriétaire technique (compte de service)"
+    print("OK - test_dormant_service_account_gets_verification_action_not_disable")
+
+
+def test_duplicate_active_accounts_detected():
+    """Deux comptes actifs pour la même personne sur le même système = doublon."""
+    df = pd.DataFrame({
+        "username": ["jdupont1", "jdupont2", "kbrou"],
+        "full_name": ["Jean Dupont", "Jean Dupont", "Konan Brou"],
+        "system": ["CRM", "CRM", "CRM"],
+        "account_status": ["Active", "Active", "Active"],
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_duplicate_account"] == True
+    assert result.loc[1, "is_duplicate_account"] == True
+    assert result.loc[2, "is_duplicate_account"] == False
+    assert result.loc[0, "review_action"] == "Fusionner les doublons (ne garder qu'un compte actif)"
+    print("OK - test_duplicate_active_accounts_detected")
+
+
+if __name__ == "__main__":
+    test_service_account_naming_convention_detected()
+    test_dormant_service_account_gets_verification_action_not_disable()
+    test_duplicate_active_accounts_detected()

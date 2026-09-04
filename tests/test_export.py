@@ -60,3 +60,26 @@ if __name__ == "__main__":
         test_generate_excel_report(tmp_path)
         test_generate_pdf_report(tmp_path)
     print("\nTous les tests sont passés.")
+
+
+def test_pdf_report_handles_missing_values_without_crashing():
+    """
+    .astype(str) sur un DataFrame ne convertit pas les valeurs manquantes
+    (NaN) en texte — elles restent des float et font planter Paragraph()
+    dans le tableau PDF, qui exige une vraie chaîne. Ce test couvre
+    explicitement des comptes avec système ou nom manquant.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+
+    df = pd.DataFrame({
+        "username": ["jdupont", "kbrou", "mfofana"],
+        "full_name": ["Jean Dupont", None, "Marc Fofana"],
+        "system": ["Active Directory", "CRM", None],
+        "manager": [None, "Paul N.", "Marie D."],
+    })
+    result = analyze_access(df)
+    output = generate_pdf_report(result, "output/test_missing_values.pdf")
+    assert output.exists()
+    print("OK - test_pdf_report_handles_missing_values_without_crashing")
