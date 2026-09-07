@@ -27,7 +27,7 @@ import pandas as pd
 logger = logging.getLogger("access_review")
 
 DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
-PASSWORD_STALE_THRESHOLD_DAYS = 90  # standard interne MTN : 90 jours pour les comptes standards
+PASSWORD_STALE_THRESHOLD_DAYS = 180  # rotation de mot de passe recommandée (politique courante : 90-180 jours)
 
 ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "true"}
 TERMINATED_STATUS_VALUES = {
@@ -131,9 +131,19 @@ def analyze_access(
         logger.warning("Colonne 'last_login_date' absente : détection de dormance désactivée.")
         df["days_since_last_login"] = None
 
+    # Un compte sans aucune date de dernière connexion ('Never Logon Status')
+    # n'est pas un cas à exclure de la détection — c'est au contraire le cas
+    # le plus net de dormance : le compte n'a jamais servi depuis sa
+    # création. Sans cette règle, ces comptes échappaient entièrement au
+    # contrôle de dormance faute de date à comparer au seuil.
+    if "last_login_date" in df.columns:
+        never_logged_in = df["last_login_date"].isna() | (df["last_login_date"].astype(str).str.strip() == "")
+    else:
+        never_logged_in = pd.Series(False, index=df.index)
+
     df["is_dormant"] = df["days_since_last_login"].apply(
         lambda d: d is not None and d > dormant_threshold_days
-    )
+    ) | never_logged_in
 
     if "account_status" in df.columns and "employee_status" in df.columns:
         df["is_terminated_but_active"] = df.apply(

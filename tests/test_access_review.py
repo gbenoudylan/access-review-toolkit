@@ -238,3 +238,37 @@ if __name__ == "__main__":
     test_service_account_naming_convention_detected()
     test_dormant_service_account_gets_verification_action_not_disable()
     test_duplicate_active_accounts_detected()
+
+
+def test_never_logged_in_account_flagged_as_dormant():
+    """
+    Un compte sans aucune date de dernière connexion ('Never Logon Status',
+    catégorie d'exception documentée à part entière dans un vrai rapport
+    d'audit) doit être détecté comme dormant, pas exclu du contrôle faute
+    de date à comparer.
+    """
+    df = pd.DataFrame({
+        "username": ["never_logged_in"],
+        "system": ["Active Directory"],
+        "last_login_date": [None],
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_dormant"] == True
+    print("OK - test_never_logged_in_account_flagged_as_dormant")
+
+
+def test_never_recommends_deletion():
+    """
+    Politique retenue : jamais de recommandation de suppression, uniquement
+    de désactivation (réversible, sans besoin d'historique). Verrouille ce
+    choix pour qu'il ne soit jamais réintroduit par erreur plus tard.
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2", "u3"],
+        "system": ["Active Directory", "Active Directory", "Active Directory"],
+        "last_login_date": [None, "2020-01-01", "2026-09-01"],
+        "is_privileged": ["Admin", "Non", "Non"],
+    })
+    result = analyze_access(df)
+    assert not result["review_action"].str.contains("upprim", case=False).any()
+    print("OK - test_never_recommends_deletion")

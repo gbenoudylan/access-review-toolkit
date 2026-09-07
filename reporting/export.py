@@ -544,9 +544,17 @@ def generate_pdf_report(
     # ---- Méthodologie (courte, pour rappeler le seuil appliqué) ----
     elements.append(Paragraph(
         f"Méthodologie : un compte est considéré « dormant » sans connexion depuis plus de "
-        f"{dormant_threshold_days} jours. Chaque compte reçoit un niveau de risque et une action "
-        f"recommandée selon son statut (compte actif d'un employé parti, compte privilégié "
-        f"dormant, absence de manager identifié).",
+        f"{dormant_threshold_days} jours — y compris un compte n'ayant jamais enregistré la "
+        f"moindre connexion depuis sa création. Chaque compte reçoit un niveau de risque et une "
+        f"action recommandée selon son statut (compte actif d'un employé parti, compte "
+        f"privilégié dormant, absence de manager identifié).",
+        note_style,
+    ))
+    elements.append(Paragraph(
+        "Politique de traitement : cet outil ne recommande jamais la suppression d'un compte, "
+        "uniquement sa désactivation — réversible, et applicable sans historique préalable. La "
+        "suppression, quand elle est justifiée, reste une décision humaine prise après "
+        "vérification, hors du périmètre automatisé de ce rapport.",
         note_style,
     ))
 
