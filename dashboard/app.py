@@ -241,6 +241,18 @@ def main():
              "sans modifier le code.",
     )
 
+    with st.expander("En-tête du document officiel — optionnel"):
+        header_col1, header_col2 = st.columns(2)
+        with header_col1:
+            department = st.text_input("Département émetteur", placeholder="ex. Technology Department")
+            application_scope = st.text_input("Périmètre / Application", placeholder="ex. Active Directory")
+        with header_col2:
+            editor = st.text_input("Éditeur du document", placeholder="Nom, Prénom")
+            document_version = st.text_input("Version du document", value="1.0")
+        include_controls_reference = st.checkbox(
+            "Inclure le référentiel des 18 contrôles standards", value=True,
+        )
+
     with st.expander("Validation (sign-off) — optionnel"):
         signoff_col1, signoff_col2, signoff_col3 = st.columns(3)
         with signoff_col1:
@@ -272,6 +284,11 @@ def main():
                     prepared_by=prepared_by or None,
                     reviewed_by=reviewed_by or None,
                     approved_by=approved_by or None,
+                    department=department or None,
+                    editor=editor or None,
+                    application_scope=application_scope or None,
+                    document_version=document_version or "1.0",
+                    include_controls_reference=include_controls_reference,
                 )
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(

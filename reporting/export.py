@@ -35,6 +35,34 @@ RISK_COLORS_HEX = {
     "Faible": "2CA02C",
 }
 
+# Référentiel des 18 contrôles standards d'une revue d'accès applicative —
+# reformulé selon les bonnes pratiques du secteur (ISO 27001 / gestion des
+# identités et des accès), jamais recopié d'un document d'entreprise précis.
+# `automated=True` seulement pour les contrôles que CET outil calcule
+# réellement à partir des données ingérées — le reste exige un jugement
+# humain ou des données que l'outil ne reçoit pas (historique des revues
+# précédentes, contrats prestataires, etc.) et reste donc manuel.
+CONTROLS_REFERENCE = [
+    ("Exhaustivité et fiabilité de l'export", "Vérifier que l'export fourni est complet, non modifié, et contient les attributs attendus.", False),
+    ("Comptes dormants", "Comptes actifs sans connexion depuis le seuil retenu.", True),
+    ("Comptes orphelins", "Comptes actifs sans information permettant d'identifier leur titulaire.", False),
+    ("Comptes de test", "Comptes créés à des fins de test, à désactiver après usage.", False),
+    ("Comptes actifs", "Comptes en statut actif dont la dernière connexion couvre la période du rapport.", False),
+    ("Comptes inactifs", "Comptes créés mais jamais utilisés au-delà du délai de grâce.", True),
+    ("Comptes de service", "Comptes utilisés par des processus automatisés, identifiables par convention de nommage.", True),
+    ("Comptes en doublon", "Plusieurs comptes actifs détenus par la même personne pour un même usage.", True),
+    ("Connexions non conformes", "Comptes actifs ne respectant pas la convention de nommage retenue.", False),
+    ("Comptes créés", "Comptes créés depuis la revue précédente, à rapprocher d'une demande approuvée.", False),
+    ("Profils modifiés", "Comptes dont le profil a changé depuis la revue précédente.", False),
+    ("Comptes réactivés", "Comptes réactivés depuis la revue précédente, à justifier.", False),
+    ("Comptes supprimés", "Comptes supprimés depuis la revue précédente, selon le processus en vigueur.", False),
+    ("Ancienneté des mots de passe", "Mots de passe non renouvelés au-delà du seuil retenu.", True),
+    ("Personnel tiers (3PP)", "Comptes de prestataires/consultants, à rapprocher d'un contrat actif.", False),
+    ("Comptes administrateurs", "Comptes à privilèges élevés, à maintenir sous revue renforcée.", True),
+    ("Revue annuelle des profils", "Revue annuelle du référentiel de profils et de la matrice d'habilitation.", False),
+    ("Employés partis ou transférés", "Comptes d'employés ou de tiers ayant quitté l'entreprise ou changé de poste, dont l'accès doit être révoqué.", True),
+]
+
 # Formulation générique associée à chaque action recommandée, pour la
 # section narrative "Rapport des exceptions" — inspirée des standards du
 # secteur (revue trimestrielle des accès), jamais copiée d'un document
@@ -356,6 +384,11 @@ def generate_pdf_report(
     prepared_by: str | None = None,
     reviewed_by: str | None = None,
     approved_by: str | None = None,
+    department: str | None = None,
+    editor: str | None = None,
+    application_scope: str | None = None,
+    document_version: str = "1.0",
+    include_controls_reference: bool = True,
 ) -> Path:
     """
     Génère un rapport PDF de revue d'accès structuré et réutilisable d'un
@@ -370,6 +403,17 @@ def generate_pdf_report(
     `prepared_by`, `reviewed_by`, `approved_by` : noms affichés dans le
     tableau de validation en fin de rapport. Laissés vides, ils affichent
     un espace à remplir à la main plutôt que de faire échouer la génération.
+
+    `department`, `editor`, `application_scope`, `document_version` :
+    bloc d'en-tête officiel du document (département émetteur, rédacteur,
+    périmètre applicatif, version) — entièrement configurables à chaque
+    génération, jamais figés dans le code, pour que ce rapport reste
+    l'outil officiel de l'équipe plutôt qu'un document lié à une personne
+    ou une entreprise en particulier.
+
+    `include_controls_reference` : inclut ou non le tableau des 18
+    contrôles standards d'une revue d'accès, avec la mention explicite de
+    ceux que cet outil calcule automatiquement et ceux qui restent manuels.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -396,11 +440,30 @@ def generate_pdf_report(
         "ActionText", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#374151"), spaceAfter=4,
     )
 
-    elements = [
-        Paragraph("Rapport de revue d'accès", title_style),
-        Paragraph(f"Période : {period_label} — généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", subtitle_style),
-        Spacer(1, 0.5 * cm),
+    elements = []
+
+    # ---- En-tête officiel du document (configurable, jamais figé) ----
+    header_data = [
+        [department or "[Département]", "Éditeur : " + (editor or "[Nom, Prénom]")],
+        ["Revue des comptes applicatifs", f"Version {document_version}"],
+        ["Périmètre : " + (application_scope or "[Nom de l'application]"), f"Période : {period_label}"],
     ]
+    header_table = Table(header_data, colWidths=[available_width * 0.6, available_width * 0.4])
+    header_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("FONTNAME", (0, 1), (0, 1), "Helvetica-Bold"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 0.5 * cm))
+    elements.append(Paragraph("Rapport de revue d'accès", title_style))
+    elements.append(Paragraph(
+        f"Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", subtitle_style,
+    ))
+    elements.append(Spacer(1, 0.5 * cm))
 
     # ---- Objectifs (standards génériques d'une revue d'accès, valables
     # quel que soit le système ou l'entreprise concernée) ----
@@ -441,6 +504,42 @@ def generate_pdf_report(
         scope_text = "Non renseigné (colonne 'system' absente)"
     elements.append(Paragraph(f"Systèmes couverts par cette revue : {scope_text}.", note_style))
     elements.append(Spacer(1, 0.3 * cm))
+
+    # ---- Référentiel des 18 contrôles (avec statut auto/manuel honnête) ----
+    if include_controls_reference:
+        elements.append(Paragraph("Référentiel des contrôles", section_style))
+        elements.append(Paragraph(
+            "18 contrôles standards d'une revue d'accès applicative. Seuls ceux marqués "
+            "« Automatisé » sont calculés directement par cet outil à partir des données "
+            "ingérées ; les autres exigent un jugement humain ou des données non disponibles "
+            "ici (historique des revues précédentes, contrats prestataires...).",
+            note_style,
+        ))
+        controls_data = [["N°", "Contrôle", "Description / Attendu", "Statut"]]
+        for i, (name, desc, automated) in enumerate(CONTROLS_REFERENCE, 1):
+            status = "Automatisé" if automated else "Manuel"
+            controls_data.append([str(i), name, desc, status])
+        controls_table = Table(
+            controls_data,
+            colWidths=[available_width * w for w in (0.04, 0.20, 0.62, 0.14)],
+            repeatRows=1,
+        )
+        control_style_commands = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9F9F9")]),
+        ]
+        for i, (_, _, automated) in enumerate(CONTROLS_REFERENCE, 1):
+            if automated:
+                control_style_commands.append(("TEXTCOLOR", (3, i), (3, i), colors.HexColor("#0E6E57")))
+                control_style_commands.append(("FONTNAME", (3, i), (3, i), "Helvetica-Bold"))
+        controls_table.setStyle(TableStyle(control_style_commands))
+        elements.append(controls_table)
+        elements.append(Spacer(1, 0.3 * cm))
 
     # ---- Méthodologie (courte, pour rappeler le seuil appliqué) ----
     elements.append(Paragraph(

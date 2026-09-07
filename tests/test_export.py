@@ -107,3 +107,49 @@ def test_pdf_report_includes_signoff_names_when_provided():
     assert "Procédure" in full_text
     assert "Périmètre" in full_text
     print("OK - test_pdf_report_includes_signoff_names_when_provided")
+
+
+def test_pdf_report_includes_header_and_controls_reference():
+    """L'en-tête configurable et le référentiel des 18 contrôles doivent
+    apparaître dans le PDF quand demandés, avec le bon décompte auto/manuel."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report, CONTROLS_REFERENCE
+    import pdfplumber
+
+    assert len(CONTROLS_REFERENCE) == 18
+    automated_count = sum(1 for _, _, auto in CONTROLS_REFERENCE if auto)
+    assert automated_count == 7  # dormants, inactifs, service, doublons, mdp, admin, partis
+
+    df = pd.DataFrame({"username": ["jdupont"], "system": ["Active Directory"]})
+    result = analyze_access(df)
+    output = generate_pdf_report(
+        result, "output/test_header.pdf",
+        department="Test Department", editor="Test Editor",
+        application_scope="Test App", document_version="2.0",
+    )
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "Test Department" in full_text
+    assert "Test Editor" in full_text
+    assert "Test App" in full_text
+    assert "Version 2.0" in full_text
+    assert "Référentiel des contrôles" in full_text
+    assert "Comptes dormants" in full_text
+    print("OK - test_pdf_report_includes_header_and_controls_reference")
+
+
+def test_pdf_report_controls_reference_can_be_disabled():
+    """L'option include_controls_reference=False doit vraiment l'omettre."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    df = pd.DataFrame({"username": ["jdupont"], "system": ["Active Directory"]})
+    result = analyze_access(df)
+    output = generate_pdf_report(result, "output/test_no_controls.pdf", include_controls_reference=False)
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "Référentiel des contrôles" not in full_text
+    print("OK - test_pdf_report_controls_reference_can_be_disabled")
