@@ -27,7 +27,7 @@ import pandas as pd
 logger = logging.getLogger("access_review")
 
 DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
-PASSWORD_STALE_THRESHOLD_DAYS = 180  # rotation de mot de passe recommandée (politique courante : 90-180 jours)
+PASSWORD_STALE_THRESHOLD_DAYS = 90  # standard interne MTN : 90 jours pour les comptes standards
 
 ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "true"}
 TERMINATED_STATUS_VALUES = {
