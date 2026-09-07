@@ -228,3 +228,60 @@ def test_user_variant_does_not_break_user_id_mapping():
     assert _match_column("User ID") == "user_id"
     assert _match_column("Employee ID") == "user_id"
     print("OK - test_user_variant_does_not_break_user_id_mapping")
+
+
+def test_camelcase_ad_azure_headers_recognized():
+    """En-têtes sans espace d'un export AD/Azure hybride (UserPrincipalName,
+    LastLogonDate, PasswordLastSet, AccountExpirationDate) et 'When Changed'."""
+    from ingestion.ingest import _match_column
+    assert _match_column("UserPrincipalName") == "username"
+    assert _match_column("LastLogonDate") == "last_login_date"
+    assert _match_column("PasswordLastSet") == "password_last_set"
+    assert _match_column("AccountExpirationDate") == "account_expiry_date"
+    assert _match_column("When Changed") == "last_login_date"
+    print("OK - test_camelcase_ad_azure_headers_recognized")
+
+
+def test_first_last_name_synthesized_into_full_name():
+    """
+    Un export avec Prénom/Nom séparés (pas de colonne Display Name unique,
+    ex. export O365) doit reconstituer 'full_name' automatiquement.
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "First Name,Last Name,SamAccountName,AccountStatus\nJean,Dupont,jdupont,Active\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    df = load_file(tmp_path, default_system="O365")
+    assert df.loc[0, "full_name"] == "Jean Dupont"
+    print("OK - test_first_last_name_synthesized_into_full_name")
+
+
+def test_full_name_synthesis_does_not_override_existing_display_name():
+    """Si 'full_name' existe déjà (ex. Display Name), il ne doit pas être
+    écrasé par la reconstitution First/Last Name."""
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "First Name,Last Name,Display Name,SamAccountName\nJean,Dupont,J. Dupont (IT),jdupont\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    df = load_file(tmp_path, default_system="Test")
+    assert df.loc[0, "full_name"] == "J. Dupont (IT)"
+    print("OK - test_full_name_synthesis_does_not_override_existing_display_name")
+
+
+def test_informational_fields_mapped():
+    """Champs informatifs (source_recommended_action, source_reason,
+    owner_comment, phone) reconnus mais sans impact sur l'analyse."""
+    from ingestion.ingest import _match_column
+    assert _match_column("RecommendedAction") == "source_recommended_action"
+    assert _match_column("Reason") == "source_reason"
+    assert _match_column("Owner comment") == "owner_comment"
+    assert _match_column("Mobile") == "phone"
+    print("OK - test_informational_fields_mapped")

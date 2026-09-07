@@ -107,6 +107,33 @@ def _match_column(col_name: str, column_mapping: dict = None, threshold: int = 8
     return None
 
 
+def _synthesize_full_name(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Certains exports ne fournissent le nom qu'en deux colonnes séparées
+    ('First Name' / 'Last Name'), sans colonne 'Display Name'/'Full Name'
+    unique. Dans ce cas, on reconstitue 'full_name' automatiquement plutôt
+    que de le laisser absent — sans jamais écraser un 'full_name' déjà
+    présent par ailleurs.
+    """
+    has_first_last = "first_name" in df.columns and "last_name" in df.columns
+    if not has_first_last:
+        return df
+
+    synthesized = (
+        df["first_name"].fillna("").astype(str).str.strip()
+        + " "
+        + df["last_name"].fillna("").astype(str).str.strip()
+    ).str.strip()
+
+    if "full_name" in df.columns:
+        df["full_name"] = df["full_name"].combine_first(synthesized.replace("", None))
+    else:
+        df["full_name"] = synthesized
+        logger.info("'full_name' reconstitué à partir de 'first_name' + 'last_name'.")
+
+    return df
+
+
 def standardize_columns(df: pd.DataFrame, column_mapping: dict = None) -> pd.DataFrame:
     """
     Renomme les colonnes reconnues vers leur nom standard.
@@ -703,6 +730,7 @@ def _load_single_file(
         df = df.dropna(how="all").reset_index(drop=True)
 
     df = standardize_columns(df, column_mapping)
+    df = _synthesize_full_name(df)
 
     # Un export "brut" d'un seul système (ex. extraction Active Directory
     # pure) ne contient souvent aucune colonne identifiant le système lui-

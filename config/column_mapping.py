@@ -14,6 +14,7 @@ COLUMN_MAPPING = {
         "nom d'utilisateur", "nom utilisateur", "identifiant utilisateur",
         "samaccountname", "uid",  # attributs LDAP/AD (LDIF)
         "sam account name", "logon name", "user logon name",  # variantes espacées (exports AD)
+        "userprincipalname",  # variante sans espace (export AD/Azure hybride)
     ],
     "user_id": [
         # Distinct du nom de connexion : souvent un identifiant employé/
@@ -29,8 +30,22 @@ COLUMN_MAPPING = {
         "displayname", "givenname", "sn", "cn",  # LDAP
         "display name",  # variante espacée (export AD)
     ],
+    "first_name": [
+        # Séparé de 'full_name' : quand un export ne fournit que prénom/nom
+        # séparément (pas de colonne "Display Name"/"Full Name" unique), les
+        # deux sont recombinés automatiquement en full_name à l'ingestion
+        # (voir _synthesize_full_name dans ingestion/ingest.py).
+        "first_name", "prenom", "prénom", "first name", "given name",
+    ],
+    "last_name": [
+        "last_name", "nom_famille", "last name", "surname", "family name",
+    ],
     "email": [
         "email", "e-mail", "mail", "adresse_email", "adresse mail",
+        "email address",  # variante espacée
+    ],
+    "phone": [
+        "phone", "telephone", "téléphone", "mobile", "phone number", "numero de telephone",
     ],
     "department": [
         "department", "departement", "département", "service", "direction",
@@ -58,6 +73,7 @@ COLUMN_MAPPING = {
         "account_status", "status", "statut", "etat_compte", "compte_status",
         "account_enabled", "statut_compte", "statut compte", "etat du compte",
         "useraccountcontrol",  # LDAP (décodé au parsing LDIF, voir ingestion)
+        "accountstatus",  # variante sans espace
     ],
     "is_privileged": [
         "is_privileged", "privileged", "admin", "is_admin", "compte_privilegie",
@@ -67,12 +83,19 @@ COLUMN_MAPPING = {
         "last_login_date", "last_login", "derniere_connexion",
         "date_derniere_connexion", "last_logon",
         "lastlogontimestamp", "whenchanged",  # LDAP
+        "lastlogondate",  # variante sans espace
+        "when changed",  # variante espacée — même écart fuzzy que "when created"
     ],
     "account_created_date": [
         "account_created_date", "date_creation", "created_date", "creation_date",
         "date_creation_compte",
         "whencreated",  # LDAP
         "when created",  # variante espacée (export AD) — score fuzzy insuffisant sans elle
+    ],
+    "account_expiry_date": [
+        "account_expiry_date", "account expiry date", "account expiry time",
+        "expiration_compte", "date expiration compte",
+        "accountexpirationdate",  # variante sans espace ("Expiration" plutôt que "Expiry")
     ],
     "employee_status": [
         "employee_status", "statut_employe", "hr_status", "statut_rh",
@@ -86,17 +109,27 @@ COLUMN_MAPPING = {
         "password_last_set", "password last set", "derniere_modif_mdp",
         "dernier changement mot de passe", "pwdlastset",
         "last password reset date", "password reset date",  # variantes espacées
+        "passwordlastset",  # variante sans espace
     ],
     "password_expiry_date": [
         "password_expiry_date", "password expiry date", "expiration_mdp",
         "date expiration mot de passe",
     ],
-    "account_expiry_date": [
-        "account_expiry_date", "account expiry date", "account expiry time",
-        "expiration_compte", "date expiration compte",
-    ],
     "password_status": [
         "password_status", "password status", "statut_mdp", "statut mot de passe",
+    ],
+    # --- Champs informatifs : ne participent à aucune détection automatique,
+    # mais sont conservés et affichés tels quels — utile quand la source
+    # fournit déjà sa propre analyse ou annotation, à comparer avec la nôtre
+    # plutôt qu'à écraser. ---
+    "source_recommended_action": [
+        "recommendedaction", "recommended_action", "recommended action",
+    ],
+    "source_reason": [
+        "reason", "raison", "justification",
+    ],
+    "owner_comment": [
+        "owner_comment", "owner comment", "commentaire", "comment",
     ],
 }
 
