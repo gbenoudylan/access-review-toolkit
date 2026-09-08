@@ -61,20 +61,46 @@ def apply_review_decision(
     comment: str = "",
     store_path: Path = DEFAULT_STORE_PATH,
 ) -> None:
-    """Enregistre une décision de revue pour un compte donné."""
+    """
+    Enregistre une décision de revue pour un compte donné, en AJOUTANT à
+    l'historique plutôt qu'en écrasant la décision précédente — sans quoi
+    on ne peut jamais répondre à "qui a validé quoi, quand, et pourquoi"
+    si une décision a été changée depuis (ex. Révoqué après un premier
+    Validé) : seule la toute dernière décision survivrait.
+    """
     if status not in VALID_STATUSES:
         raise ValueError(f"Statut invalide : {status}. Attendu : {VALID_STATUSES}")
 
     store = _load_store(store_path)
     key = _account_key(username, system)
-    store[key] = {
+    entry = {
         "status": status,
         "validated_by": validated_by,
         "comment": comment,
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
+    # Migration silencieuse de l'ancien format (un seul dict par compte,
+    # sans historique) vers une liste — pour ne pas perdre les décisions
+    # déjà enregistrées par un usage antérieur de l'outil.
+    existing = store.get(key, [])
+    if isinstance(existing, dict):
+        existing = [existing]
+    existing.append(entry)
+    store[key] = existing
     _save_store(store_path, store)
     logger.info(f"Décision enregistrée pour {key} : {status}")
+
+
+def get_audit_trail(username: str, system: str, store_path: Path = DEFAULT_STORE_PATH) -> list[dict]:
+    """Historique complet des décisions pour un compte, de la plus
+    ancienne à la plus récente — répond à 'qui a validé quoi, quand, et
+    pourquoi', y compris les décisions passées puis changées depuis."""
+    store = _load_store(store_path)
+    key = _account_key(username, system)
+    existing = store.get(key, [])
+    if isinstance(existing, dict):
+        existing = [existing]
+    return existing
 
 
 def attach_review_status(
@@ -98,7 +124,12 @@ def attach_review_status(
 
     def _lookup(row, field):
         key = _account_key(row["username"], row["system"])
-        return store.get(key, {}).get(field, "" if field != "status" else "En attente")
+        existing = store.get(key, [])
+        if isinstance(existing, dict):
+            existing = [existing]
+        if not existing:
+            return "En attente" if field == "status" else ""
+        return existing[-1].get(field, "En attente" if field == "status" else "")
 
     df["review_status"] = df.apply(lambda r: _lookup(r, "status"), axis=1)
     df["validated_by"] = df.apply(lambda r: _lookup(r, "validated_by"), axis=1)

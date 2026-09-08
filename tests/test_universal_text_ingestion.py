@@ -401,3 +401,45 @@ def test_bare_created_column_recognized():
     from ingestion.ingest import _match_column
     assert _match_column("CREATED") == "account_created_date"
     print("OK - test_bare_created_column_recognized")
+
+
+def test_data_quality_report_detects_real_issues():
+    """
+    Contrôle qualité des données AVANT analyse : doit détecter usernames
+    manquants, doublons, dates invalides (cohérent avec la vraie logique
+    de parsing, y compris les dates tronquées déjà corrigées), statuts
+    non reconnus, et calculer une fiabilité globale sensée.
+    """
+    from ingestion.ingest import compute_data_quality_report
+    import pandas as pd
+
+    df = pd.DataFrame({
+        "username": ["u1", None, "u1", "u4", "u5"],
+        "system": ["AD"] * 5,
+        "account_status": ["Active", "Active", "GarbageValue123", "Active", "Active"],
+        "last_login_date": ["2026-01-01", "4 20:09:01 +0000 2025", "Never", "2026-01-01", None],
+        "manager": ["Jean", "", "Paul", None, "Marie"],
+    })
+    report = compute_data_quality_report(df)
+    assert report["total_rows"] == 5
+    assert report["issues"]["username_missing"] == 1
+    assert report["issues"]["duplicate_usernames"] == 2
+    assert report["issues"]["invalid_dates"] == 1
+    assert report["issues"]["unknown_status"] == 1
+    assert report["reliability_pct"] == 40.0
+    print("OK - test_data_quality_report_detects_real_issues")
+
+
+def test_data_quality_report_clean_file_full_reliability():
+    """Un fichier sans aucun problème doit afficher 100% de fiabilité."""
+    from ingestion.ingest import compute_data_quality_report
+    import pandas as pd
+
+    df = pd.DataFrame({
+        "username": ["u1", "u2"], "system": ["AD"] * 2,
+        "account_status": ["Active", "Disabled"],
+        "last_login_date": ["2026-01-01", "2025-06-01"],
+    })
+    report = compute_data_quality_report(df)
+    assert report["reliability_pct"] == 100.0
+    print("OK - test_data_quality_report_clean_file_full_reliability")

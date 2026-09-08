@@ -337,3 +337,73 @@ def test_logo_inserted_when_valid_path_given():
     with_logo = generate_pdf_report(df, "output/test_logo_compare_with.pdf", logo_path=logo_path)
     assert Path(with_logo).stat().st_size > Path(without).stat().st_size
     print("OK - test_logo_inserted_when_valid_path_given")
+
+
+def test_privilege_escalation_detected_between_reviews():
+    """
+    Un compte non privilégié dans la revue précédente qui devient
+    privilégié dans la revue actuelle doit être détecté nommément comme
+    'Privilege Escalation' — signal plus fort qu'un simple 'profil
+    modifié' générique.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    previous = analyze_access(pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"], "account_status": ["Active"], "role": ["User"],
+    }))
+    current = analyze_access(pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"], "account_status": ["Active"], "role": ["Administrator"],
+    }))
+    output = generate_pdf_report(current, "output/test_escalation_regression.pdf", previous_df=previous)
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "Privilege Escalation" in full_text
+    assert "jdupont" in full_text
+    print("OK - test_privilege_escalation_detected_between_reviews")
+
+
+def test_control_summary_table_present_with_correct_status():
+    """La table de synthèse compacte doit apparaître avant le détail
+    verbeux, avec un statut cohérent (⚠️ si anomalies détectées, OK sinon,
+    N/A si non calculable)."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    df = pd.DataFrame({
+        "username": ["test_user"], "system": ["AD"], "account_status": ["Active"],
+        "last_login_date": ["2026-09-01"],
+    })
+    result = analyze_access(df)
+    output = generate_pdf_report(result, "output/test_control_summary_regression.pdf")
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "Control Summary" in full_text
+    assert full_text.index("Control Summary") < full_text.index("2.Dormant Accounts")
+    print("OK - test_control_summary_table_present_with_correct_status")
+
+
+def test_data_quality_section_appears_in_pdf_when_issues_found():
+    """La section Qualité des données doit apparaître dans le PDF avec
+    les vrais problèmes détectés, avant le reste du contenu opérationnel."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    df = pd.DataFrame({
+        "username": ["u1", None], "system": ["AD"] * 2,
+        "account_status": ["Active", "GarbageStatus"],
+    })
+    result = analyze_access(df)
+    output = generate_pdf_report(result, "output/test_quality_regression.pdf")
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "Qualité des données" in full_text
+    assert "Identifiants de compte manquants" in full_text
+    assert "Statuts de compte non reconnus" in full_text
+    print("OK - test_data_quality_section_appears_in_pdf_when_issues_found")

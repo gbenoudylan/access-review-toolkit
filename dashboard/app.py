@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import streamlit as st
 
-from ingestion.ingest import load_file, IngestionError
+from ingestion.ingest import load_file, IngestionError, compute_data_quality_report
 from analysis.access_review import analyze_access, summarize
 from analysis.hr_crossref import cross_reference_with_hr
 from analysis.sod_detection import detect_sod_conflicts
@@ -132,6 +132,33 @@ def main():
     summary = summarize(df)
     workflow_summary = review_summary(df)
     n_sod_conflicts = int(df["sod_conflict"].sum()) if "sod_conflict" in df.columns else 0
+
+    quality_report = compute_data_quality_report(df)
+    with st.expander(
+        f"🧪 Qualité des données — fiabilité {quality_report['reliability_pct']}%",
+        expanded=quality_report["reliability_pct"] < 90,
+    ):
+        st.caption(
+            "Vérification préalable, avant les contrôles IAM eux-mêmes : "
+            "purement informatif, ne bloque et ne modifie rien."
+        )
+        issue_labels = {
+            "username_missing": "Identifiants de compte manquants",
+            "duplicate_usernames": "Comptes en doublon (même identifiant + système)",
+            "invalid_dates": "Dates de dernière connexion non interprétables",
+            "unknown_status": "Statuts de compte non reconnus",
+            "system_missing": "Système non renseigné",
+            "manager_missing": "Manager non renseigné",
+        }
+        qcol1, qcol2 = st.columns(2)
+        with qcol1:
+            st.metric("Lignes analysées", quality_report["total_rows"])
+        with qcol2:
+            st.metric("Fiabilité estimée", f"{quality_report['reliability_pct']}%")
+        for key, label in issue_labels.items():
+            count = quality_report["issues"].get(key)
+            if count:
+                st.warning(f"⚠️ {label} : {count}")
 
     st.subheader("Vue d'ensemble")
     col1, col2, col3, col4, col5, col6 = st.columns(6)

@@ -20,6 +20,7 @@ produire une liste priorisée plutôt qu'un simple export brut.
 from __future__ import annotations
 import logging
 import re
+import unicodedata
 from datetime import datetime
 
 import pandas as pd
@@ -27,7 +28,7 @@ import pandas as pd
 logger = logging.getLogger("access_review")
 
 DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
-PASSWORD_STALE_THRESHOLD_DAYS = 180  # rotation de mot de passe recommandée (politique courante : 90-180 jours)
+PASSWORD_STALE_THRESHOLD_DAYS = 90  # standard interne MTN : 90 jours pour les comptes standards
 
 ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "true", "1", "open"}
 TERMINATED_STATUS_VALUES = {
@@ -87,6 +88,69 @@ def _is_service_account_name(username) -> bool:
         return False
     name = str(username).strip().lower()
     return name.startswith("svc_") or name.endswith("_svc") or name.startswith("svc-") or name.endswith("-svc")
+
+
+# Motifs de nommage courants pour un compte de test/UAT/QA/démo — repère
+# un jeton distinct ('test', 'uat', 'qa'...), pas une simple sous-chaîne
+# n'importe où (qui attraperait à tort un nom de famille contenant ces
+# lettres, ex. 'Testard'). Toujours combiné à une action de VÉRIFICATION,
+# jamais une désactivation automatique : la détection par nom seul reste
+# un indice, pas une certitude.
+_TEST_ACCOUNT_RE = re.compile(
+    r"(^|[_\-\.])(test|uat|qa|dummy|demo|sandbox)(ing)?([_\-\.]|\d|$)", re.IGNORECASE
+)
+
+
+def _is_test_account_name(username) -> bool:
+    if username is None:
+        return False
+    return bool(_TEST_ACCOUNT_RE.search(str(username).strip()))
+
+
+def _normalize_for_naming_check(text: str) -> str:
+    """Retire accents/espaces/tirets/apostrophes pour une comparaison
+    tolérante — sans quoi un nom africain/français accentué ('Ébénézer',
+    'N'Guessan') serait signalé à tort comme non conforme."""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[\s\-']", "", text).lower()
+
+
+def _expected_username_first_last(first_name: str, last_name: str) -> str | None:
+    """
+    Contrôle 9 (Naming convention) — règle du référentiel : 'première
+    lettre du prénom + nom de famille' (ex. Michael Brown -> mbrown).
+    Retourne None si l'un des deux champs est vide (pas assez
+    d'information pour une comparaison fiable).
+    """
+    first_name = str(first_name).strip() if first_name else ""
+    last_name = str(last_name).strip() if last_name else ""
+    if not first_name or not last_name:
+        return None
+    return _normalize_for_naming_check(first_name[0] + last_name)
+
+
+def _check_naming_convention(row) -> bool | None:
+    """
+    True si le compte NE respecte PAS la convention attendue, False si
+    conforme, None si non vérifiable (infos manquantes) — à distinguer
+    d'un vrai résultat "conforme".
+    """
+    first_name, last_name = None, None
+    if row.get("first_name") and row.get("last_name"):
+        first_name, last_name = row["first_name"], row["last_name"]
+    elif row.get("full_name"):
+        parts = str(row["full_name"]).strip().split()
+        if len(parts) >= 2:
+            first_name, last_name = parts[0], parts[-1]
+
+    expected = _expected_username_first_last(first_name, last_name) if first_name else None
+    if expected is None or not row.get("username"):
+        return None
+
+    actual = _normalize_for_naming_check(str(row["username"]))
+    # Tolère un suffixe numérique (doublons légitimes : jdupont, jdupont2...)
+    actual_no_suffix = re.sub(r"\d+$", "", actual)
+    return actual != expected and actual_no_suffix != expected
 
 
 _AMBIGUOUS_DATE_START_RE = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-]\d{2,4}")
@@ -299,7 +363,30 @@ def analyze_access(
 
     df["is_dormant"] = df["days_since_last_login"].apply(
         lambda d: d is not None and d > dormant_threshold_days
-    ) | never_logged_in
+    )
+
+    # Distinction du référentiel (contrôles 2 et 6) : "Dormant" suppose
+    # une connexion déjà survenue, simplement ancienne ; "Never Used" est
+    # un compte qui n'a JAMAIS servi depuis sa création — un signal
+    # différent (accès jamais activé plutôt qu'oublié), qui mérite son
+    # propre contrôle plutôt que d'être noyé dans les mêmes dormants.
+    NEVER_USED_THRESHOLD_DAYS = 30
+    if "account_created_date" in df.columns:
+        _dayfirst_created = _detect_dayfirst(df["account_created_date"])
+        _yearfirst_created = _detect_yearfirst(df["account_created_date"])
+        days_since_creation = df["account_created_date"].apply(
+            lambda v: _days_since(v, dayfirst=_dayfirst_created, yearfirst=_yearfirst_created)
+        )
+        df["is_never_used"] = never_logged_in & days_since_creation.apply(
+            lambda d: d is None or d > NEVER_USED_THRESHOLD_DAYS
+        )
+    else:
+        # Sans date de création, impossible de vérifier la règle des 30
+        # jours à la lettre — on retient quand même le signal "jamais
+        # connecté" plutôt que de le perdre, par sécurité (mieux vaut
+        # signaler un compte qui s'avère finalement récent que d'en
+        # laisser passer un vraiment jamais utilisé).
+        df["is_never_used"] = never_logged_in
 
     # Un compte verrouillé (locked) n'est pas un compte "dormant" au sens
     # du contrôle standard ("Accounts that are in ACTIVE status but were
@@ -316,6 +403,7 @@ def analyze_access(
         )
         is_active_status = df["account_status"].apply(_is_active_account)
         df["is_dormant"] = df["is_dormant"] & is_active_status
+        df["is_never_used"] = df["is_never_used"] & is_active_status
     else:
         df["is_locked"] = False
 
@@ -399,8 +487,22 @@ def analyze_access(
     # suppression pure et simple).
     if "username" in df.columns:
         df["is_service_account"] = df["username"].apply(_is_service_account_name)
+        # Contrôle 4 (Test Accounts) : indice par convention de nommage
+        # uniquement — jamais traité comme une certitude (voir _TEST_ACCOUNT_RE).
+        df["is_test_account"] = df["username"].apply(_is_test_account_name)
     else:
         df["is_service_account"] = False
+        df["is_test_account"] = False
+
+    # Contrôle 9 (Naming convention) : vérifiable seulement si un nom
+    # complet (ou prénom/nom séparés) est disponible pour comparer à la
+    # règle attendue. Résultat "non vérifiable" traité comme conforme
+    # (False) pour ne pas fabriquer de faux signal sans information.
+    if "username" in df.columns and ("full_name" in df.columns or ("first_name" in df.columns and "last_name" in df.columns)):
+        naming_result = df.apply(_check_naming_convention, axis=1)
+        df["is_non_compliant_naming"] = naming_result.fillna(False)
+    else:
+        df["is_non_compliant_naming"] = False
 
     # Comptes en doublon : la même personne détient plusieurs comptes actifs
     # pour un même usage. On approxime via le nom complet (à défaut d'un
@@ -421,6 +523,9 @@ def analyze_access(
 
     df["review_action"] = df.apply(_determine_action, axis=1)
     df["risk_level"] = df.apply(_determine_risk_level, axis=1)
+    _score_and_reasons = df.apply(_compute_risk_score, axis=1)
+    df["risk_score"] = _score_and_reasons.apply(lambda t: t[0])
+    df["risk_score_reasons"] = _score_and_reasons.apply(lambda t: t[1])
 
     logger.info(
         "Analyse terminée. Répartition des actions :\n"
@@ -433,11 +538,11 @@ def analyze_access(
 def _determine_action(row) -> str:
     if row["is_terminated_but_active"]:
         return "Révoquer immédiatement"
-    if row["is_dormant"] and row["is_privileged_flag"]:
+    if (row["is_dormant"] or row["is_never_used"]) and row["is_privileged_flag"]:
         return "Désactiver (privilégié dormant)"
     if row["is_privileged_flag"] and row["has_non_expiring_password"]:
         return "Forcer l'expiration du mot de passe (privilégié)"
-    if row["is_dormant"] and row.get("is_service_account", False):
+    if (row["is_dormant"] or row["is_never_used"]) and row.get("is_service_account", False):
         # Un compte de service dormant s'analyse différemment d'un compte
         # humain : vérifier auprès du propriétaire technique avant toute
         # décision, plutôt qu'une désactivation directe qui pourrait casser
@@ -445,8 +550,22 @@ def _determine_action(row) -> str:
         return "Vérifier avec le propriétaire technique (compte de service)"
     if row["is_dormant"]:
         return "Désactiver (dormant)"
+    if row["is_never_used"]:
+        # Distinct du dormant classique : ce compte n'a JAMAIS servi
+        # depuis sa création (contrôle 6), pas juste oublié après usage —
+        # signal utile à garder visible séparément pour l'audit.
+        return "Désactiver (jamais utilisé)"
     if row.get("is_duplicate_account", False):
         return "Fusionner les doublons (ne garder qu'un compte actif)"
+    if row["is_password_stale"] and row.get("is_service_account", False):
+        # Le contrôle 14 du référentiel exclut explicitement les comptes
+        # de service de la règle de rotation standard ("Except service
+        # account, All accounts that the age exceed 90 days must be
+        # changed or disable") : la rotation forcée casserait un
+        # processus automatisé encore utilisé sans qu'un humain n'ait pu
+        # s'en rendre compte. Vérification auprès du propriétaire
+        # technique plutôt qu'exigence de changement direct.
+        return "Vérifier avec le propriétaire technique (mot de passe, compte de service)"
     if row["is_password_stale"]:
         return "Exiger un changement de mot de passe"
     if row["has_no_manager"]:
@@ -457,17 +576,77 @@ def _determine_action(row) -> str:
         # de longue date doit être formellement nettoyé (supprimé ou
         # réactivé après vérification), pas laissé indéfiniment en l'état.
         return "Nettoyer (compte verrouillé)"
+    if row.get("is_test_account", False):
+        # Indice de nommage seul (contrôle 4) : jamais une désactivation
+        # automatique, juste une vérification — beaucoup de vrais comptes
+        # légitimes peuvent contenir ces motifs par coïncidence.
+        return "Vérifier (compte de test présumé)"
+    if row.get("is_non_compliant_naming", False):
+        return "Renommer selon la convention"
     return "Aucune action"
 
 
+def _compute_risk_score(row) -> tuple[int, list[str]]:
+    """
+    Score de risque 0-100, additif et plafonné, avec le détail des
+    raisons qui le composent — objectif de traçabilité d'audit ("pourquoi
+    ce score ?"), complémentaire du niveau catégoriel (Critique/Élevé/
+    Moyen/Faible) déjà utilisé partout ailleurs dans le rapport, sans le
+    remplacer.
+    """
+    score = 0
+    reasons = []
+
+    if row["is_terminated_but_active"]:
+        score += 50
+        reasons.append(("Employé parti, compte encore actif", 50))
+    if row["is_dormant"] or row.get("is_never_used", False):
+        score += 20
+        reasons.append(("Compte dormant ou jamais utilisé", 20))
+    if row["is_privileged_flag"]:
+        score += 30
+        reasons.append(("Compte privilégié", 30))
+    if row["is_privileged_flag"] and row.get("has_non_expiring_password", False):
+        score += 25
+        reasons.append(("Mot de passe n'expirant jamais (privilégié)", 25))
+    if row["is_password_stale"] and not row.get("is_service_account", False):
+        score += 20
+        reasons.append(("Mot de passe périmé (> seuil retenu)", 20))
+    if row["has_no_manager"]:
+        score += 15
+        reasons.append(("Aucun manager/owner identifié", 15))
+    if row.get("is_duplicate_account", False):
+        score += 15
+        reasons.append(("Compte en doublon", 15))
+    if row.get("is_locked", False):
+        score += 5
+        reasons.append(("Compte verrouillé", 5))
+    if row.get("is_test_account", False):
+        score += 10
+        reasons.append(("Nom évoquant un compte de test", 10))
+    if row.get("is_non_compliant_naming", False):
+        score += 5
+        reasons.append(("Nom non conforme à la convention", 5))
+
+    return min(score, 100), reasons
+
+
 def _determine_risk_level(row) -> str:
+    # Cohérent avec l'exclusion des comptes de service pour la rotation
+    # de mot de passe (contrôle 14) : un mot de passe périmé ne doit pas
+    # non plus faire monter le niveau de risque pour ces comptes, sans
+    # quoi l'exclusion serait incomplète (action différente, mais risque
+    # identique à un compte humain).
+    password_stale_relevant = row["is_password_stale"] and not row.get("is_service_account", False)
+    dormant_or_never_used = row["is_dormant"] or row["is_never_used"]
+
     if row["is_terminated_but_active"]:
         return "Critique"
-    if row["is_dormant"] and row["is_privileged_flag"]:
+    if dormant_or_never_used and row["is_privileged_flag"]:
         return "Critique"
     if row["is_privileged_flag"] and row["has_non_expiring_password"]:
         return "Critique"
-    if row["is_dormant"] or row["has_no_manager"] or row["is_password_stale"] or row.get("is_duplicate_account", False):
+    if dormant_or_never_used or row["has_no_manager"] or password_stale_relevant or row.get("is_duplicate_account", False):
         return "Élevé" if row["is_privileged_flag"] else "Moyen"
     return "Faible"
 
@@ -478,6 +657,7 @@ def summarize(df: pd.DataFrame) -> dict:
         "total_accounts": len(df),
         "terminated_but_active": int(df["is_terminated_but_active"].sum()),
         "dormant_accounts": int(df["is_dormant"].sum()),
+        "never_used_accounts": int(df.get("is_never_used", pd.Series(dtype=bool)).sum()),
         "privileged_accounts": int(df["is_privileged_flag"].sum()),
         "privileged_dormant": int((df["is_dormant"] & df["is_privileged_flag"]).sum()),
         "accounts_without_manager": int(df["has_no_manager"].sum()),

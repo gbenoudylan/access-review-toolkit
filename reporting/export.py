@@ -36,6 +36,7 @@ from reporting.template_sections import (
     DUMP_COMPLETENESS_COLUMNS, CONTROL_SUBSECTIONS, CONCLUSION_HEADING,
 )
 from analysis.access_review import _is_active_account
+from ingestion.ingest import compute_data_quality_report
 
 logger = logging.getLogger("export")
 
@@ -165,6 +166,7 @@ DISPLAY_COLUMNS = [
     ("is_privileged_flag", "Privilégié"),
     ("has_non_expiring_password", "MDP n'expire jamais"),
     ("review_action", "Action recommandée"),
+    ("risk_score", "Score"),
     ("risk_level", "Risque"),
 ]
 
@@ -480,6 +482,63 @@ def _build_dump_completeness_table(df: pd.DataFrame, available_width: float) -> 
     return table
 
 
+def _build_control_summary_table(df: pd.DataFrame, comparison_stats: dict, available_width: float) -> Table:
+    """
+    Vue d'ensemble compacte des 18 contrôles — une ligne par contrôle,
+    statut OK/⚠️/N/A et le compte associé, pour une lecture en un coup
+    d'œil avant le détail verbeux des sous-sections IV.2 à IV.18.
+    """
+    rows = [["N°", "Contrôle", "Résultat", "Anomalies"]]
+
+    dump_ok = all(
+        any(c in df.columns and df[c].notna().any() for c in candidates)
+        for _, candidates in DUMP_COMPLETENESS_COLUMNS
+    )
+    rows.append(["1", "Dump completeness and accuracy", "OK" if dump_ok else "⚠️", "—"])
+
+    for number, title, _, key in CONTROL_SUBSECTIONS:
+        count = None
+        if key is None:
+            status, count_display = "N/A", "—"
+        elif key == "_active_count":
+            if "account_status" in df.columns:
+                count = int(df["account_status"].apply(_is_active_account).sum())
+            status = "OK"
+            count_display = str(count) if count is not None else "—"
+        elif key in ("_created", "_reactivated", "_deleted", "_profile_modified"):
+            value = comparison_stats.get(key.lstrip("_"))
+            if value is None:
+                status, count_display = "N/A", "—"
+            else:
+                status, count_display = ("⚠️" if value > 0 else "OK"), str(value)
+        elif key in df.columns:
+            count = int(df[key].sum())
+            status = "⚠️" if count > 0 else "OK"
+            count_display = str(count)
+        else:
+            status, count_display = "N/A", "—"
+        rows.append([str(number), title, status, count_display])
+
+    table = Table(rows, colWidths=[available_width * w for w in (0.06, 0.52, 0.14, 0.28)], repeatRows=1)
+    style_commands = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9F9F9")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]
+    for i, row in enumerate(rows[1:], 1):
+        color = {"OK": colors.HexColor("#0E6E57"), "⚠️": colors.HexColor("#A13D2E")}.get(row[2], colors.grey)
+        style_commands.append(("TEXTCOLOR", (2, i), (2, i), color))
+        style_commands.append(("FONTNAME", (2, i), (2, i), DEFAULT_FONT_BOLD))
+    table.setStyle(TableStyle(style_commands))
+    return table
+
+
 def _build_control_subsections(
     df: pd.DataFrame, comparison_stats: dict, section_style, system_style, note_style, action_style,
 ) -> list:
@@ -537,7 +596,10 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
     reactivated, profile_modified} réutilisé par la section IV pour
     éviter de recalculer la même comparaison deux fois.
     """
-    stats = {"created": None, "deleted": None, "reactivated": None, "profile_modified": None}
+    stats = {
+        "created": None, "deleted": None, "reactivated": None,
+        "profile_modified": None, "privilege_escalation": None,
+    }
     elements = [Paragraph("a. Summary of the review", section_style)]
     if "account_status" not in df.columns:
         elements.append(Paragraph(
@@ -585,6 +647,7 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
 
             reactivated = 0
             profile_modified = 0
+            escalated_accounts = []
             if common:
                 curr_idx = df.set_index(key_col)
                 prev_idx = previous_df.set_index(key_col)
@@ -603,10 +666,20 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
                     if "role" in df.columns:
                         if str(prev_row.get("role")) != str(curr_row.get("role")):
                             profile_modified += 1
+                    # Escalade de privilège : signal plus fort qu'un simple
+                    # "profil modifié" générique — un compte qui devient
+                    # privilégié entre deux revues mérite d'être identifié
+                    # nommément, pas seulement compté avec les autres
+                    # modifications de profil.
+                    was_privileged = bool(prev_row.get("is_privileged_flag", False))
+                    is_privileged_now = bool(curr_row.get("is_privileged_flag", False))
+                    if not was_privileged and is_privileged_now:
+                        escalated_accounts.append(str(uname))
 
             stats.update({
                 "created": len(created), "deleted": len(deleted),
                 "reactivated": reactivated, "profile_modified": profile_modified,
+                "privilege_escalation": len(escalated_accounts),
             })
             diff_rows = [
                 ["Indicator", "Count"],
@@ -614,6 +687,7 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
                 ["Accounts deleted", str(len(deleted))],
                 ["Reactivated accounts", str(reactivated)],
                 ["Profile Modified", str(profile_modified)],
+                ["Privilege Escalation", str(len(escalated_accounts))],
             ]
             diff_table = Table(diff_rows, colWidths=[available_width * 0.6, available_width * 0.4])
             diff_table.setStyle(TableStyle([
@@ -627,6 +701,14 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
             ]))
             elements.append(diff_table)
+            if escalated_accounts:
+                elements.append(Spacer(1, 0.2 * cm))
+                elements.append(Paragraph(
+                    "<b>Privilege Escalation — comptes concernés :</b> "
+                    + ", ".join(escalated_accounts[:20])
+                    + (f" (+{len(escalated_accounts) - 20} autre(s))" if len(escalated_accounts) > 20 else ""),
+                    note_style,
+                ))
     else:
         elements.append(Paragraph(
             "The review of the application accounts covers a total of accounts distributed as "
@@ -943,6 +1025,13 @@ def generate_pdf_report(
     # ---- IV. ACCOUNT DETAILS BY CONTROL (18 sous-sections fidèles au template) ----
     elements.append(Paragraph("IV. ACCOUNT DETAILS BY CONTROL", section_style))
     elements.append(Paragraph(SECTION_IV_INTRO, note_style))
+
+    # Vue d'ensemble compacte avant le détail verbeux — lecture en un
+    # coup d'œil de l'état des 18 contrôles, avant d'entrer dans le détail.
+    elements.append(Paragraph("Control Summary", system_style))
+    elements.append(_build_control_summary_table(df, comparison_stats, available_width))
+    elements.append(Spacer(1, 0.4 * cm))
+
     elements.append(Paragraph(DUMP_COMPLETENESS_HEADER, system_style))
     elements.append(Paragraph(DUMP_COMPLETENESS_GUIDANCE, note_style))
     elements.append(_build_dump_completeness_table(df, available_width))
@@ -980,6 +1069,47 @@ def generate_pdf_report(
     # ==================================================================
     elements.append(Paragraph("Annexe opérationnelle — Détail exploitable du cycle", section_style))
 
+    # ---- Qualité des données (contrôle préalable, informatif) ----
+    quality_report = compute_data_quality_report(df)
+    elements.append(Paragraph(
+        f"Qualité des données — fiabilité estimée {quality_report['reliability_pct']}%",
+        system_style,
+    ))
+    elements.append(Paragraph(
+        "Vérification préalable de la fiabilité du fichier source, avant les contrôles IAM "
+        "eux-mêmes — purement informatif, ne modifie aucune donnée ni aucun résultat d'analyse.",
+        note_style,
+    ))
+    issue_labels = {
+        "username_missing": "Identifiants de compte manquants",
+        "duplicate_usernames": "Comptes en doublon (même identifiant + système)",
+        "invalid_dates": "Dates de dernière connexion non interprétables",
+        "unknown_status": "Statuts de compte non reconnus",
+        "system_missing": "Système non renseigné",
+        "manager_missing": "Manager non renseigné",
+    }
+    quality_rows = [["Indicateur", "Valeur"], ["Lignes analysées", str(quality_report["total_rows"])]]
+    for key, label in issue_labels.items():
+        count = quality_report["issues"].get(key)
+        if count:
+            quality_rows.append([label, str(count)])
+    if len(quality_rows) > 2:
+        quality_table = Table(quality_rows, colWidths=[available_width * 0.7, available_width * 0.3])
+        quality_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+            ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(quality_table)
+    else:
+        elements.append(Paragraph("Aucun problème de qualité détecté sur ce fichier.", note_style))
+    elements.append(Spacer(1, 0.4 * cm))
+
     # ---- Résumé exécutif ----
     elements.append(Paragraph("Résumé exécutif", section_style))
     risk_counts = df["risk_level"].value_counts() if "risk_level" in df.columns else {}
@@ -990,6 +1120,8 @@ def generate_pdf_report(
         summary_data.append(["Comptes actifs d'employés partis", str(int(df["is_terminated_but_active"].sum()))])
     if "is_dormant" in df.columns:
         summary_data.append(["Comptes dormants", str(int(df["is_dormant"].sum()))])
+    if "is_never_used" in df.columns:
+        summary_data.append(["Comptes jamais utilisés", str(int(df["is_never_used"].sum()))])
     if "is_password_stale" in df.columns:
         summary_data.append(["Mots de passe périmés", str(int(df["is_password_stale"].sum()))])
     if "is_privileged_flag" in df.columns and "has_non_expiring_password" in df.columns:
@@ -1027,6 +1159,28 @@ def generate_pdf_report(
             elements.append(_risk_styled_table(priority_df, available_width))
         else:
             elements.append(Paragraph("Aucun compte en risque Critique ou Élevé sur ce cycle.", styles["Normal"]))
+
+    # ---- Score de risque explicable : détail du calcul pour les comptes
+    # les plus exposés — traçabilité d'audit ("pourquoi ce score ?"),
+    # plutôt qu'une étiquette de risque sans justification. ----
+    if "risk_score" in df.columns and "risk_score_reasons" in df.columns and len(df):
+        top_scored = df[df["risk_score"] > 0].sort_values("risk_score", ascending=False).head(10)
+        if len(top_scored):
+            elements.append(Paragraph("Score de risque — détail du calcul (10 comptes les plus exposés)", section_style))
+            elements.append(Paragraph(
+                "Score additif 0-100, plafonné, calculé à partir des signaux détectés pour chaque "
+                "compte — pour comprendre POURQUOI un compte atteint un score donné, pas seulement "
+                "l'afficher.",
+                note_style,
+            ))
+            for _, row in top_scored.iterrows():
+                uname = row.get("username", "?")
+                reasons_text = " · ".join(f"{label} (+{pts})" for label, pts in row["risk_score_reasons"])
+                elements.append(Paragraph(
+                    f"<b>{uname}</b> — Score : {row['risk_score']}/100", action_style,
+                ))
+                elements.append(Paragraph(reasons_text, note_style))
+            elements.append(Spacer(1, 0.3 * cm))
 
     # ---- Rapport des exceptions (narratif, format audit classique) ----
     elements.extend(_build_exceptions_section(df, section_style, exception_style, action_style))

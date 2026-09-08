@@ -227,6 +227,82 @@ def validate_required_fields(df: pd.DataFrame, required_fields: list = None) -> 
             )
 
 
+# Vocabulaire large de statuts de compte RECONNUS (actifs ou clairement
+# inactifs), toutes langues confondues déjà rencontrées dans ce projet —
+# sert uniquement à distinguer "reconnu mais inactif" de "valeur
+# réellement incompréhensible" pour le contrôle qualité des données.
+# Ne remplace jamais la détection métier propre (voir analysis/access_review.py).
+_KNOWN_STATUS_VOCABULARY = {
+    "active", "actif", "enabled", "activé", "oui", "yes", "true", "1", "open",
+    "locked", "verrouillé", "verrouille", "bloqué", "bloque", "blocked",
+    "disabled", "inactive", "inactif", "expired", "suspended", "revoked",
+    "terminated", "closed", "archived", "deprovisioned", "pending",
+    "non", "no", "false", "0", "expired&locked", "expired(grace)",
+}
+
+
+def compute_data_quality_report(df: pd.DataFrame) -> dict:
+    """
+    Contrôle de qualité des données AVANT toute analyse IAM — répond à
+    "peut-on faire confiance à ce fichier ?" plutôt que d'analyser
+    aveuglément des données potentiellement mauvaises. Purement
+    informatif : ne bloque rien, ne modifie aucune donnée, seulement de
+    la visibilité sur ce qui pourrait fausser la revue.
+    """
+    total_rows = len(df)
+    issues: dict[str, int] = {}
+    problem_mask = pd.Series(False, index=df.index)
+
+    if "username" in df.columns:
+        mask = df["username"].isna() | (df["username"].astype(str).str.strip() == "")
+        issues["username_missing"] = int(mask.sum())
+        problem_mask |= mask
+
+    if "username" in df.columns and "system" in df.columns:
+        has_username = df["username"].notna() & (df["username"].astype(str).str.strip() != "")
+        dup_mask = df.duplicated(subset=["username", "system"], keep=False) & has_username
+        issues["duplicate_usernames"] = int(dup_mask.sum())
+        problem_mask |= dup_mask
+
+    if "last_login_date" in df.columns:
+        non_empty = df["last_login_date"].notna() & (df["last_login_date"].astype(str).str.strip() != "")
+        stripped_lower = df["last_login_date"].astype(str).str.strip().str.lower()
+        is_never_marker = stripped_lower.isin({
+            "never", "n/a", "na", "jamais", "none", "-", "aucune", "aucun",
+            "no data", "never logged in", "aucune donnée", "aucune donnee",
+        })
+        from analysis.access_review import _days_since
+        parsed = df["last_login_date"].apply(_days_since)
+        invalid_mask = non_empty & parsed.isna() & ~is_never_marker
+        issues["invalid_dates"] = int(invalid_mask.sum())
+        problem_mask |= invalid_mask
+
+    if "account_status" in df.columns:
+        non_empty = df["account_status"].notna() & (df["account_status"].astype(str).str.strip() != "")
+        status_lower = df["account_status"].astype(str).str.strip().str.lower()
+        unknown_mask = non_empty & ~status_lower.isin(_KNOWN_STATUS_VOCABULARY)
+        issues["unknown_status"] = int(unknown_mask.sum())
+        problem_mask |= unknown_mask
+
+    if "system" in df.columns:
+        mask = df["system"].isna() | (df["system"].astype(str).str.strip() == "")
+        issues["system_missing"] = int(mask.sum())
+        problem_mask |= mask
+
+    if "manager" in df.columns:
+        issues["manager_missing"] = int(
+            (df["manager"].isna() | (df["manager"].astype(str).str.strip() == "")).sum()
+        )
+        # Un manager manquant est un signal utile ("Identifier un owner")
+        # mais pas une erreur de qualité de données en soi (beaucoup de
+        # comptes n'ont légitimement pas de manager, ex. comptes de
+        # service) — ne compte donc pas dans la fiabilité globale.
+
+    reliability_pct = round(100 * (1 - problem_mask.sum() / total_rows), 1) if total_rows else 0.0
+
+    return {"total_rows": total_rows, "issues": issues, "reliability_pct": reliability_pct}
+
+
 def _read_ragged_csv(path: Path) -> pd.DataFrame:
     import csv
     with open(path, newline="", encoding=_detect_encoding(path)) as f:

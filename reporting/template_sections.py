@@ -147,12 +147,12 @@ DUMP_COMPLETENESS_COLUMNS = [
 CONTROL_SUBSECTIONS = [
     (2, "Dormant Accounts", "Guidance : Check the last login that exceed 90 days", "is_dormant"),
     (3, "Orphaned Accounts", None, None),
-    (4, "Test Accounts", None, None),
+    (4, "Test Accounts", None, "is_test_account"),
     (5, "Active Accounts", None, "_active_count"),
-    (6, "Inactive Accounts", None, None),
+    (6, "Inactive Accounts", None, "is_never_used"),
     (7, "Service Accounts", None, "is_service_account"),
     (8, "Duplicate Accounts", None, "is_duplicate_account"),
-    (9, "Active Non-compliant logins", None, None),
+    (9, "Active Non-compliant logins", None, "is_non_compliant_naming"),
     (10, "Accounts created",
      "Guidance: check the creation date of the extraction to identify new account , if the "
      "system does not provide creation , perform the comparison between the last extraction "

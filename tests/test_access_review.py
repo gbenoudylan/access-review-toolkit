@@ -244,8 +244,9 @@ def test_never_logged_in_account_flagged_as_dormant():
     """
     Un compte sans aucune date de dernière connexion ('Never Logon Status',
     catégorie d'exception documentée à part entière dans un vrai rapport
-    d'audit) doit être détecté comme dormant, pas exclu du contrôle faute
-    de date à comparer.
+    d'audit) doit être détecté — via is_never_used, contrôle distinct du
+    dormant classique depuis la séparation Dormant/Never Used — pas exclu
+    de toute détection faute de date à comparer.
     """
     df = pd.DataFrame({
         "username": ["never_logged_in"],
@@ -253,7 +254,7 @@ def test_never_logged_in_account_flagged_as_dormant():
         "last_login_date": [None],
     })
     result = analyze_access(df)
-    assert result.loc[0, "is_dormant"] == True
+    assert result.loc[0, "is_never_used"] == True
     print("OK - test_never_logged_in_account_flagged_as_dormant")
 
 
@@ -333,14 +334,14 @@ def test_never_text_markers_treated_as_never_logged_in():
     Des valeurs texte comme 'Never', 'N/A', 'Jamais' dans la colonne de
     dernière connexion (terminologie vue dans un vrai rapport d'audit,
     'Never Logon Status') doivent être traitées comme un compte jamais
-    connecté — donc dormant — pas silencieusement ignorées.
+    connecté (is_never_used) — pas silencieusement ignorées.
     """
     df = pd.DataFrame({
         "username": ["u1", "u2", "u3"], "system": ["AD"] * 3,
         "last_login_date": ["Never", "N/A", "Jamais"],
     })
     result = analyze_access(df)
-    assert result["is_dormant"].all()
+    assert result["is_never_used"].all()
     print("OK - test_never_text_markers_treated_as_never_logged_in")
 
 
@@ -532,12 +533,12 @@ def test_ctime_style_dates_parsed_correctly():
 
 def test_no_data_marker_treated_as_never_logged_in():
     """'No Data' (marqueur réel rencontré) doit être traité comme
-    'jamais connecté' — dormant — pas silencieusement ignoré."""
+    'jamais connecté' (is_never_used) — pas silencieusement ignoré."""
     df = pd.DataFrame({
         "username": ["u1"], "system": ["AD"], "last_login_date": ["No Data"],
     })
     result = analyze_access(df)
-    assert result.loc[0, "is_dormant"] == True
+    assert result.loc[0, "is_never_used"] == True
     print("OK - test_no_data_marker_treated_as_never_logged_in")
 
 
@@ -578,3 +579,146 @@ def test_admin_role_detection_uses_word_boundaries_not_substring():
     assert result.loc[2, "is_privileged_flag"] == False, "Sales Administration ne doit PAS être privilégié"
     assert result.loc[3, "is_privileged_flag"] == True, "System Administrator DOIT rester privilégié"
     print("OK - test_admin_role_detection_uses_word_boundaries_not_substring")
+
+
+def test_password_threshold_is_90_not_180():
+    """Le seuil doit être 90 jours (standard interne MTN confirmé),
+    pas 180 — un ancien réglage qui n'avait jamais été propagé ici."""
+    from analysis.access_review import PASSWORD_STALE_THRESHOLD_DAYS
+    assert PASSWORD_STALE_THRESHOLD_DAYS == 90
+
+
+def test_service_account_excluded_from_password_rotation_policy():
+    """
+    Le contrôle 14 exclut explicitement les comptes de service de la
+    règle de rotation à 90 jours. Un mot de passe périmé sur un compte
+    de service ne doit ni déclencher 'Exiger un changement de mot de
+    passe', ni faire monter le niveau de risque comme un compte humain.
+    """
+    df = pd.DataFrame({
+        "username": ["jdupont", "svc_backup"], "system": ["AD"] * 2,
+        "password_last_set": ["2024-01-01"] * 2,
+        "last_login_date": ["2026-09-01"] * 2,
+    })
+    result = analyze_access(df)
+    human = result[result["username"] == "jdupont"].iloc[0]
+    service = result[result["username"] == "svc_backup"].iloc[0]
+    assert human["review_action"] == "Exiger un changement de mot de passe"
+    assert human["risk_level"] == "Moyen"
+    assert "compte de service" in service["review_action"]
+    assert service["risk_level"] == "Faible"
+    print("OK - test_service_account_excluded_from_password_rotation_policy")
+
+
+def test_dormant_and_never_used_are_properly_separated():
+    """
+    Vraie séparation des contrôles 2 et 6 : 'Dormant' suppose une
+    connexion déjà survenue (juste ancienne) ; 'Never Used' est un compte
+    jamais connecté ET créé depuis plus de 30 jours. Un compte jamais
+    connecté mais créé très récemment (< 30 jours) ne doit être ni
+    dormant ni 'never used' — trop tôt pour le signaler.
+    """
+    import datetime as dt
+    recent_creation = (dt.datetime.now() - dt.timedelta(days=5)).strftime("%Y-%m-%d")
+    old_creation = (dt.datetime.now() - dt.timedelta(days=200)).strftime("%Y-%m-%d")
+
+    df = pd.DataFrame({
+        "username": ["stale_login", "never_used_old", "never_used_recent"],
+        "system": ["AD"] * 3,
+        "account_created_date": [old_creation, old_creation, recent_creation],
+        "last_login_date": ["2024-01-01", None, None],
+    })
+    result = analyze_access(df)
+    stale = result[result["username"] == "stale_login"].iloc[0]
+    never_old = result[result["username"] == "never_used_old"].iloc[0]
+    never_recent = result[result["username"] == "never_used_recent"].iloc[0]
+
+    assert stale["is_dormant"] == True and stale["is_never_used"] == False
+    assert never_old["is_never_used"] == True and never_old["is_dormant"] == False
+    assert never_recent["is_never_used"] == False, "Créé il y a 5 jours seulement : trop tôt pour signaler"
+    print("OK - test_dormant_and_never_used_are_properly_separated")
+
+
+def test_test_account_naming_pattern_detected_without_false_positives():
+    """
+    Contrôle 4 : détection par convention de nommage (test_user, uat_,
+    qa_, dummy_, sandbox_...), avec vérification explicite qu'un nom de
+    famille contenant incidemment ces lettres ('Testard') n'est pas
+    signalé à tort — la détection porte sur un jeton distinct, pas une
+    simple sous-chaîne n'importe où.
+    """
+    df = pd.DataFrame({
+        "username": ["test_user", "uat_admin", "jtestard", "contest_manager", "jdupont"],
+        "system": ["AD"] * 5,
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_test_account"] == True
+    assert result.loc[1, "is_test_account"] == True
+    assert result.loc[2, "is_test_account"] == False, "jtestard (nom de famille) ne doit pas être signalé"
+    assert result.loc[3, "is_test_account"] == False, "contest_manager ne doit pas être signalé"
+    assert result.loc[4, "is_test_account"] == False
+    print("OK - test_test_account_naming_pattern_detected_without_false_positives")
+
+
+def test_naming_convention_tolerates_accents_and_numeric_suffix():
+    """
+    Contrôle 9 : la règle 'initiale prénom + nom' doit tolérer les
+    accents (noms africains/français) et un suffixe numérique de
+    doublon légitime (jdupont, jdupont2...), sans faux positif.
+    """
+    df = pd.DataFrame({
+        "username": ["mbrown", "jdupont", "kbrou2"],
+        "full_name": ["Michael Brown", "Jean Dupont", "Konan Brou"],
+        "system": ["AD"] * 3,
+    })
+    result = analyze_access(df)
+    assert not result["is_non_compliant_naming"].any()
+    print("OK - test_naming_convention_tolerates_accents_and_numeric_suffix")
+
+
+def test_naming_convention_flags_real_mismatch():
+    """Un username sans rapport avec le nom réel doit être signalé."""
+    df = pd.DataFrame({
+        "username": ["random123"], "full_name": ["Marie Curie"], "system": ["AD"],
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_non_compliant_naming"] == True
+    print("OK - test_naming_convention_flags_real_mismatch")
+
+
+def test_naming_convention_not_checked_without_full_name():
+    """Sans nom complet disponible, le contrôle ne doit rien inventer."""
+    df = pd.DataFrame({"username": ["jdupont"], "system": ["AD"]})
+    result = analyze_access(df)
+    assert result.loc[0, "is_non_compliant_naming"] == False
+    print("OK - test_naming_convention_not_checked_without_full_name")
+
+
+def test_risk_score_capped_at_100_and_explainable():
+    """Le score doit être plafonné à 100 même en cumulant tous les
+    signaux, et chaque composante doit être traçable (raison + points)."""
+    df = pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"],
+        "account_status": ["Active"], "employee_status": ["Terminated"],
+        "is_privileged": ["Yes"], "password_last_set": ["2024-01-01"],
+        "last_login_date": ["2025-01-01"],
+    })
+    result = analyze_access(df)
+    score = result.loc[0, "risk_score"]
+    reasons = result.loc[0, "risk_score_reasons"]
+    assert score == 100
+    assert sum(pts for _, pts in reasons) >= 100  # le brut dépasse 100, plafonné à l'affichage
+    assert ("Employé parti, compte encore actif", 50) in reasons
+    print("OK - test_risk_score_capped_at_100_and_explainable")
+
+
+def test_risk_score_zero_for_clean_account():
+    """Un compte sans aucun signal doit avoir un score de 0."""
+    df = pd.DataFrame({
+        "username": ["clean_user"], "system": ["AD"],
+        "account_status": ["Active"], "last_login_date": ["2026-09-01"],
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "risk_score"] == 0
+    assert result.loc[0, "risk_score_reasons"] == []
+    print("OK - test_risk_score_zero_for_clean_account")
