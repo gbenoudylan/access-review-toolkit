@@ -460,3 +460,99 @@ def test_two_digit_year_first_resolved_via_column_evidence():
     computed = datetime.now() - timedelta(days=int(result.loc[0, "days_since_last_login"]))
     assert (computed.year, computed.month, computed.day) == (2026, 1, 15)
     print("OK - test_two_digit_year_first_resolved_via_column_evidence")
+
+
+def test_oracle_open_status_recognized_as_active():
+    """'OPEN' (statut Oracle DB standard pour un compte utilisable) doit
+    être reconnu comme actif — sinon un employé parti avec un compte
+    Oracle 'OPEN' échappe entièrement à la détection critique."""
+    from analysis.access_review import _is_active_account
+    assert _is_active_account("open") == True
+    assert _is_active_account("OPEN") == True
+    print("OK - test_oracle_open_status_recognized_as_active")
+
+
+def test_locked_account_not_counted_as_dormant():
+    """
+    Un compte verrouillé ne doit pas être compté comme dormant — le
+    contrôle standard scope la dormance aux comptes 'in active status'.
+    Un compte verrouillé est déjà bloqué, catégorie distincte (is_locked).
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2"], "system": ["Oracle"] * 2,
+        "account_status": ["open", "locked"],
+        "last_login_date": ["2025-01-01"] * 2,
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_dormant"] == True   # open + vieux login -> dormant
+    assert result.loc[1, "is_dormant"] == False  # locked -> pas dormant
+    assert result.loc[1, "is_locked"] == True
+    print("OK - test_locked_account_not_counted_as_dormant")
+
+
+def test_additional_hr_terminated_status_values_recognized():
+    """
+    'fired', 'retired', 'dismissed', 'licencié' (variantes RH réalistes
+    non couvertes avant) doivent déclencher la détection critique d'un
+    compte actif d'employé parti, comme 'terminated'/'resigned' déjà.
+    """
+    for status in ["fired", "retired", "dismissed", "licencié"]:
+        df = pd.DataFrame({
+            "username": ["u1"], "system": ["AD"],
+            "account_status": ["Active"], "employee_status": [status],
+        })
+        result = analyze_access(df)
+        assert result.loc[0, "is_terminated_but_active"] == True, f"Échec pour '{status}'"
+    print("OK - test_additional_hr_terminated_status_values_recognized")
+
+
+def test_truncated_date_not_guessed_wrong():
+    """
+    Un format tronqué réel ('4 20:09:01 +0000 2025', sans jour de semaine
+    ni mois) faisait deviner à pandas un MOIS à partir du nombre isolé,
+    avec un jour arbitraire (1) inventé — ex. '4 ...' lu comme le 1er
+    avril, une date totalement fausse et silencieuse. Doit maintenant
+    être reconnu comme non exploitable plutôt que deviné.
+    """
+    from analysis.access_review import _days_since
+    assert _days_since("4 20:09:01 +0000 2025") is None
+    assert _days_since("7 13:04:09 +0000 2019") is None
+    print("OK - test_truncated_date_not_guessed_wrong")
+
+
+def test_ctime_style_dates_parsed_correctly():
+    """Les formats ctime réels (avec et sans jour de semaine) doivent
+    rester correctement exploitables — seul le format TRONQUÉ doit être
+    rejeté, pas le format complet."""
+    from analysis.access_review import _days_since
+    assert _days_since("Sat Dec 14 17:30:34 +0000 2019") is not None
+    assert _days_since("May 12 01:55:01 +0000 2022") is not None
+    print("OK - test_ctime_style_dates_parsed_correctly")
+
+
+def test_no_data_marker_treated_as_never_logged_in():
+    """'No Data' (marqueur réel rencontré) doit être traité comme
+    'jamais connecté' — dormant — pas silencieusement ignoré."""
+    df = pd.DataFrame({
+        "username": ["u1"], "system": ["AD"], "last_login_date": ["No Data"],
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_dormant"] == True
+    print("OK - test_no_data_marker_treated_as_never_logged_in")
+
+
+def test_administrator_role_alone_flags_privileged():
+    """
+    Un compte avec seulement role='Administrator' (sans colonne booléenne
+    'Sudo Privileges' séparée — cas réel d'export serveur) doit être
+    détecté comme privilégié, pas seulement via une colonne dédiée.
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2", "u3"], "system": ["Server"] * 3,
+        "role": ["User", "Administrator", "root"],
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_privileged_flag"] == False
+    assert result.loc[1, "is_privileged_flag"] == True
+    assert result.loc[2, "is_privileged_flag"] == True
+    print("OK - test_administrator_role_alone_flags_privileged")

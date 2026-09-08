@@ -29,10 +29,13 @@ logger = logging.getLogger("access_review")
 DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
 PASSWORD_STALE_THRESHOLD_DAYS = 180  # rotation de mot de passe recommandée (politique courante : 90-180 jours)
 
-ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "true", "1"}
+ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "true", "1", "open"}
 TERMINATED_STATUS_VALUES = {
     "terminated", "termine", "terminé", "parti", "departed", "left",
     "inactive", "inactif", "resigned", "démissionné",
+    "retired", "retraité", "leaver", "ex-employee", "former employee",
+    "fired", "dismissed", "licencié", "licencie", "no longer employed",
+    "not employed", "separated", "redundant",
 }
 PRIVILEGED_VALUES = {"oui", "yes", "true", "1", "admin", "administrateur"}
 NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais"}
@@ -41,6 +44,13 @@ NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais"}
 # (ex. whenChanged, whenCreated) : YYYYMMDDHHMMSS[.f]Z — non reconnu
 # automatiquement par le parseur de dates générique de pandas.
 _LDAP_GENERALIZED_TIME_RE = re.compile(r"^(\d{14})(\.\d+)?Z?$")
+# Nombre isolé (sans jour de semaine ni mois) suivi d'une heure, d'un
+# fuseau horaire explicite et d'une année — ex. '4 20:09:01 +0000 2025'.
+# Rencontré en pratique sur des exports où le jour de semaine ET le mois
+# ont été tronqués, ne laissant que le jour du mois. Sans le mois, la
+# date réelle est indéterminable ; pandas devinerait sinon ce nombre
+# comme un MOIS avec un jour arbitraire (voir _days_since).
+_TRUNCATED_DATE_RE = re.compile(r"^\d{1,2}\s+\d{1,2}:\d{2}:\d{2}\s+[+-]\d{4}\s+\d{4}$")
 
 
 def _is_active_account(value) -> bool:
@@ -154,6 +164,18 @@ def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> f
         return None
 
     text_value = str(date_value).strip()
+
+    # Motif tronqué rencontré en pratique (export coupant le jour de la
+    # semaine ET le mois, ne laissant qu'un nombre isolé en tête — ex.
+    # '4 20:09:01 +0000 2025' au lieu de 'Fri Nov 4 20:09:01 +0000 2025').
+    # Sans le mois, la date réelle est indéterminable : pandas devine
+    # silencieusement ce nombre isolé comme un MOIS avec jour=1 inventé
+    # (ex. '4 ...' lu comme 1er avril), ce qui produit une date fausse
+    # sans la moindre erreur. On refuse explicitement de deviner ici —
+    # mieux vaut aucune date que la mauvaise.
+    if _TRUNCATED_DATE_RE.match(text_value):
+        return None
+
     ldap_match = _LDAP_GENERALIZED_TIME_RE.match(text_value)
     if ldap_match:
         try:
@@ -236,6 +258,15 @@ def analyze_access(
     df = df.copy()
 
     if "last_login_date" in df.columns:
+        _truncated_count = df["last_login_date"].astype(str).str.match(_TRUNCATED_DATE_RE).sum()
+        if _truncated_count:
+            logger.warning(
+                f"{_truncated_count} date(s) de dernière connexion au format tronqué "
+                f"(jour de semaine et mois manquants, ex. '4 20:09:01 +0000 2025') — "
+                f"non exploitables, à corriger à la source plutôt que devinées. "
+                f"Ces comptes ne sont ni comptés dormants ni exclus : leur ancienneté "
+                f"réelle de connexion reste simplement inconnue."
+            )
         _dayfirst_login = _detect_dayfirst(df["last_login_date"])
         _yearfirst_login = _detect_yearfirst(df["last_login_date"])
         df["days_since_last_login"] = df["last_login_date"].apply(
@@ -252,7 +283,10 @@ def analyze_access(
     # contrôle de dormance faute de date à comparer au seuil. Certains
     # exports encodent ce même fait par un texte littéral ('Never', 'N/A',
     # 'Jamais'...) plutôt qu'une case vide — traité de façon identique.
-    NEVER_LOGGED_IN_MARKERS = {"never", "n/a", "na", "jamais", "none", "-", "aucune", "aucun"}
+    NEVER_LOGGED_IN_MARKERS = {
+        "never", "n/a", "na", "jamais", "none", "-", "aucune", "aucun",
+        "no data", "never logged in", "aucune donnée", "aucune donnee",
+    }
     if "last_login_date" in df.columns:
         stripped_lower = df["last_login_date"].astype(str).str.strip().str.lower()
         never_logged_in = (
@@ -267,6 +301,24 @@ def analyze_access(
         lambda d: d is not None and d > dormant_threshold_days
     ) | never_logged_in
 
+    # Un compte verrouillé (locked) n'est pas un compte "dormant" au sens
+    # du contrôle standard ("Accounts that are in ACTIVE status but were
+    # last logged in more than 90 days ago") : il est déjà bloqué, sans
+    # risque d'usage immédiat, contrairement à un compte actif oublié.
+    # Le mélanger aux vrais dormants diluerait la priorité réelle. Suivi
+    # séparément (is_locked) plutôt qu'ignoré : un compte verrouillé
+    # depuis longtemps reste un sujet de nettoyage à part entière.
+    LOCKED_MARKERS = {"locked", "verrouillé", "verrouille", "bloqué", "bloque"}
+    if "account_status" in df.columns:
+        status_lower = df["account_status"].astype(str).str.strip().str.lower()
+        df["is_locked"] = status_lower.apply(
+            lambda s: any(marker in s for marker in LOCKED_MARKERS)
+        )
+        is_active_status = df["account_status"].apply(_is_active_account)
+        df["is_dormant"] = df["is_dormant"] & is_active_status
+    else:
+        df["is_locked"] = False
+
     if "account_status" in df.columns and "employee_status" in df.columns:
         df["is_terminated_but_active"] = df.apply(
             lambda r: _is_active_account(r["account_status"])
@@ -280,10 +332,29 @@ def analyze_access(
         )
         df["is_terminated_but_active"] = False
 
+    # Un compte peut être signalé privilégié de deux façons différentes
+    # selon l'export : une colonne booléenne dédiée ('Sudo Privileges:
+    # Yes/No'), OU seulement via l'intitulé du rôle lui-même ('Role:
+    # Administrator') sans colonne booléenne séparée — cas réel rencontré
+    # sur des exports serveur. Ignorer la seconde ferait passer à travers
+    # les mailles du filet tous les comptes administrateurs d'un fichier
+    # qui n'a que ce seul indicateur.
+    PRIVILEGED_ROLE_KEYWORDS = {
+        "admin", "administrator", "administrateur", "root", "superuser",
+        "super user", "superadmin", "super admin", "sysadmin",
+    }
+    privileged_from_flag = pd.Series(False, index=df.index)
     if "is_privileged" in df.columns:
-        df["is_privileged_flag"] = df["is_privileged"].apply(_is_privileged)
-    else:
-        df["is_privileged_flag"] = False
+        privileged_from_flag = df["is_privileged"].apply(_is_privileged)
+
+    privileged_from_role = pd.Series(False, index=df.index)
+    if "role" in df.columns:
+        role_lower = df["role"].astype(str).str.strip().str.lower()
+        privileged_from_role = role_lower.apply(
+            lambda r: any(keyword in r for keyword in PRIVILEGED_ROLE_KEYWORDS)
+        )
+
+    df["is_privileged_flag"] = privileged_from_flag | privileged_from_role
 
     if "manager" in df.columns:
         df["has_no_manager"] = df["manager"].isna() | (df["manager"].astype(str).str.strip() == "")
@@ -368,6 +439,12 @@ def _determine_action(row) -> str:
         return "Exiger un changement de mot de passe"
     if row["has_no_manager"]:
         return "Identifier un owner"
+    if row.get("is_locked", False):
+        # Priorité basse (pas d'usage possible tant que verrouillé), mais
+        # visible plutôt que silencieusement ignoré : un compte verrouillé
+        # de longue date doit être formellement nettoyé (supprimé ou
+        # réactivé après vérification), pas laissé indéfiniment en l'état.
+        return "Nettoyer (compte verrouillé)"
     return "Aucune action"
 
 

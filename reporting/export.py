@@ -999,6 +999,8 @@ def generate_pdf_report(
         ])
     if "is_duplicate_account" in df.columns:
         summary_data.append(["Comptes en doublon", str(int(df["is_duplicate_account"].sum()))])
+    if "is_locked" in df.columns:
+        summary_data.append(["Comptes verrouillés (hors dormance)", str(int(df["is_locked"].sum()))])
 
     summary_table = Table(summary_data, colWidths=[9 * cm, 4 * cm])
     summary_table.setStyle(TableStyle([
