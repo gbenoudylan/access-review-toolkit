@@ -110,16 +110,15 @@ def test_pdf_report_includes_signoff_names_when_provided():
 
 
 def test_pdf_report_includes_header_and_controls_reference():
-    """L'en-tête configurable et le référentiel des 18 contrôles doivent
-    apparaître dans le PDF quand demandés, avec le bon décompte auto/manuel."""
+    """L'en-tête configurable et le référentiel des 18 contrôles (texte
+    fidèle du template, TEMPLATE_CONTROLS) doivent apparaître dans le PDF."""
     import pandas as pd
     from analysis.access_review import analyze_access
-    from reporting.export import generate_pdf_report, CONTROLS_REFERENCE
+    from reporting.export import generate_pdf_report
+    from reporting.template_sections import TEMPLATE_CONTROLS
     import pdfplumber
 
-    assert len(CONTROLS_REFERENCE) == 18
-    automated_count = sum(1 for _, _, auto in CONTROLS_REFERENCE if auto)
-    assert automated_count == 7  # dormants, inactifs, service, doublons, mdp, admin, partis
+    assert len(TEMPLATE_CONTROLS) == 18
 
     df = pd.DataFrame({"username": ["jdupont"], "system": ["Active Directory"]})
     result = analyze_access(df)
@@ -407,3 +406,344 @@ def test_data_quality_section_appears_in_pdf_when_issues_found():
     assert "Identifiants de compte manquants" in full_text
     assert "Statuts de compte non reconnus" in full_text
     print("OK - test_data_quality_section_appears_in_pdf_when_issues_found")
+
+
+def test_control_subsection_shows_account_detail_table():
+    """
+    Chaque sous-section avec des comptes concernés doit afficher un
+    tableau nominatif (pas seulement un chiffre) — c'est ce qui rend le
+    rapport exploitable en revue d'audit réelle.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "full_name": ["Jean Dupont"], "system": ["AD"],
+        "account_status": ["Active"], "last_login_date": ["2024-01-01"],
+    })
+    result = analyze_access(df)
+    output = generate_pdf_report(result, "output/test_detail_regression.pdf")
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    idx = full_text.find("2.Dormant Accounts")
+    snippet = full_text[idx:idx + 300]
+    assert "jdupont" in snippet
+    assert "Jean Dupont" in snippet
+    print("OK - test_control_subsection_shows_account_detail_table")
+
+
+def test_control_subsection_table_capped_on_large_dataset():
+    """Au-delà du plafond, une mention doit renvoyer vers le détail
+    complet plutôt que de faire exploser le document."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    rows = [{"username": f"user{i:03d}", "system": "AD", "account_status": "Active",
+              "last_login_date": "2024-01-01"} for i in range(50)]
+    result = analyze_access(pd.DataFrame(rows))
+    output = generate_pdf_report(result, "output/test_capped_regression.pdf")
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "autre(s) compte(s)" in full_text
+    print("OK - test_control_subsection_table_capped_on_large_dataset")
+
+
+def test_word_report_generates_without_crash():
+    """Le rapport Word doit se générer sans erreur, avec la même
+    structure que le PDF (mêmes calculs, moteur de rendu différent)."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "full_name": ["Jean Dupont"], "system": ["AD"],
+        "account_status": ["Active"], "last_login_date": ["2024-01-01"],
+    })
+    result = analyze_access(df)
+    output = generate_word_report(result, "output/test_word_regression.docx")
+    assert output.exists()
+    print("OK - test_word_report_generates_without_crash")
+
+
+def test_word_report_content_matches_pdf_data():
+    """Le contenu du Word doit refléter les mêmes données que le PDF —
+    même compte, même action, même contrôle déclenché."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+    from docx import Document
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "full_name": ["Jean Dupont"], "system": ["AD"],
+        "account_status": ["Active"], "last_login_date": ["2024-01-01"],
+    })
+    result = analyze_access(df)
+    output = generate_word_report(result, "output/test_word_content.docx")
+    doc = Document(str(output))
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            full_text += "\n" + " ".join(cell.text for cell in row.cells)
+    assert "jdupont" in full_text
+    assert "2.Dormant Accounts" in full_text
+    assert "I. OBJECTIF" in full_text
+    print("OK - test_word_report_content_matches_pdf_data")
+
+
+def test_word_report_with_previous_review_comparison():
+    """La comparaison avec la revue précédente doit fonctionner dans le
+    Word exactement comme dans le PDF (créés/réactivés/escalade)."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+    from docx import Document
+
+    previous = analyze_access(pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"], "account_status": ["Active"], "role": ["User"],
+    }))
+    current = analyze_access(pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"], "account_status": ["Active"], "role": ["Administrator"],
+    }))
+    output = generate_word_report(current, "output/test_word_comparison.docx", previous_df=previous)
+    doc = Document(str(output))
+    full_text = ""
+    for table in doc.tables:
+        for row in table.rows:
+            full_text += " ".join(cell.text for cell in row.cells) + "\n"
+    assert "Privilege Escalation" in full_text
+    print("OK - test_word_report_with_previous_review_comparison")
+
+
+def test_word_report_control_characters_do_not_crash():
+    """
+    Régression réelle : contrairement à ReportLab (PDF), python-docx
+    (Word) rejette purement et simplement les caractères de contrôle
+    avec une exception XML — la même correction que pour Excel était
+    nécessaire ici aussi, mais n'avait pas été appliquée au nouveau
+    chemin Word.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+
+    df = pd.DataFrame({
+        "username": ["user1\x00\x01"], "full_name": ["Jean\x0bDupont"],
+        "system": ["AD"], "account_status": ["Active"],
+    })
+    result = analyze_access(df)
+    output = generate_word_report(result, "output/test_word_control_chars_regression.docx")
+    assert output.exists()
+    print("OK - test_word_report_control_characters_do_not_crash")
+
+
+def test_word_report_empty_dataframe_no_crash():
+    """Un DataFrame vide ne doit pas faire planter la génération Word."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+
+    df = pd.DataFrame({"username": [], "system": []})
+    result = analyze_access(df)
+    output = generate_word_report(result, "output/test_word_empty_regression.docx")
+    assert output.exists()
+    print("OK - test_word_report_empty_dataframe_no_crash")
+
+
+def test_word_report_large_dataset_table_capped():
+    """Au-delà du plafond de 30 comptes par contrôle, une mention doit
+    renvoyer vers le détail complet — cohérent avec le comportement PDF."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+    from docx import Document
+
+    rows = [{"username": f"user{i:03d}", "system": "AD", "account_status": "Active",
+              "last_login_date": "2024-01-01"} for i in range(50)]
+    result = analyze_access(pd.DataFrame(rows))
+    output = generate_word_report(result, "output/test_word_capped_regression.docx")
+    doc = Document(str(output))
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "autre(s) compte(s)" in full_text
+    print("OK - test_word_report_large_dataset_table_capped")
+
+
+def test_control_action_clarification_note_present():
+    """
+    Un compte peut apparaître sous plusieurs contrôles à la fois avec une
+    action affichée qui reflète la priorité GLOBALE, pas la raison
+    précise de sa présence dans CETTE section — doit être expliqué
+    clairement, sinon un auditeur pourrait être perdu (ex. un compte
+    listé sous 'Test Accounts' affichant 'Désactiver (privilégié
+    dormant)' sans autre explication).
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report, generate_word_report
+    import pdfplumber
+    from docx import Document
+
+    df = pd.DataFrame({
+        "username": ["test_admin"], "system": ["AD"], "account_status": ["Active"],
+        "is_privileged": ["Yes"], "last_login_date": ["2024-01-01"],
+    })
+    result = analyze_access(df)
+
+    pdf_output = generate_pdf_report(result, "output/test_clarif_pdf.pdf")
+    with pdfplumber.open(pdf_output) as pdf:
+        pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "action prioritaire globale" in pdf_text
+
+    word_output = generate_word_report(result, "output/test_clarif_word.docx")
+    doc = Document(str(word_output))
+    word_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "action prioritaire globale" in word_text
+    print("OK - test_control_action_clarification_note_present")
+
+
+def test_word_report_shows_escalated_account_names_not_just_count():
+    """
+    Régression réelle : Word affichait le CHIFFRE de l'escalade de
+    privilège mais jamais les NOMS, contrairement au PDF qui liste les
+    comptes concernés — incohérence entre les deux formats malgré une
+    même source de données.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+    from docx import Document
+
+    previous = analyze_access(pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"], "account_status": ["Active"], "role": ["User"],
+    }))
+    current = analyze_access(pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"], "account_status": ["Active"], "role": ["Administrator"],
+    }))
+    output = generate_word_report(current, "output/test_word_escalation_names.docx", previous_df=previous)
+    doc = Document(str(output))
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "jdupont" in full_text
+    assert "Privilege Escalation" in full_text
+    print("OK - test_word_report_shows_escalated_account_names_not_just_count")
+
+
+def test_word_report_includes_risk_score_explainability_section():
+    """
+    Régression réelle : la section 'Score de risque — détail du calcul'
+    (top 10 comptes les plus exposés avec raisons) existait seulement
+    dans le PDF, absente de Word — incohérence entre les deux formats.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+    from docx import Document
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"], "account_status": ["Active"],
+        "employee_status": ["Terminated"], "is_privileged": ["Yes"],
+        "last_login_date": ["2024-01-01"],
+    })
+    result = analyze_access(df)
+    output = generate_word_report(result, "output/test_word_risk_detail_regression.docx")
+    doc = Document(str(output))
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Score de risque" in full_text
+    assert "Employé parti" in full_text
+    print("OK - test_word_report_includes_risk_score_explainability_section")
+
+
+def test_word_report_includes_exceptions_and_detail_by_system():
+    """
+    Régression réelle, trouvée par comparaison systématique PDF/Word :
+    'Rapport des exceptions' et 'Détail par système' existaient
+    seulement dans le PDF — absentes de Word. Or plusieurs notes de
+    plafonnement ('voir le détail complet par système') y renvoient
+    explicitement : sans cette section, la promesse n'est pas tenue.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+    from docx import Document
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "full_name": ["Jean Dupont"], "system": ["AD"],
+        "account_status": ["Active"], "employee_status": ["Terminated"],
+    })
+    result = analyze_access(df)
+    output = generate_word_report(result, "output/test_word_exceptions_detail.docx")
+    doc = Document(str(output))
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            full_text += "\n" + " ".join(c.text for c in row.cells)
+    assert "Rapport des exceptions" in full_text
+    assert "Détail par système" in full_text
+    assert "jdupont" in full_text
+    print("OK - test_word_report_includes_exceptions_and_detail_by_system")
+
+
+def test_deleted_accounts_found_in_previous_df_not_current():
+    """
+    Vrai bug trouvé : un compte supprimé n'existe par définition plus
+    dans le fichier ACTUEL (df) — le chercher là renvoyait toujours zéro
+    résultat. Doit être retrouvé dans la revue PRÉCÉDENTE, où il existe
+    encore, pour afficher ses vrais attributs.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report, generate_word_report
+    import pdfplumber
+    from docx import Document
+
+    previous = analyze_access(pd.DataFrame({
+        "username": ["jdupont", "old_leaver"], "full_name": ["Jean Dupont", "Ancien Employé"],
+        "system": ["AD"] * 2, "account_status": ["Active"] * 2,
+    }))
+    current = analyze_access(pd.DataFrame({
+        "username": ["jdupont"], "full_name": ["Jean Dupont"], "system": ["AD"],
+        "account_status": ["Active"],
+    }))
+
+    pdf_output = generate_pdf_report(current, "output/test_deleted_pdf_regression.pdf", previous_df=previous)
+    with pdfplumber.open(pdf_output) as pdf:
+        pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "old_leaver" in pdf_text
+
+    word_output = generate_word_report(current, "output/test_deleted_word_regression.docx", previous_df=previous)
+    doc = Document(str(word_output))
+    word_text = ""
+    for table in doc.tables:
+        for row in table.rows:
+            word_text += " ".join(c.text for c in row.cells) + "\n"
+    assert "old_leaver" in word_text
+    print("OK - test_deleted_accounts_found_in_previous_df_not_current")
+
+
+def test_control_specific_justifying_columns_shown():
+    """
+    Chaque contrôle doit afficher les colonnes qui permettent de
+    VÉRIFIER pourquoi un compte y figure (ex. la vraie date de dernière
+    connexion et son ancienneté en jours pour 'Dormant'), pas seulement
+    l'action recommandée qui en résulte.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "full_name": ["Jean Dupont"], "system": ["AD"],
+        "account_status": ["Active"], "last_login_date": ["2024-01-01"],
+    })
+    result = analyze_access(df)
+    output = generate_pdf_report(result, "output/test_justifying_cols.pdf")
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    idx = full_text.find("2.Dormant Accounts")
+    snippet = full_text[idx:idx + 400]
+    assert "Dernière connexion" in snippet
+    assert "Jours sans connexion" in snippet
+    print("OK - test_control_specific_justifying_columns_shown")

@@ -19,11 +19,11 @@ import streamlit as st
 from ingestion.ingest import load_file, IngestionError, compute_data_quality_report
 from analysis.access_review import analyze_access, summarize
 from analysis.hr_crossref import cross_reference_with_hr
-from analysis.sod_detection import detect_sod_conflicts
+from analysis.sod_detection import detect_sod_conflicts, load_custom_sod_matrix
 from analysis.review_workflow import (
-    attach_review_status, review_summary, apply_review_decision, VALID_STATUSES,
+    attach_review_status, review_summary, apply_review_decision, VALID_STATUSES, get_audit_trail,
 )
-from reporting.export import generate_excel_report, generate_pdf_report
+from reporting.export import generate_excel_report, generate_pdf_report, generate_word_report
 
 st.set_page_config(page_title="Access Review Toolkit", page_icon="🔐", layout="wide")
 
@@ -36,6 +36,10 @@ def run_pipeline(
     file_bytes: bytes, filename: str,
     hr_file_bytes: bytes = None, hr_filename: str = None,
     default_system: str = None,
+    dormant_threshold_days: int = 90,
+    password_stale_threshold_days: int = 90,
+    never_used_threshold_days: int = 30,
+    sod_conflicts: list = None,
 ) -> pd.DataFrame:
     suffix = Path(filename).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -50,8 +54,13 @@ def run_pipeline(
             hr_tmp_path = hr_tmp.name
         df = cross_reference_with_hr(df, hr_df_raw_path=hr_tmp_path)
 
-    df = analyze_access(df)
-    df = detect_sod_conflicts(df)
+    df = analyze_access(
+        df,
+        dormant_threshold_days=dormant_threshold_days,
+        password_stale_threshold_days=password_stale_threshold_days,
+        never_used_threshold_days=never_used_threshold_days,
+    )
+    df = detect_sod_conflicts(df, conflicts=sod_conflicts)
     return df
 
 
@@ -96,10 +105,37 @@ def main():
         )
 
         st.divider()
-        st.caption(
-            "Un compte est considéré 'dormant' sans connexion depuis plus de "
-            "90 jours (seuil standard du secteur)."
+        st.subheader("⚙️ Seuils des contrôles")
+        dormant_threshold_days = st.number_input(
+            "Seuil de dormance (jours)", min_value=1, value=90, step=15,
+            help="Un compte est considéré 'dormant' sans connexion depuis plus de ce nombre de jours.",
         )
+        password_stale_threshold_days = st.number_input(
+            "Seuil d'ancienneté du mot de passe (jours)", min_value=1, value=90, step=15,
+            help="Un mot de passe est considéré périmé au-delà de ce nombre de jours (comptes de service exclus).",
+        )
+        never_used_threshold_days = st.number_input(
+            "Seuil 'jamais utilisé' (jours depuis création)", min_value=1, value=30, step=5,
+            help="Un compte jamais connecté n'est signalé qu'après ce délai depuis sa création "
+                 "(laisse le temps à un nouveau compte d'être utilisé pour la première fois).",
+        )
+
+        st.divider()
+        st.subheader("🔐 Matrice SoD personnalisée (optionnel)")
+        sod_matrix_file = st.file_uploader(
+            "Fichier à 2 colonnes : rôle 1, rôle 2 (paires incompatibles)",
+            type=["csv", "xlsx", "xls"],
+            help="Sans fichier, une matrice générique par défaut est utilisée (conflits classiques "
+                 "finance/achats/IT). Chaque entreprise a sa propre liste de rôles incompatibles — "
+                 "fournissez la vôtre pour l'appliquer sans modifier le code.",
+        )
+        sod_conflicts = None
+        if sod_matrix_file is not None:
+            try:
+                sod_conflicts = load_custom_sod_matrix(sod_matrix_file.getvalue(), sod_matrix_file.name)
+                st.success(f"{len(sod_conflicts)} paire(s) de rôles incompatibles chargée(s).")
+            except Exception as e:
+                st.warning(f"Matrice SoD ignorée (erreur de lecture) : {e}")
 
     df, error = None, None
     try:
@@ -110,11 +146,21 @@ def main():
                 df = run_pipeline(
                     uploaded_file.getvalue(), uploaded_file.name, hr_bytes, hr_name,
                     default_system=default_system,
+                    dormant_threshold_days=dormant_threshold_days,
+                    password_stale_threshold_days=password_stale_threshold_days,
+                    never_used_threshold_days=never_used_threshold_days,
+                    sod_conflicts=sod_conflicts,
                 )
         elif use_sample:
             sample_path = Path(__file__).parent.parent / "data" / "export_test_A.csv"
             with st.spinner("Traitement du fichier d'exemple..."):
-                df = run_pipeline(sample_path.read_bytes(), sample_path.name)
+                df = run_pipeline(
+                    sample_path.read_bytes(), sample_path.name,
+                    dormant_threshold_days=dormant_threshold_days,
+                    password_stale_threshold_days=password_stale_threshold_days,
+                    never_used_threshold_days=never_used_threshold_days,
+                    sod_conflicts=sod_conflicts,
+                )
     except IngestionError as e:
         error = f"Erreur d'ingestion : {e}"
     except Exception as e:
@@ -211,6 +257,93 @@ def main():
     )
 
     st.divider()
+    st.subheader("🔎 Investigation de compte")
+    st.caption(
+        "Sélectionne un compte pour voir sa fiche complète — identité, accès, activité, "
+        "risque détaillé et historique complet des décisions de revue."
+    )
+    if "username" not in df.columns:
+        st.info("Colonne 'username' absente : investigation de compte indisponible.")
+    else:
+        usernames_available = sorted(df["username"].dropna().unique().tolist())
+        if not usernames_available:
+            st.info("Aucun compte exploitable dans ce fichier.")
+        else:
+            selected_username = st.selectbox("Compte à investiguer", options=usernames_available)
+            matches = df[df["username"] == selected_username]
+            if "system" in df.columns and matches["system"].nunique() > 1:
+                selected_system = st.selectbox(
+                    "Ce compte existe sur plusieurs systèmes — lequel ?",
+                    options=sorted(matches["system"].dropna().unique().tolist()),
+                )
+                matches = matches[matches["system"] == selected_system]
+            account = matches.iloc[0]
+
+            inv_col1, inv_col2, inv_col3 = st.columns(3)
+            with inv_col1:
+                st.markdown("**Identity**")
+                st.write(f"Username : {account.get('username', '—')}")
+                st.write(f"Nom : {account.get('full_name', '—')}")
+                st.write(f"Département : {account.get('department', '—')}")
+                st.write(f"Manager : {account.get('manager') or '—'}")
+                st.write(f"Statut RH : {account.get('employee_status', '—')}")
+            with inv_col2:
+                st.markdown("**Access**")
+                st.write(f"Système : {account.get('system', '—')}")
+                st.write(f"Rôle : {account.get('role', '—')}")
+                st.write(f"Privilégié : {'Oui' if account.get('is_privileged_flag') else 'Non'}")
+                st.write(f"Statut compte : {account.get('account_status', '—')}")
+                st.write(f"Verrouillé : {'Oui' if account.get('is_locked') else 'Non'}")
+            with inv_col3:
+                st.markdown("**Activity**")
+                days_login = account.get("days_since_last_login")
+                st.write(f"Dernière connexion : {int(days_login) if pd.notna(days_login) else 'inconnue'} jour(s)")
+                days_pwd = account.get("days_since_password_change")
+                st.write(f"Âge du mot de passe : {int(days_pwd) if pd.notna(days_pwd) else 'inconnu'} jour(s)")
+                st.write(f"Créé le : {account.get('account_created_date') or '—'}")
+
+            st.markdown("**Findings**")
+            finding_labels = {
+                "is_terminated_but_active": "🔴 Employé parti, compte encore actif",
+                "is_dormant": "🔴 Compte dormant",
+                "is_never_used": "🔴 Jamais utilisé depuis sa création",
+                "is_password_stale": "🟠 Mot de passe périmé",
+                "has_non_expiring_password": "🟠 Mot de passe n'expirant jamais",
+                "has_no_manager": "🟠 Aucun manager identifié",
+                "is_duplicate_account": "🟠 Compte en doublon",
+                "is_test_account": "🟡 Nom évoquant un compte de test",
+                "is_non_compliant_naming": "🟡 Nom non conforme à la convention",
+                "sod_conflict": "🔴 Conflit de séparation des tâches (SoD)",
+            }
+            findings = [label for key, label in finding_labels.items() if account.get(key)]
+            if findings:
+                for f in findings:
+                    st.write(f)
+            else:
+                st.write("✅ Aucune anomalie détectée sur ce compte.")
+
+            if "risk_score" in account:
+                st.markdown(f"**Risk score : {int(account['risk_score'])}/100 — {account.get('risk_level', '')}**")
+                reasons = account.get("risk_score_reasons") or []
+                for label, pts in reasons:
+                    st.write(f"+ {pts} — {label}")
+
+            st.markdown("**Review — historique complet**")
+            if "system" in df.columns:
+                history = get_audit_trail(
+                    str(account.get("username")), str(account.get("system")), store_path=DECISIONS_STORE_PATH,
+                )
+                if history:
+                    for entry in history:
+                        st.write(
+                            f"{entry.get('date', '?')} — **{entry.get('status', '?')}** "
+                            f"(par {entry.get('validated_by') or 'non renseigné'})"
+                            + (f" — _{entry.get('comment')}_" if entry.get("comment") else "")
+                        )
+                else:
+                    st.write("Aucune décision enregistrée pour ce compte pour l'instant.")
+
+    st.divider()
     st.subheader("✅ Validation de la revue")
     st.caption(
         "Change le statut de chaque compte, puis clique sur 'Enregistrer les "
@@ -305,7 +438,7 @@ def main():
         with signoff_col3:
             approved_by = st.text_input("Approuvé par", placeholder="Nom, Prénom")
 
-    report_col1, report_col2 = st.columns(2)
+    report_col1, report_col2, report_col3 = st.columns(3)
     with report_col1:
         if st.button("Générer le rapport Excel", use_container_width=True):
             with st.spinner("Génération..."):
@@ -318,33 +451,42 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
+
+    def _resolve_previous_df_and_logo():
+        previous_df = None
+        if previous_file is not None:
+            prev_suffix = Path(previous_file.name).suffix
+            with tempfile.NamedTemporaryFile(suffix=prev_suffix, delete=False) as tmp_prev:
+                tmp_prev.write(previous_file.getvalue())
+                tmp_prev_path = tmp_prev.name
+            try:
+                previous_raw = load_file(tmp_prev_path, default_system=None)
+                previous_df = analyze_access(
+                    previous_raw,
+                    dormant_threshold_days=dormant_threshold_days,
+                    password_stale_threshold_days=password_stale_threshold_days,
+                    never_used_threshold_days=never_used_threshold_days,
+                )
+            except IngestionError as e:
+                st.warning(f"Revue précédente ignorée (erreur d'ingestion) : {e}")
+
+        logo_path = None
+        if logo_file is not None:
+            logo_suffix = Path(logo_file.name).suffix
+            with tempfile.NamedTemporaryFile(suffix=logo_suffix, delete=False) as tmp_logo:
+                tmp_logo.write(logo_file.getvalue())
+                logo_path = tmp_logo.name
+        else:
+            default_logo = Path(__file__).parent.parent / "assets" / "mtnlogo.png"
+            if default_logo.exists():
+                logo_path = str(default_logo)
+        return previous_df, logo_path
+
     with report_col2:
         if st.button("Générer le rapport PDF", use_container_width=True):
             with st.spinner("Génération..."):
-                previous_df = None
-                if previous_file is not None:
-                    prev_suffix = Path(previous_file.name).suffix
-                    with tempfile.NamedTemporaryFile(suffix=prev_suffix, delete=False) as tmp_prev:
-                        tmp_prev.write(previous_file.getvalue())
-                        tmp_prev_path = tmp_prev.name
-                    try:
-                        previous_raw = load_file(tmp_prev_path, default_system=None)
-                        previous_df = analyze_access(previous_raw)
-                    except IngestionError as e:
-                        st.warning(f"Revue précédente ignorée (erreur d'ingestion) : {e}")
-
+                previous_df, logo_path = _resolve_previous_df_and_logo()
                 tmp_pdf = Path(tempfile.gettempdir()) / "rapport_revue_acces.pdf"
-                logo_path = None
-                if logo_file is not None:
-                    logo_suffix = Path(logo_file.name).suffix
-                    with tempfile.NamedTemporaryFile(suffix=logo_suffix, delete=False) as tmp_logo:
-                        tmp_logo.write(logo_file.getvalue())
-                        logo_path = tmp_logo.name
-                else:
-                    default_logo = Path(__file__).parent.parent / "assets" / "mtnlogo.png"
-                    if default_logo.exists():
-                        logo_path = str(default_logo)
-
                 generate_pdf_report(
                     filtered, tmp_pdf, period=period_label or None,
                     prepared_by=prepared_by or None,
@@ -357,11 +499,37 @@ def main():
                     include_controls_reference=include_controls_reference,
                     previous_df=previous_df,
                     logo_path=logo_path,
+                    dormant_threshold_days=dormant_threshold_days,
                 )
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(
                 "⬇️ Télécharger le rapport PDF", data=buf.getvalue(),
                 file_name="rapport_revue_acces.pdf", mime="application/pdf",
+                use_container_width=True,
+            )
+    with report_col3:
+        if st.button("Générer le rapport Word", use_container_width=True):
+            with st.spinner("Génération..."):
+                previous_df, logo_path = _resolve_previous_df_and_logo()
+                tmp_docx = Path(tempfile.gettempdir()) / "rapport_revue_acces.docx"
+                generate_word_report(
+                    filtered, tmp_docx, period=period_label or None,
+                    prepared_by=prepared_by or None,
+                    reviewed_by=reviewed_by or None,
+                    approved_by=approved_by or None,
+                    department=department or None,
+                    editor=editor or None,
+                    application_scope=application_scope or None,
+                    document_version=document_version or "1.0",
+                    previous_df=previous_df,
+                    logo_path=logo_path,
+                    dormant_threshold_days=dormant_threshold_days,
+                )
+                buf = BytesIO(tmp_docx.read_bytes())
+            st.download_button(
+                "⬇️ Télécharger le rapport Word", data=buf.getvalue(),
+                file_name="rapport_revue_acces.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
             )
 

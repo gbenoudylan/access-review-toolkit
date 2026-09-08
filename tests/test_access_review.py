@@ -722,3 +722,72 @@ def test_risk_score_zero_for_clean_account():
     assert result.loc[0, "risk_score"] == 0
     assert result.loc[0, "risk_score_reasons"] == []
     print("OK - test_risk_score_zero_for_clean_account")
+
+
+def test_dormant_threshold_is_configurable():
+    """Le seuil de dormance doit être un vrai paramètre, pas figé —
+    recommandé dans plusieurs retours externes, jamais fait avant."""
+    df = pd.DataFrame({"username": ["u1"], "system": ["AD"], "last_login_date": ["2026-08-01"]})
+    r90 = analyze_access(df, dormant_threshold_days=90)
+    r30 = analyze_access(df, dormant_threshold_days=30)
+    assert r90.loc[0, "is_dormant"] != r30.loc[0, "is_dormant"]
+    print("OK - test_dormant_threshold_is_configurable")
+
+
+def test_password_stale_threshold_is_configurable():
+    """Le seuil d'ancienneté du mot de passe doit être configurable, pas
+    seulement une constante de module fixe."""
+    df = pd.DataFrame({"username": ["u1"], "system": ["AD"], "password_last_set": ["2026-08-01"]})
+    r90 = analyze_access(df, password_stale_threshold_days=90)
+    r30 = analyze_access(df, password_stale_threshold_days=30)
+    assert r90.loc[0, "is_password_stale"] != r30.loc[0, "is_password_stale"]
+    print("OK - test_password_stale_threshold_is_configurable")
+
+
+def test_never_used_threshold_is_configurable():
+    """Le délai de grâce avant de signaler un compte 'jamais utilisé'
+    doit être configurable."""
+    import datetime as dt
+    creation = (dt.datetime.now() - dt.timedelta(days=20)).strftime("%Y-%m-%d")
+    df = pd.DataFrame({
+        "username": ["u1"], "system": ["AD"],
+        "account_created_date": [creation], "last_login_date": [None],
+    })
+    r30 = analyze_access(df, never_used_threshold_days=30)
+    r10 = analyze_access(df, never_used_threshold_days=10)
+    assert r30.loc[0, "is_never_used"] == False, "Créé il y a 20j, seuil 30j : trop tôt"
+    assert r10.loc[0, "is_never_used"] == True, "Créé il y a 20j, seuil 10j : doit signaler"
+    print("OK - test_never_used_threshold_is_configurable")
+
+
+def test_load_custom_sod_matrix_from_excel():
+    """La matrice SoD doit pouvoir être chargée depuis un fichier Excel à
+    2 colonnes, peu importe leur nom exact — recommandé pour que chaque
+    entreprise adapte les conflits sans modifier le code."""
+    from analysis.sod_detection import load_custom_sod_matrix, detect_sod_conflicts
+    import io
+
+    buf = io.BytesIO()
+    pd.DataFrame({
+        "role_1": ["Créateur Paiement", "Développeur"],
+        "role_2": ["Approbateur Paiement", "Admin Prod"],
+    }).to_excel(buf, index=False)
+    matrix = load_custom_sod_matrix(buf.getvalue(), "matrice.xlsx")
+    assert matrix == [("Créateur Paiement", "Approbateur Paiement"), ("Développeur", "Admin Prod")]
+
+    df = pd.DataFrame({
+        "username": ["u1"], "system": ["ERP"],
+        "role": ["Créateur Paiement, Approbateur Paiement"],
+    })
+    result = detect_sod_conflicts(df, conflicts=matrix)
+    assert result.loc[0, "sod_conflict"] == True
+    print("OK - test_load_custom_sod_matrix_from_excel")
+
+
+def test_load_custom_sod_matrix_from_csv():
+    """Doit aussi fonctionner avec un CSV, pas seulement Excel."""
+    from analysis.sod_detection import load_custom_sod_matrix
+    content = "role_1,role_2\nAdmin,Auditeur\n"
+    matrix = load_custom_sod_matrix(content.encode(), "matrice.csv")
+    assert matrix == [("Admin", "Auditeur")]
+    print("OK - test_load_custom_sod_matrix_from_csv")

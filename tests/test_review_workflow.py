@@ -82,3 +82,45 @@ if __name__ == "__main__":
     test_attach_review_status_shows_latest_decision()
     test_no_history_defaults_to_en_attente()
     print("Tous les tests passent.")
+
+
+def test_account_investigation_data_flow_no_crash():
+    """
+    Simule la logique du bloc 'Investigation de compte' du dashboard :
+    sélection d'un compte (y compris multi-systèmes), calcul des
+    findings, récupération de l'historique complet — aucun plantage,
+    même sur des colonnes absentes (sod_conflict, risk_score_reasons).
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from analysis.access_review import analyze_access
+
+    store_path = tempfile.mktemp(suffix=".json")
+    df = pd.DataFrame({
+        "username": ["jdupont", "jdupont", "test_admin"],
+        "system": ["AD", "SAP", "AD"],
+        "full_name": ["Jean Dupont", "Jean Dupont", "Test Admin"],
+        "employee_status": ["Terminated", "Terminated", "Active"],
+        "account_status": ["Active", "Active", "Active"],
+        "role": ["Administrator", "User", "User"],
+        "last_login_date": ["2024-01-01", "2024-01-01", "2026-09-01"],
+    })
+    result = analyze_access(df)
+    apply_review_decision("jdupont", "AD", "Révoqué", "reviewer01", "Test", store_path)
+
+    for uname in sorted(result["username"].dropna().unique().tolist()):
+        matches = result[result["username"] == uname]
+        for sys_name in sorted(matches["system"].dropna().unique().tolist()):
+            account = matches[matches["system"] == sys_name].iloc[0]
+            # Champs utilisés par le dashboard — ne doivent jamais planter,
+            # même absents (sod_conflict n'existe pas ici).
+            _ = account.get("is_privileged_flag")
+            _ = account.get("sod_conflict")
+            _ = account.get("risk_score_reasons") or []
+            assert "risk_score" in account
+            history = get_audit_trail(str(account.get("username")), str(account.get("system")), store_path=store_path)
+            assert isinstance(history, list)
+
+    os.remove(store_path)
+    print("OK - test_account_investigation_data_flow_no_crash")

@@ -304,7 +304,10 @@ def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> f
 
 
 def analyze_access(
-    df: pd.DataFrame, dormant_threshold_days: int = DORMANT_THRESHOLD_DAYS
+    df: pd.DataFrame,
+    dormant_threshold_days: int = DORMANT_THRESHOLD_DAYS,
+    password_stale_threshold_days: int = PASSWORD_STALE_THRESHOLD_DAYS,
+    never_used_threshold_days: int = 30,
 ) -> pd.DataFrame:
     """
     Analyse un DataFrame standardisé (sortie du module d'ingestion) et
@@ -370,7 +373,6 @@ def analyze_access(
     # un compte qui n'a JAMAIS servi depuis sa création — un signal
     # différent (accès jamais activé plutôt qu'oublié), qui mérite son
     # propre contrôle plutôt que d'être noyé dans les mêmes dormants.
-    NEVER_USED_THRESHOLD_DAYS = 30
     if "account_created_date" in df.columns:
         _dayfirst_created = _detect_dayfirst(df["account_created_date"])
         _yearfirst_created = _detect_yearfirst(df["account_created_date"])
@@ -378,7 +380,7 @@ def analyze_access(
             lambda v: _days_since(v, dayfirst=_dayfirst_created, yearfirst=_yearfirst_created)
         )
         df["is_never_used"] = never_logged_in & days_since_creation.apply(
-            lambda d: d is None or d > NEVER_USED_THRESHOLD_DAYS
+            lambda d: d is None or d > never_used_threshold_days
         )
     else:
         # Sans date de création, impossible de vérifier la règle des 30
@@ -472,7 +474,7 @@ def analyze_access(
         df["days_since_password_change"] = None
 
     df["is_password_stale"] = df["days_since_password_change"].apply(
-        lambda d: d is not None and d > PASSWORD_STALE_THRESHOLD_DAYS
+        lambda d: d is not None and d > password_stale_threshold_days
     )
 
     if "password_status" in df.columns:

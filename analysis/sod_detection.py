@@ -40,6 +40,33 @@ DEFAULT_SOD_CONFLICTS = [
 ]
 
 
+def load_custom_sod_matrix(file_bytes: bytes, filename: str) -> list[tuple[str, str]]:
+    """
+    Charge une matrice de conflits SoD personnalisée depuis un fichier
+    Excel/CSV à deux colonnes (peu importe leur nom exact — les deux
+    premières colonnes sont utilisées), une paire de rôles incompatibles
+    par ligne. Permet à chaque entreprise d'adapter la matrice sans
+    modifier le code : chaque organisation a sa propre liste de rôles
+    incompatibles, la matrice par défaut n'est qu'un point de départ.
+    """
+    import io
+    from pathlib import Path as _Path
+    suffix = _Path(filename).suffix.lower()
+    if suffix == ".csv":
+        matrix_df = pd.read_csv(io.BytesIO(file_bytes))
+    else:
+        matrix_df = pd.read_excel(io.BytesIO(file_bytes))
+    if matrix_df.shape[1] < 2:
+        raise ValueError("La matrice SoD doit contenir au moins deux colonnes (rôle 1, rôle 2).")
+    col_a, col_b = matrix_df.columns[:2]
+    pairs = []
+    for _, row in matrix_df.iterrows():
+        a, b = row[col_a], row[col_b]
+        if pd.notna(a) and pd.notna(b) and str(a).strip() and str(b).strip():
+            pairs.append((str(a).strip(), str(b).strip()))
+    return pairs
+
+
 def _normalize(text) -> str:
     if text is None or (isinstance(text, float) and pd.isna(text)):
         return ""
