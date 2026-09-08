@@ -151,8 +151,32 @@ def standardize_columns(df: pd.DataFrame, column_mapping: dict = None) -> pd.Dat
     rename_map, unmatched = {}, []
     claimed_by: dict[str, str] = {}  # nom standard -> colonne originale déjà utilisée
 
+    # Deux colonnes brutes peuvent porter EXACTEMENT le même libellé (pas
+    # juste équivalent) — ex. un export avec deux colonnes "Status". Dans
+    # ce cas, df["Status"] renvoie les deux à la fois sous forme de
+    # DataFrame (pas une Series), ce qui casse silencieusement la fusion
+    # ci-dessous. On rend donc les libellés bruts uniques (par position)
+    # avant tout traitement, pour que chaque colonne soit toujours
+    # adressable individuellement.
+    if df.columns.duplicated().any():
+        seen: dict = {}
+        new_labels = []
+        for col in df.columns:
+            key = str(col)
+            seen[key] = seen.get(key, 0) + 1
+            new_labels.append(col if seen[key] == 1 else f"{col}__dup{seen[key]}")
+        logger.info(
+            f"Colonnes brutes en double détectées (même libellé exact) : "
+            f"renommées temporairement par position avant fusion."
+        )
+        df = df.copy()
+        df.columns = new_labels
+
     for col in df.columns:
-        matched = _match_column(col, column_mapping)
+        # Retire le suffixe temporaire ('__dupN') avant reconnaissance,
+        # sans quoi il empêche le fuzzy matching de reconnaître la colonne.
+        lookup_name = re.sub(r"__dup\d+$", "", str(col))
+        matched = _match_column(lookup_name, column_mapping)
         if not matched:
             unmatched.append(col)
             continue
@@ -181,6 +205,26 @@ def validate_required_fields(df: pd.DataFrame, required_fields: list = None) -> 
             f"Colonnes disponibles : {list(df.columns)}. "
             f"-> Ajoutez la variante manquante dans config/column_mapping.py"
         )
+
+    # La colonne peut exister tout en étant entièrement vide — ex. un
+    # mapping qui a reconnu la bonne étiquette de colonne mais où les
+    # vraies valeurs se trouvent ailleurs (erreur de structure du
+    # fichier). Un champ obligatoire présent mais 100% vide n'est pas
+    # plus exploitable qu'un champ absent, et produirait un rapport
+    # rempli de comptes anonymes sans le moindre avertissement.
+    if len(df) > 0:
+        empty_required = [
+            f for f in required_fields
+            if df[f].isna().all() or (df[f].astype(str).str.strip() == "").all()
+        ]
+        if empty_required:
+            raise IngestionError(
+                f"Champ(s) obligatoire(s) présent(s) mais entièrement vide(s) : "
+                f"{empty_required}. La colonne existe dans le fichier mais ne "
+                f"contient aucune valeur exploitable — vérifiez que le bon "
+                f"champ source a été reconnu (une colonne mal alignée ou une "
+                f"ligne d'en-tête incorrectement détectée en est souvent la cause)."
+            )
 
 
 def _read_ragged_csv(path: Path) -> pd.DataFrame:
@@ -305,12 +349,44 @@ def _read_txt(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, bo
     de fiabilité décroissante, jusqu'à ce que l'une d'elles produise un
     résultat exploitable.
 
+    Avant cela, si le fichier contient plusieurs blocs séparés par une
+    ligne vide, chacun se comportant comme un tableau délimité/aligné à
+    part entière (typiquement : un bloc "identités", un bloc "rôles"
+    séparé, pour les mêmes comptes — ou au contraire un bloc par système),
+    chaque bloc est d'abord traité indépendamment, puis fusionné par
+    colonne ou empilé selon le même principe que pour Excel/Word/ZIP. Sans
+    quoi l'en-tête du second bloc se retrouvait traité comme une donnée,
+    et ses valeurs glissaient dans les mauvaises colonnes.
+
     Retourne (dataframe, header_already_named) : le second élément indique
     si les colonnes du DataFrame ont déjà leurs vrais noms (cas des blocs
     clé-valeur) ou si une détection d'en-tête classique reste à faire.
     """
     with open(path, encoding=_detect_encoding(path), errors="replace") as f:
         raw_text = f.read()
+
+    raw_blocks = [b for b in re.split(r"\n\s*\n", raw_text.strip()) if b.strip()]
+    if len(raw_blocks) >= 2:
+        named_blocks = {}
+        for i, block in enumerate(raw_blocks, 1):
+            block_lines = [l for l in block.splitlines() if l.strip()]
+            block_df = _try_delimited(block_lines, column_mapping)
+            if block_df is None:
+                block_df = _try_fixed_width(block_lines, column_mapping)
+            if block_df is None:
+                named_blocks = {}
+                break  # un bloc ne correspond à aucune des 2 stratégies -> on abandonne cette voie
+            header_row_idx = _detect_header_row(block_df, column_mapping)
+            standardized = block_df.iloc[header_row_idx + 1:].copy()
+            standardized.columns = block_df.iloc[header_row_idx]
+            standardized = standardized.dropna(how="all").reset_index(drop=True)
+            standardized = standardize_columns(standardized, column_mapping)
+            named_blocks[f"Bloc {i}"] = standardized
+
+        if named_blocks:
+            logger.info(f"Fichier texte interprété comme {len(named_blocks)} bloc(s) tabulaire(s) distinct(s).")
+            result = _merge_or_stack_named_tables(named_blocks, None, allow_name_as_system=False)
+            return result, True
 
     lines = [l for l in raw_text.splitlines()]
     non_empty_lines = [l for l in lines if l.strip()]
@@ -355,48 +431,37 @@ def _read_docx(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, b
     doc = Document(str(path))
 
     if doc.tables:
-        # Un document peut contenir plusieurs tableaux légitimes (ex. un
-        # par système/application, comme dans un rapport d'audit multi-
-        # systèmes). Ne garder que "le meilleur" en perdrait silencieusement
-        # tous les autres. On repère d'abord la ligne d'en-tête de référence
-        # (meilleur score), puis on concatène tous les tableaux dont le
-        # nombre de colonnes correspond — en excluant les répétitions
-        # d'en-tête plutôt que de les traiter comme des données.
-        best_header_row, best_score, ref_ncols = None, -1, None
-        all_table_rows = []
-        for table in doc.tables:
+        # Un document peut contenir plusieurs tableaux légitimes, dans deux
+        # cas de figure différents : soit chaque tableau décrit des comptes
+        # DIFFÉRENTS (ex. un système par tableau, à empiler), soit les
+        # tableaux décrivent les MÊMES comptes avec des colonnes différentes
+        # (ex. un tableau "Identités", un tableau "Rôles" séparé — à
+        # fusionner par colonne). Traiter chaque tableau indépendamment
+        # (détection d'en-tête propre) puis laisser _merge_or_stack_named_
+        # tables trancher, plutôt que de supposer que tous les tableaux
+        # partagent le même nombre de colonnes (ce qui ferait perdre
+        # silencieusement tout tableau à structure différente).
+        table_dfs: dict = {}
+        for idx, table in enumerate(doc.tables, 1):
             rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
             if not rows:
                 continue
-            all_table_rows.append(rows)
-            table_df = pd.DataFrame(rows)
-            for i in range(min(3, len(table_df))):
-                score = _score_header_row(table_df.iloc[i], column_mapping)
-                if score > best_score:
-                    best_score = score
-                    best_header_row = rows[i]
-                    ref_ncols = len(rows[i])
+            table_df_raw = pd.DataFrame(rows)
+            try:
+                header_row_idx = _detect_header_row(table_df_raw, column_mapping)
+            except IngestionError:
+                logger.warning(f"Tableau {idx} ignoré : aucun en-tête reconnaissable.")
+                continue
+            table_df = table_df_raw.iloc[header_row_idx + 1:].copy()
+            table_df.columns = table_df_raw.iloc[header_row_idx]
+            table_df = table_df.dropna(how="all").reset_index(drop=True)
+            table_df = standardize_columns(table_df, column_mapping)
+            table_dfs[f"Table {idx}"] = table_df
 
-        if best_header_row is not None:
-            combined_rows = []
-            for rows in all_table_rows:
-                for row in rows:
-                    if len(row) != ref_ncols:
-                        continue
-                    row_score = _score_header_row(pd.Series(row), column_mapping)
-                    if row_score >= best_score * 0.9:
-                        continue  # répétition de l'en-tête dans un autre tableau
-                    combined_rows.append(row)
-
-            logger.info(
-                f"{len(doc.tables)} tableau(x) détecté(s) dans le document, "
-                f"{len(combined_rows)} ligne(s) de données assemblées "
-                f"(en-tête score={best_score})."
-            )
-            final_rows = [best_header_row] + combined_rows
-            max_cols = max(len(r) for r in final_rows)
-            final_rows = [r + [None] * (max_cols - len(r)) for r in final_rows]
-            return pd.DataFrame(final_rows), False
+        if table_dfs:
+            result = _merge_or_stack_named_tables(table_dfs, None, allow_name_as_system=False)
+            logger.info(f"{len(doc.tables)} tableau(x) détecté(s) dans le document.")
+            return result, True
 
     # Aucun tableau exploitable : on retombe sur le texte des paragraphes
     logger.info("Aucun tableau exploitable — tentative de lecture en texte libre.")
@@ -588,16 +653,20 @@ def _read_ldif(path: Path) -> pd.DataFrame:
 
 def _read_pdf(path: Path, column_mapping: dict = None) -> pd.DataFrame:
     """
-    Extrait un tableau depuis un PDF, sur l'ensemble de ses pages.
+    Extrait un ou plusieurs tableaux depuis un PDF, sur l'ensemble de ses
+    pages, en distinguant deux situations bien différentes plutôt que de
+    se fier au seul nombre de colonnes (ce qui confondait à tort deux
+    tableaux différents ayant par coïncidence le même nombre de colonnes) :
 
-    Un tableau réel s'étale très souvent sur plusieurs pages (un export de
-    800 lignes ne tient jamais sur une seule page) : l'en-tête n'apparaît
-    en général qu'une fois, en haut de la première page, parfois répété en
-    haut de chaque page suivante. On identifie d'abord la page contenant le
-    véritable en-tête (meilleur score de reconnaissance de colonnes), puis
-    on concatène les lignes de TOUTES les pages dont le nombre de colonnes
-    correspond à ce même tableau — en ignorant les répétitions de l'en-tête
-    sur les pages suivantes plutôt que de les traiter comme des données.
+    1. Un même tableau logique étalé sur plusieurs pages (cas fréquent :
+       un export de 800 lignes ne tient jamais sur une seule page, l'en-
+       tête étant parfois répété en haut de chaque page) -> les fragments
+       partageant exactement les mêmes colonnes, une fois standardisées,
+       sont regroupés et concaténés, en écartant les répétitions d'en-tête.
+    2. Plusieurs tableaux réellement différents (colonnes différentes) au
+       sein du même PDF -> traités comme pour Excel/Word/ZIP/TXT : fusion
+       par colonne si les comptes se recouvrent (mêmes comptes, attributs
+       différents), empilement sinon (comptes/systèmes distincts).
     """
     try:
         import pdfplumber
@@ -632,70 +701,307 @@ def _read_pdf(path: Path, column_mapping: dict = None) -> pd.DataFrame:
             "(pas une image scannée ni une mise en page libre)."
         )
 
-    # 1) Repérer la ligne d'en-tête de référence : le meilleur score, tous
-    #    tableaux/pages confondus.
-    best_header_row, best_score, ref_ncols = None, -1, None
-    for table in all_tables:
-        table_df = pd.DataFrame(table)
-        for i in range(min(3, len(table_df))):
-            score = _score_header_row(table_df.iloc[i], column_mapping)
-            if score > best_score:
-                best_score = score
-                best_header_row = table[i]
-                ref_ncols = len(table[i])
+    # 1) Parcourir les fragments dans l'ordre des pages, en gardant trace du
+    #    tableau "actif" : une page sans en-tête reconnaissable est une
+    #    continuation du tableau précédent (cas normal — l'en-tête n'est
+    #    souvent présent qu'une fois, en page 1) ; une page dont la première
+    #    ligne EST un en-tête reconnaissable démarre soit une répétition du
+    #    même tableau (même signature de colonnes -> ligne ignorée), soit un
+    #    tableau réellement différent (signature différente -> nouveau
+    #    groupe). Une approche par simple nombre de colonnes confondait à
+    #    tort deux tableaux différents ayant coïncidemment le même nombre
+    #    de colonnes ; une détection d'en-tête indépendante par fragment
+    #    cassait, elle, le cas normal où l'en-tête n'apparaît qu'en page 1.
+    HEADER_SCORE_THRESHOLD = 2  # score jugé "suffisamment reconnaissable" pour être un en-tête
 
-    if best_header_row is None:
-        raise IngestionError(
-            f"Aucun en-tête reconnaissable dans les tableaux de {path.name}."
-        )
+    groups: list = []  # liste de dicts {signature, columns, rows: [...]}
+    current_group = None
 
-    # 2) Concaténer les lignes de TOUTES les pages ayant le même nombre de
-    #    colonnes que la référence (les petits tableaux annexes, type
-    #    bloc de signature, ont généralement un nombre de colonnes
-    #    différent et sont donc naturellement exclus). On saute les lignes
-    #    qui ressemblent fortement à une répétition de l'en-tête (score
-    #    proche du meilleur score) plutôt que de les garder comme données.
-    combined_rows = []
+    # On traite chaque LIGNE dans l'ordre, tous fragments/pages confondus
+    # (pas fragment par fragment) : un en-tête peut réapparaître au milieu
+    # d'une page, pas seulement en haut de chaque nouvelle page (ex. quand
+    # le PDF source assemble plusieurs petits tableaux qui ne s'alignent
+    # pas avec les sauts de page).
     for table in all_tables:
         for row in table:
-            if len(row) != ref_ncols:
-                continue
             row_score = _score_header_row(pd.Series(row), column_mapping)
-            if row_score >= best_score * 0.9:
-                continue  # répétition de l'en-tête sur cette page, pas une donnée
-            combined_rows.append(row)
+            if row_score >= HEADER_SCORE_THRESHOLD:
+                mapped_columns = [_match_column(c, column_mapping) or str(c) for c in row]
+                signature = frozenset(mapped_columns)
+                if current_group is not None and signature == current_group["signature"]:
+                    continue  # répétition de l'en-tête du tableau en cours : ignorée
+                current_group = {"signature": signature, "columns": mapped_columns, "rows": []}
+                groups.append(current_group)
+                continue
+
+            if current_group is None:
+                continue  # donnée avant tout en-tête reconnaissable : ignorée
+            if len(row) == len(current_group["columns"]):
+                current_group["rows"].append(row)
+
+    if not groups:
+        raise IngestionError(f"Aucun en-tête reconnaissable dans les tableaux de {path.name}.")
+
+    named_tables: dict = {}
+    for i, group in enumerate(groups, 1):
+        if not group["rows"]:
+            continue
+        group_df = pd.DataFrame(group["rows"], columns=group["columns"])
+        group_df = standardize_columns(group_df, column_mapping)
+        key = f"Tableau {i}"
+        if key in named_tables:
+            named_tables[key] = pd.concat([named_tables[key], group_df], ignore_index=True)
+        else:
+            named_tables[key] = group_df
 
     logger.info(
-        f"Tableau PDF assemblé sur {len(all_tables)} fragment(s) de page(s) : "
-        f"{len(combined_rows)} ligne(s) de données (en-tête score={best_score})."
+        f"{len(all_tables)} fragment(s) de page(s) regroupés en {len(named_tables)} "
+        f"tableau(x) distinct(s) par signature de colonnes."
     )
 
-    rows = [best_header_row] + combined_rows
-    max_cols = max(len(r) for r in rows)
-    rows = [list(r) + [None] * (max_cols - len(r)) for r in rows]
-    return pd.DataFrame(rows)
+    # 2) Fusion par colonne (comptes communs) ou empilement (comptes
+    #    distincts) entre tableaux de signatures différentes.
+    return _merge_or_stack_named_tables(named_tables, None, allow_name_as_system=False)
 
 
 # Extensions traitées nativement par _load_single_file (utilisé aussi par
 # _read_zip pour savoir quels fichiers internes tenter d'ouvrir).
 SUPPORTED_EXTENSIONS = [
     ".csv", ".xlsx", ".xls", ".docx", ".txt", ".json", ".xml", ".html", ".htm",
-    ".ldif", ".pdf",
+    ".ldif", ".pdf", ".jpeg", ".jpg", ".png",
 ]
+
+
+def _read_image_ocr(path: Path, column_mapping: dict = None) -> pd.DataFrame:
+    """
+    Extrait un tableau depuis une image (capture d'écran, photo) par
+    reconnaissance optique de caractères (OCR).
+
+    À la différence de tous les autres formats de ce module, l'OCR ne lit
+    pas une structure de données fiable : il DEVINE du texte à partir de
+    pixels. Colonnes mal alignées, chiffres confondus (0/O, 1/l), lignes
+    fusionnées ou coupées sont des erreurs connues et fréquentes,
+    particulièrement sur un tableau dense (beaucoup de colonnes serrées,
+    comme un export de comptes). Le résultat n'est donc jamais traité avec
+    la même confiance qu'un fichier structuré : chaque ligne produite est
+    marquée '_ocr_source' = True, pour que les rapports générés affichent
+    un avertissement explicite invitant à une vérification manuelle.
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError as e:
+        raise IngestionError(
+            "Les bibliothèques 'pytesseract' et 'Pillow' sont requises pour lire "
+            "les images. Installez-les avec : pip install pytesseract Pillow "
+            "(et le binaire tesseract-ocr doit être installé sur le système)."
+        ) from e
+
+    image = Image.open(path)
+    raw_text = pytesseract.image_to_string(image)
+
+    if not raw_text.strip():
+        raise IngestionError(
+            f"Aucun texte reconnu dans {path.name} par OCR. L'image est peut-être "
+            "trop floue, trop petite, ou ne contient pas de texte exploitable."
+        )
+
+    lines = [l for l in raw_text.splitlines() if l.strip()]
+    df = _try_delimited(lines, column_mapping)
+    strategy = "délimité"
+    if df is None:
+        df = _try_fixed_width(lines, column_mapping)
+        strategy = "colonnes alignées"
+
+    if df is None:
+        raise IngestionError(
+            f"Texte reconnu par OCR dans {path.name}, mais aucune structure de "
+            "tableau exploitable n'a pu en être dégagée. L'OCR fonctionne mieux "
+            "sur des tableaux à bordures nettes et peu de colonnes ; envisagez "
+            "de fournir directement l'export source (Excel, CSV, PDF...) plutôt "
+            "qu'une capture d'écran."
+        )
+
+    header_row_idx = _detect_header_row(df, column_mapping)
+    result = df.iloc[header_row_idx + 1:].copy()
+    result.columns = df.iloc[header_row_idx]
+    result = result.dropna(how="all").reset_index(drop=True)
+    result = standardize_columns(result, column_mapping)
+    result["_ocr_source"] = True
+
+    logger.warning(
+        f"'{path.name}' lu par OCR (stratégie : {strategy}) — {len(result)} ligne(s) "
+        f"extraite(s). Fiabilité inférieure à un fichier structuré : à vérifier "
+        f"manuellement avant toute décision."
+    )
+    return result
+
+
+def _merge_or_stack_named_tables(
+    named_dfs: dict, default_system: str | None, allow_name_as_system: bool,
+) -> pd.DataFrame:
+    """
+    Logique commune (Excel multi-feuilles, ZIP multi-fichiers, Word
+    multi-tableaux) : décide, table par table, s'il faut FUSIONNER par
+    colonne (mêmes comptes, attributs différents — jointure sur username)
+    ou EMPILER (comptes différents — ex. un système par table).
+
+    La décision se fait par le recouvrement réel des comptes ('username')
+    entre tables : un fort recouvrement (>= 50% des comptes de la plus
+    petite table présents dans l'autre) indique une fusion par colonne ;
+    un recouvrement faible ou nul indique des comptes/systèmes distincts
+    à empiler. `allow_name_as_system` doit rester False quand la source
+    n'a qu'un seul élément par nature (géré différemment par l'appelant).
+    """
+    names = list(named_dfs.keys())
+    parent = {n: n for n in names}
+
+    def find(n):
+        while parent[n] != n:
+            n = parent[n]
+        return n
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i, name_a in enumerate(names):
+        df_a = named_dfs[name_a]
+        if "username" not in df_a.columns:
+            continue
+        keys_a = set(df_a["username"].dropna())
+        if not keys_a:
+            continue
+        for name_b in names[i + 1:]:
+            df_b = named_dfs[name_b]
+            if "username" not in df_b.columns:
+                continue
+            keys_b = set(df_b["username"].dropna())
+            if not keys_b:
+                continue
+            overlap = len(keys_a & keys_b) / min(len(keys_a), len(keys_b))
+            if overlap >= 0.5:
+                union(name_a, name_b)
+                logger.info(
+                    f"'{name_a}' et '{name_b}' fusionnées par colonne "
+                    f"(recouvrement de comptes : {overlap:.0%})."
+                )
+
+    groups: dict = {}
+    for n in names:
+        groups.setdefault(find(n), []).append(n)
+
+    processed = []
+    for root, members in groups.items():
+        if len(members) == 1:
+            group_df = named_dfs[members[0]]
+            if "system" not in group_df.columns:
+                if default_system:
+                    group_df = group_df.copy()
+                    group_df["system"] = default_system
+                elif allow_name_as_system and len(named_dfs) > 1:
+                    group_df = group_df.copy()
+                    group_df["system"] = members[0]
+        else:
+            group_df = named_dfs[members[0]]
+            for other_name in members[1:]:
+                other_df = named_dfs[other_name]
+                group_df = group_df.merge(
+                    other_df, on="username", how="outer", suffixes=("", "_dup")
+                )
+                dup_cols = [c for c in group_df.columns if str(c).endswith("_dup")]
+                for dup_col in dup_cols:
+                    base_col = str(dup_col)[:-4]
+                    if base_col in group_df.columns:
+                        group_df[base_col] = group_df[base_col].combine_first(group_df[dup_col])
+                    else:
+                        group_df[base_col] = group_df[dup_col]
+                group_df = group_df.drop(columns=dup_cols)
+            if "system" not in group_df.columns and default_system:
+                group_df["system"] = default_system
+        processed.append(group_df)
+
+    logger.info(
+        f"{len(named_dfs)} élément(s) source, regroupés en {len(processed)} bloc(s) "
+        f"après fusion/empilement."
+    )
+    return pd.concat(processed, ignore_index=True)
+
+
+def _read_excel_all_sheets(
+    path: Path, column_mapping: dict = None, default_system: str | None = None,
+) -> pd.DataFrame:
+    """
+    Lit TOUTES les feuilles d'un classeur Excel, pas seulement la première,
+    en distinguant deux cas de figure bien différents :
+
+    1. Chaque feuille décrit des comptes DIFFÉRENTS (ex. une feuille par
+       système) -> les feuilles sont empilées (concaténées), et le nom de
+       chaque feuille sert de valeur par défaut pour 'system'.
+    2. Les feuilles décrivent les MÊMES comptes mais avec des colonnes
+       différentes (ex. une feuille "Identités" avec noms/dates de
+       connexion, une feuille "Rôles" avec les habilitations) -> les
+       empiler produirait des lignes à moitié vides pour chaque compte ;
+       il faut au contraire les FUSIONNER par colonne (jointure sur
+       'username'), pour obtenir un enregistrement complet par compte.
+
+    Voir _merge_or_stack_named_tables pour la logique de décision.
+    """
+    sheets = pd.read_excel(path, header=None, sheet_name=None)
+    sheet_dfs: dict = {}
+    for sheet_name, raw in sheets.items():
+        raw = raw.dropna(how="all")
+        if raw.empty:
+            continue
+        try:
+            header_row_idx = _detect_header_row(raw, column_mapping)
+        except IngestionError:
+            logger.warning(f"Feuille '{sheet_name}' ignorée : aucun en-tête reconnaissable.")
+            continue
+        sheet_df = raw.iloc[header_row_idx + 1:].copy()
+        sheet_df.columns = raw.iloc[header_row_idx]
+        sheet_df = sheet_df.dropna(how="all").reset_index(drop=True)
+        sheet_df = standardize_columns(sheet_df, column_mapping)
+        sheet_dfs[str(sheet_name)] = sheet_df
+
+    if not sheet_dfs:
+        raise IngestionError(f"Aucune feuille exploitable trouvée dans {path.name}.")
+
+    return _merge_or_stack_named_tables(sheet_dfs, default_system, allow_name_as_system=True)
 
 
 def _load_single_file(
     path: Path, column_mapping: dict = None, required_fields: list = None,
-    default_system: str | None = None,
+    default_system: str | None = None, _defer_finalize: bool = False,
 ) -> pd.DataFrame:
-    """Charge un unique fichier (tous formats sauf .zip) et retourne un DataFrame standardisé."""
+    """
+    Charge un unique fichier (tous formats sauf .zip) et retourne un
+    DataFrame standardisé.
+
+    `_defer_finalize` (usage interne, par _read_zip) : quand True, ignore
+    le nom de fichier comme repli pour 'system' et saute la validation des
+    champs obligatoires — l'appelant s'en charge lui-même après avoir
+    éventuellement fusionné plusieurs fichiers par colonne (voir
+    _merge_or_stack_named_tables).
+    """
     logger.info(f"Lecture du fichier : {path.name}")
 
     header_already_named = False
     suffix = path.suffix.lower()
 
     if suffix in [".xlsx", ".xls"]:
-        raw = pd.read_excel(path, header=None, sheet_name=0)
+        df = _read_excel_all_sheets(path, column_mapping, default_system)
+        df = _synthesize_full_name(df)
+        if _defer_finalize:
+            return df
+        effective_required = required_fields if required_fields is not None else REQUIRED_FIELDS
+        if "system" not in df.columns and "system" in effective_required:
+            resolved_system = default_system or path.stem
+            df["system"] = resolved_system
+        validate_required_fields(df, required_fields)
+        logger.info(f"Ingestion réussie : {len(df)} lignes, colonnes finales : {list(df.columns)}")
+        return df
     elif suffix == ".csv":
         raw = _read_ragged_csv(path)
     elif suffix == ".docx":
@@ -715,6 +1021,10 @@ def _load_single_file(
         header_already_named = True
     elif suffix == ".pdf":
         raw = _read_pdf(path, column_mapping)
+        header_already_named = True
+    elif suffix in [".jpeg", ".jpg", ".png"]:
+        raw = _read_image_ocr(path, column_mapping)
+        header_already_named = True
     else:
         raise IngestionError(
             f"Format de fichier non supporté : {path.suffix}. "
@@ -731,6 +1041,9 @@ def _load_single_file(
 
     df = standardize_columns(df, column_mapping)
     df = _synthesize_full_name(df)
+
+    if _defer_finalize:
+        return df
 
     # Un export "brut" d'un seul système (ex. extraction Active Directory
     # pure) ne contient souvent aucune colonne identifiant le système lui-
@@ -758,23 +1071,24 @@ def _read_zip(
 ) -> pd.DataFrame:
     """
     Extrait une archive ZIP et traite chaque fichier supporté qu'elle
-    contient, puis concatène tous les résultats. Utile pour un export
-    mensuel regroupant plusieurs systèmes (un fichier par système) dans
-    une seule archive.
+    contient. Deux cas de figure, comme pour un classeur Excel multi-
+    feuilles ou un Word multi-tableaux :
+
+    1. Chaque fichier décrit des comptes DIFFÉRENTS (ex. un système par
+       fichier) -> les fichiers sont empilés, le nom de chaque fichier
+       servant de valeur par défaut pour 'system'.
+    2. Les fichiers décrivent les MÊMES comptes avec des colonnes
+       différentes (ex. un fichier "identites.csv", un fichier
+       "roles.csv" séparé) -> ils sont fusionnés par colonne (jointure
+       sur 'username') pour obtenir un enregistrement complet par compte.
 
     Les fichiers dans un format non supporté ou illisibles sont ignorés
     avec un avertissement, plutôt que de faire échouer tout le traitement.
-
-    Si un fichier interne n'a pas de colonne 'system', son propre nom de
-    fichier sert de valeur par défaut (plus pertinent que `default_system`
-    partagé, vu qu'un ZIP regroupe typiquement un système par fichier) —
-    sauf si `default_system` est explicitement fourni, auquel cas il
-    s'applique à tous les fichiers de l'archive.
     """
     import zipfile
     import tempfile
 
-    dfs = []
+    named_dfs: dict = {}
     skipped = []
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -795,21 +1109,26 @@ def _read_zip(
 
         for f in candidate_files:
             try:
-                df = _load_single_file(f, column_mapping, required_fields, default_system=default_system)
-                df["_source_file"] = f.name
-                dfs.append(df)
+                df = _load_single_file(f, column_mapping, required_fields, _defer_finalize=True)
+                named_dfs[f.stem] = df
             except IngestionError as e:
                 skipped.append((f.name, str(e)))
                 logger.warning(f"Fichier ignoré dans l'archive ({f.name}) : {e}")
 
-    if not dfs:
+    if not named_dfs:
         raise IngestionError(
             f"Aucun fichier exploitable dans l'archive {path.name}. "
             f"Fichiers trouvés mais ignorés : {[s[0] for s in skipped]}"
         )
 
-    logger.info(f"{len(dfs)} fichier(s) traité(s) avec succès dans l'archive (sur {len(candidate_files)}).")
-    combined = pd.concat(dfs, ignore_index=True, sort=False)
+    logger.info(f"{len(named_dfs)} fichier(s) traité(s) avec succès dans l'archive (sur {len(candidate_files)}).")
+    combined = _merge_or_stack_named_tables(named_dfs, default_system, allow_name_as_system=True)
+
+    effective_required = required_fields if required_fields is not None else REQUIRED_FIELDS
+    if "system" not in combined.columns and "system" in effective_required:
+        resolved_system = default_system or path.stem
+        combined["system"] = resolved_system
+    validate_required_fields(combined, required_fields)
     return combined
 
 

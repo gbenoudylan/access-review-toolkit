@@ -103,9 +103,9 @@ def test_pdf_report_includes_signoff_names_when_provided():
     assert "Test Preparateur" in full_text
     assert "Test Revu" in full_text
     assert "Test Approuve" in full_text
-    assert "Objectifs" in full_text
-    assert "Procédure" in full_text
-    assert "Périmètre" in full_text
+    assert "I. OBJECTIF" in full_text
+    assert "II. PRINCIPLES OF APPLICATION ACCOUNT CREATION" in full_text
+    assert "VALIDATION" in full_text
     print("OK - test_pdf_report_includes_signoff_names_when_provided")
 
 
@@ -134,13 +134,18 @@ def test_pdf_report_includes_header_and_controls_reference():
     assert "Test Editor" in full_text
     assert "Test App" in full_text
     assert "Version 2.0" in full_text
-    assert "Référentiel des contrôles" in full_text
+    assert "I. OBJECTIF" in full_text
     assert "Comptes dormants" in full_text
     print("OK - test_pdf_report_includes_header_and_controls_reference")
 
 
-def test_pdf_report_controls_reference_can_be_disabled():
-    """L'option include_controls_reference=False doit vraiment l'omettre."""
+def test_template_sections_always_present_regardless_of_flag():
+    """
+    Depuis la reproduction fidèle du template (I. OBJECTIF, II. PRINCIPLES...),
+    ces sections font partie intégrante du document officiel et ne sont plus
+    conditionnées par include_controls_reference — ce paramètre est conservé
+    pour compatibilité mais n'a plus d'effet sur ces sections spécifiques.
+    """
     import pandas as pd
     from analysis.access_review import analyze_access
     from reporting.export import generate_pdf_report
@@ -151,5 +156,184 @@ def test_pdf_report_controls_reference_can_be_disabled():
     output = generate_pdf_report(result, "output/test_no_controls.pdf", include_controls_reference=False)
     with pdfplumber.open(output) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    assert "Référentiel des contrôles" not in full_text
-    print("OK - test_pdf_report_controls_reference_can_be_disabled")
+    assert "I. OBJECTIF" in full_text
+    assert "II. PRINCIPLES OF APPLICATION ACCOUNT CREATION" in full_text
+    print("OK - test_template_sections_always_present_regardless_of_flag")
+
+
+def test_dejavu_font_files_present_and_registered():
+    """
+    La police DejaVu Sans doit être physiquement présente dans le projet
+    (assets/fonts/) et correctement enregistrée — sans quoi les rapports
+    reculent silencieusement vers Helvetica, qui ne supporte pas les
+    caractères hors alphabet latin de base (cyrillique, grec...).
+    """
+    from pathlib import Path
+    from reportlab.pdfbase import pdfmetrics
+    from reporting.export import DEFAULT_FONT, DEFAULT_FONT_BOLD
+
+    fonts_dir = Path(__file__).parent.parent / "assets" / "fonts"
+    assert (fonts_dir / "DejaVuSans.ttf").exists()
+    assert (fonts_dir / "DejaVuSans-Bold.ttf").exists()
+    assert DEFAULT_FONT == "DejaVu"
+    assert DEFAULT_FONT_BOLD == "DejaVu-Bold"
+    # Vérifie que reportlab a bien accepté l'enregistrement (lève une
+    # exception si le nom n'a jamais été enregistré avec succès).
+    pdfmetrics.getFont(DEFAULT_FONT)
+    pdfmetrics.getFont(DEFAULT_FONT_BOLD)
+    print("OK - test_dejavu_font_files_present_and_registered")
+
+
+def test_cyrillic_name_renders_without_crash():
+    """Un nom en cyrillique ne doit ni planter la génération, ni être
+    silencieusement perdu — vérifié en confirmant sa présence dans le
+    texte extrait du PDF généré."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    df = pd.DataFrame({
+        "username": ["user1"], "full_name": ["Владимир Иванов"],
+        "system": ["Active Directory"], "account_status": ["Active"],
+    })
+    result = analyze_access(df)
+    output = generate_pdf_report(result, "output/test_cyrillic.pdf")
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "Владимир" in full_text
+    print("OK - test_cyrillic_name_renders_without_crash")
+
+
+def test_control_characters_do_not_crash_excel_export():
+    """
+    Des caractères de contrôle invisibles (ex. NULL, souvent présents
+    dans des exports mal nettoyés) faisaient planter l'export Excel
+    entier (openpyxl les refuse). Doivent être nettoyés silencieusement
+    avant écriture, sans faire échouer la génération.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_excel_report, generate_pdf_report
+
+    df = pd.DataFrame({
+        "username": ["user1\x00\x01"], "full_name": ["Jean\x0bDupont"],
+        "system": ["AD"], "account_status": ["Active"],
+    })
+    result = analyze_access(df)
+    generate_excel_report(result, "output/test_control_chars_regression.xlsx")
+    generate_pdf_report(result, "output/test_control_chars_regression.pdf")
+    print("OK - test_control_characters_do_not_crash_excel_export")
+
+
+def test_strip_control_characters_works_regardless_of_column_dtype():
+    """
+    La fonction de nettoyage doit fonctionner même sur les colonnes
+    utilisant le dtype 'string' dédié de pandas récent (pas seulement
+    'object') — un vrai bug initial ne détectait que 'object'.
+    """
+    import pandas as pd
+    from reporting.export import _strip_control_characters
+
+    df = pd.DataFrame({"Compte": pd.array(["user1\x00\x01"], dtype="string")})
+    result = _strip_control_characters(df)
+    assert result["Compte"].iloc[0] == "user1"
+    print("OK - test_strip_control_characters_works_regardless_of_column_dtype")
+
+
+def test_all_18_control_subsections_present_with_exact_titles():
+    """
+    Les 18 sous-sections de la section IV doivent être reproduites avec
+    leur titre exact (fidélité au template), pas un tableau consolidé
+    générique — vérifié sur les titres les plus caractéristiques.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    df = pd.DataFrame({"username": ["u1"], "system": ["AD"], "account_status": ["Active"]})
+    result = analyze_access(df)
+    output = generate_pdf_report(result, "output/test_18_subsections.pdf")
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    for expected in [
+        "1.Dump completeness and accuracy", "2.Dormant Accounts", "3.Orphaned Accounts",
+        "9.Active Non-compliant logins", "15.3PP Accounts", "16.Administrator Accounts",
+        "18.Terminated Users and Transferred users", "V. CONCLUSION",
+    ]:
+        assert expected in full_text, f"'{expected}' absent du rapport"
+    print("OK - test_all_18_control_subsections_present_with_exact_titles")
+
+
+def test_comparison_stats_feed_into_control_subsections():
+    """Les sous-sections 10-13 (Accounts created/Profile Modified/
+    Reactivated/Deleted) doivent afficher les vrais chiffres calculés par
+    la comparaison avec la revue précédente, pas 'N/A'."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    previous = analyze_access(pd.DataFrame({
+        "username": ["u1", "u2"], "system": ["AD"] * 2,
+        "account_status": ["Active", "Disabled"], "role": ["User", "User"],
+    }))
+    current = analyze_access(pd.DataFrame({
+        "username": ["u1", "u2", "u3"], "system": ["AD"] * 3,
+        "account_status": ["Active", "Active", "Active"], "role": ["Admin", "User", "User"],
+    }))
+    output = generate_pdf_report(current, "output/test_comparison_subsections.pdf", previous_df=previous)
+    with pdfplumber.open(output) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    assert "10.Accounts created\n" in full_text or "10.Accounts created" in full_text
+    # u3 créé, u1 profil modifié, u2 réactivé : aucun ne doit rester N/A
+    idx = full_text.find("10.Accounts created")
+    snippet = full_text[idx:idx + 200]
+    assert "N/A" not in snippet
+    print("OK - test_comparison_stats_feed_into_control_subsections")
+
+
+def test_logo_path_none_by_default_no_crash():
+    """Sans logo_path, le comportement reste inchangé (pas de logo requis
+    pour générer un rapport)."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+
+    df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
+    generate_pdf_report(df, "output/test_logo_none.pdf")
+    print("OK - test_logo_path_none_by_default_no_crash")
+
+
+def test_logo_missing_file_does_not_crash():
+    """Un chemin de logo qui n'existe pas ne doit jamais faire planter la
+    génération — juste un en-tête sans logo."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+
+    df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
+    generate_pdf_report(df, "output/test_logo_missing.pdf", logo_path="/tmp/does_not_exist_12345.png")
+    print("OK - test_logo_missing_file_does_not_crash")
+
+
+def test_logo_inserted_when_valid_path_given():
+    """Un fichier logo valide doit produire un PDF plus volumineux
+    (image effectivement incluse) qu'un rapport identique sans logo."""
+    import pandas as pd
+    import tempfile
+    from PIL import Image
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        logo_path = tmp.name
+    Image.new("RGB", (200, 60), "#0E6E57").save(logo_path)
+
+    df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
+    without = generate_pdf_report(df, "output/test_logo_compare_without.pdf")
+    with_logo = generate_pdf_report(df, "output/test_logo_compare_with.pdf", logo_path=logo_path)
+    assert Path(with_logo).stat().st_size > Path(without).stat().st_size
+    print("OK - test_logo_inserted_when_valid_path_given")

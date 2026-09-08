@@ -285,3 +285,119 @@ def test_informational_fields_mapped():
     assert _match_column("Owner comment") == "owner_comment"
     assert _match_column("Mobile") == "phone"
     print("OK - test_informational_fields_mapped")
+
+
+def test_txt_multiple_blocks_column_split_merged():
+    """
+    Avant correction, un fichier .txt avec deux blocs délimités séparés
+    par une ligne vide (ex. 'identités' puis 'rôles' pour les mêmes
+    comptes) traitait l'en-tête du second bloc comme une donnée, avec des
+    valeurs qui glissaient dans les mauvaises colonnes. Doit maintenant
+    fusionner proprement par colonne.
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = (
+        "SAM Account Name,Display Name\n"
+        "user1,Jean Dupont\n"
+        "user2,Konan Brou\n"
+        "\n"
+        "SAM Account Name,Assigned User Roles\n"
+        "user1,Admin\n"
+        "user2,User\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    df = load_file(tmp_path, default_system="Test")
+    assert len(df) == 2
+    row = df[df["username"] == "user1"].iloc[0]
+    assert row["full_name"] == "Jean Dupont"
+    assert row["role"] == "Admin"
+    print("OK - test_txt_multiple_blocks_column_split_merged")
+
+
+def test_txt_multiple_blocks_different_accounts_stacked():
+    """Deux blocs .txt avec des comptes différents doivent rester empilés."""
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = (
+        "SAM Account Name,Account Status\n"
+        "user1,Active\n"
+        "user2,Active\n"
+        "\n"
+        "SAM Account Name,Account Status\n"
+        "user3,Active\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    df = load_file(tmp_path, default_system="Test")
+    assert len(df) == 3
+    print("OK - test_txt_multiple_blocks_different_accounts_stacked")
+
+
+def test_exact_duplicate_raw_column_names_not_lost():
+    """
+    Deux colonnes brutes portant EXACTEMENT le même libellé (pas juste
+    équivalent, ex. deux colonnes "Status") faisaient perdre silencieuse-
+    ment toutes les données correspondantes — df["Status"] renvoie les
+    deux colonnes à la fois (un DataFrame, pas une Series) quand les
+    labels sont identiques, ce qui cassait la fusion. Les valeurs doivent
+    maintenant être préservées (la première des deux fait foi).
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "SAM Account Name,Status,Status\nuser1,Active,Enabled\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    df = load_file(tmp_path, default_system="Test")
+    assert "account_status" in df.columns
+    assert df.loc[0, "account_status"] == "Active"
+    print("OK - test_exact_duplicate_raw_column_names_not_lost")
+
+
+def test_entirely_empty_required_field_raises_clear_error():
+    """
+    Une colonne obligatoire présente mais 100% vide (mapping probablement
+    tombé sur la mauvaise colonne source) doit lever une erreur claire,
+    pas produire silencieusement un rapport rempli de comptes anonymes.
+    """
+    from ingestion.ingest import validate_required_fields, IngestionError
+    import pandas as pd
+
+    df = pd.DataFrame({"username": [None, None], "system": ["AD", "AD"]})
+    try:
+        validate_required_fields(df)
+        assert False, "Aucune erreur levée alors que 'username' est entièrement vide"
+    except IngestionError as e:
+        assert "entièrement vide" in str(e)
+    print("OK - test_entirely_empty_required_field_raises_clear_error")
+
+
+def test_partially_empty_required_field_does_not_raise():
+    """
+    Seulement QUELQUES lignes vides (pas toutes) ne doit pas déclencher
+    l'erreur de champ vide — seul un champ à 100% vide est concerné.
+    """
+    from ingestion.ingest import validate_required_fields
+    import pandas as pd
+
+    df = pd.DataFrame({"username": ["user1", None], "system": ["AD", "AD"]})
+    validate_required_fields(df)  # ne doit pas lever d'exception
+    print("OK - test_partially_empty_required_field_does_not_raise")
+
+
+def test_bare_created_column_recognized():
+    """'CREATED' seul (sans 'date'), rencontré sur un export réel, doit
+    être reconnu comme account_created_date."""
+    from ingestion.ingest import _match_column
+    assert _match_column("CREATED") == "account_created_date"
+    print("OK - test_bare_created_column_recognized")

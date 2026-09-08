@@ -272,3 +272,191 @@ def test_never_recommends_deletion():
     result = analyze_access(df)
     assert not result["review_action"].str.contains("upprim", case=False).any()
     print("OK - test_never_recommends_deletion")
+
+
+def test_excel_serial_date_converted_correctly():
+    """
+    Un numéro de série Excel (ex. 45678, quand une colonne de date perd
+    son formatage) doit être interprété comme une vraie date Excel
+    (jours depuis le 30/12/1899), pas comme des nanosecondes depuis 1970
+    (interprétation par défaut de pandas sur un entier brut, qui
+    produisait silencieusement une date fausse de plusieurs dizaines
+    d'années).
+    """
+    from analysis.access_review import _days_since
+    from datetime import datetime, timedelta
+
+    days = _days_since(45678)
+    assert days is not None
+    computed_date = datetime.now() - timedelta(days=days)
+    expected_date = datetime(1899, 12, 30) + timedelta(days=45678)
+    assert computed_date.date() == expected_date.date()
+    print("OK - test_excel_serial_date_converted_correctly")
+
+
+def test_implausible_bare_number_not_treated_as_date():
+    """Un nombre hors plage plausible (ex. 5, 999999) ne doit pas être
+    interprété comme une date Excel — trop de risque de faux positif."""
+    from analysis.access_review import _days_since
+    assert _days_since("5") is None
+    assert _days_since("999999") is None
+    print("OK - test_implausible_bare_number_not_treated_as_date")
+
+
+def test_ambiguous_date_interpreted_day_first():
+    """
+    '03/04/2026' doit être lu comme le 3 avril (jour/mois/année, standard
+    francophone/africain), pas le 4 mars (mois/jour/année, standard
+    américain que pandas utilise par défaut) — contexte MTN oblige.
+    """
+    from analysis.access_review import _days_since
+    from datetime import datetime, timedelta
+    days = _days_since("03/04/2026")
+    assert days is not None
+    computed_date = datetime.now() - timedelta(days=days)
+    assert computed_date.month == 4 and computed_date.day == 3
+    print("OK - test_ambiguous_date_interpreted_day_first")
+
+
+def test_iso_date_still_correct_with_dayfirst():
+    """Le format ISO (non ambigu) doit rester correct malgré dayfirst=True."""
+    from analysis.access_review import _days_since
+    from datetime import datetime, timedelta
+    days = _days_since("2026-01-15")
+    computed_date = datetime.now() - timedelta(days=days)
+    assert computed_date.month == 1 and computed_date.day == 15
+    print("OK - test_iso_date_still_correct_with_dayfirst")
+
+
+def test_never_text_markers_treated_as_never_logged_in():
+    """
+    Des valeurs texte comme 'Never', 'N/A', 'Jamais' dans la colonne de
+    dernière connexion (terminologie vue dans un vrai rapport d'audit,
+    'Never Logon Status') doivent être traitées comme un compte jamais
+    connecté — donc dormant — pas silencieusement ignorées.
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2", "u3"], "system": ["AD"] * 3,
+        "last_login_date": ["Never", "N/A", "Jamais"],
+    })
+    result = analyze_access(df)
+    assert result["is_dormant"].all()
+    print("OK - test_never_text_markers_treated_as_never_logged_in")
+
+
+def test_iso_date_with_ambiguous_day_month_not_flipped():
+    """
+    Régression réelle : dayfirst=True (ajouté pour lever l'ambiguïté
+    JJ/MM/AAAA) inversait à tort une date ISO déjà non ambiguë quand jour
+    ET mois valaient tous les deux <= 12 (ex. '2026-09-01' devenait le
+    9 janvier au lieu du 1er septembre, une inversion jour/mois).
+    """
+    from analysis.access_review import _days_since
+    from datetime import datetime, timedelta
+
+    days = _days_since("2026-09-01")
+    assert days is not None
+    computed = datetime.now() - timedelta(days=days)
+    assert (computed.month, computed.day) == (9, 1), (
+        f"Attendu le 1er septembre, obtenu {computed.month}/{computed.day} "
+        f"— la date ISO a été inversée jour/mois"
+    )
+    print("OK - test_iso_date_with_ambiguous_day_month_not_flipped")
+
+
+def test_numeric_boolean_status_recognized():
+    """'1' comme statut de compte (export brut LDAP/base de données où les
+    booléens sont stockés en 1/0) doit être reconnu comme actif, cohérent
+    avec 'true'/'yes'/'oui' déjà traités ainsi."""
+    from analysis.access_review import _is_active_account
+    assert _is_active_account("1") == True
+    assert _is_active_account("0") == False
+    print("OK - test_numeric_boolean_status_recognized")
+
+
+def test_dayfirst_detected_from_column_evidence_monthfirst():
+    """
+    Une colonne contenant au moins une date avec le second groupe > 12
+    (ex. '03/25/2026') prouve sans ambiguïté un format mois-premier
+    (MM/JJ, américain) — la colonne entière doit alors être lue ainsi,
+    y compris les dates par ailleurs ambiguës du même lot.
+    """
+    from analysis.access_review import _detect_dayfirst
+    import pandas as pd
+    series = pd.Series(["11/12/2025", "03/25/2026"])
+    assert _detect_dayfirst(series) == False
+
+
+def test_dayfirst_detected_from_column_evidence_dayfirst():
+    """Un premier groupe > 12 (ex. '25/03/2026') prouve sans ambiguïté un
+    format jour-premier (JJ/MM)."""
+    from analysis.access_review import _detect_dayfirst
+    import pandas as pd
+    series = pd.Series(["03/04/2026", "25/03/2026"])
+    assert _detect_dayfirst(series) == True
+
+
+def test_dayfirst_defaults_true_without_evidence():
+    """Sans aucune preuve dans la colonne (tous les groupes <= 12), le
+    repli par défaut reste jour-premier (standard MTN)."""
+    from analysis.access_review import _detect_dayfirst
+    import pandas as pd
+    series = pd.Series(["03/04/2026", "01/02/2026"])
+    assert _detect_dayfirst(series) == True
+
+
+def test_real_world_us_format_with_time_and_timezone():
+    """
+    Cas réel rencontré : '11/12/2025 10:27:25.000000000 AM +00' provenant
+    d'un système source utilisant le format américain (MM/JJ/AAAA), avec
+    heure, nanosecondes et fuseau horaire. Doit être lu comme le 12
+    novembre 2025 (mois-premier) quand une autre valeur de la même
+    colonne le confirme, pas le 11 décembre (jour-premier, faux ici).
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2"], "system": ["AD"] * 2,
+        "last_login_date": ["11/12/2025 10:27:25.000000000 AM +00", "03/25/2026"],
+    })
+    result = analyze_access(df)
+    from datetime import datetime, timedelta
+    days = result.loc[0, "days_since_last_login"]
+    computed = datetime.now() - timedelta(days=int(days))
+    assert computed.month == 11, f"Attendu novembre (mois-premier), obtenu mois={computed.month}"
+    print("OK - test_real_world_us_format_with_time_and_timezone")
+
+
+def test_yearfirst_detected_from_unambiguous_evidence():
+    """Un 1er groupe > 31 (ex. '97-03-10') ne peut être qu'une année ->
+    confirme la convention année-en-premier pour toute la colonne."""
+    from analysis.access_review import _detect_yearfirst
+    import pandas as pd
+    series = pd.Series(["26-01-15", "97-03-10"])
+    assert _detect_yearfirst(series) == True
+
+
+def test_yearfirst_false_without_evidence():
+    """Sans preuve (tous les 1ers groupes <= 31), yearfirst ne doit pas
+    être forcé à tort."""
+    from analysis.access_review import _detect_yearfirst
+    import pandas as pd
+    series = pd.Series(["15-01-26", "10-03-26"])
+    assert _detect_yearfirst(series) == False
+
+
+def test_two_digit_year_first_resolved_via_column_evidence():
+    """
+    Cas réel : une colonne mêlant des dates AA-MM-JJ ambiguës isolément
+    (ex. '26-01-15') avec au moins une valeur qui prouve sans ambiguïté
+    la convention (ex. '97-03-10', où 97 ne peut être qu'une année) doit
+    correctement dater TOUTES les valeurs de la colonne selon cette
+    convention, y compris celles qui restent ambiguës individuellement.
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2"], "system": ["AD"] * 2,
+        "last_login_date": ["26-01-15", "97-03-10"],
+    })
+    result = analyze_access(df)
+    from datetime import datetime, timedelta
+    computed = datetime.now() - timedelta(days=int(result.loc[0, "days_since_last_login"]))
+    assert (computed.year, computed.month, computed.day) == (2026, 1, 15)
+    print("OK - test_two_digit_year_first_resolved_via_column_evidence")

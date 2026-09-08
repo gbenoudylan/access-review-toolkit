@@ -91,6 +91,7 @@ COLUMN_MAPPING = {
         "date_creation_compte",
         "whencreated",  # LDAP
         "when created",  # variante espacée (export AD) — score fuzzy insuffisant sans elle
+        "created",  # mot seul (export SIEM/base de données)
     ],
     "account_expiry_date": [
         "account_expiry_date", "account expiry date", "account expiry time",

@@ -12,6 +12,7 @@ analysis/access_review.py) :
 
 from __future__ import annotations
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -25,8 +26,43 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+from reporting.template_sections import (
+    TEMPLATE_CONTROLS, OBJECTIVE_INTRO, OBJECTIVE_BULLETS, OBJECTIVE_CONTROL_INTRO,
+    PRINCIPLES_INTRO, ACCOUNT_TYPES, CREATION_PROCESS_INTRO, CREATION_PROCESS_ITEMS,
+    SECTION_IV_INTRO, DUMP_COMPLETENESS_HEADER, DUMP_COMPLETENESS_GUIDANCE,
+    DUMP_COMPLETENESS_COLUMNS, CONTROL_SUBSECTIONS, CONCLUSION_HEADING,
+)
+from analysis.access_review import _is_active_account
 
 logger = logging.getLogger("export")
+
+# Police par défaut du PDF : DejaVu Sans plutôt que Helvetica (police
+# intégrée à ReportLab, limitée à l'alphabet latin de base). DejaVu Sans
+# couvre correctement le cyrillique, le grec et le latin étendu (accents
+# de nombreuses langues africaines/européennes) — utile pour un outil
+# destiné à une entreprise présente dans plusieurs pays.
+# Limite assumée et documentée : DejaVu Sans NE couvre PAS l'arabe ni les
+# écritures d'Asie de l'Est (chinois/japonais/coréen) — ces polices
+# pèsent 15-20+ Mo chacune, trop lourd à embarquer dans ce projet. Un nom
+# écrit dans l'une de ces écritures s'affichera comme un bloc illisible
+# plutôt que du texte, sans faire planter la génération pour autant.
+_FONTS_DIR = Path(__file__).parent.parent / "assets" / "fonts"
+try:
+    pdfmetrics.registerFont(TTFont("DejaVu", str(_FONTS_DIR / "DejaVuSans.ttf")))
+    pdfmetrics.registerFont(TTFont("DejaVu-Bold", str(_FONTS_DIR / "DejaVuSans-Bold.ttf")))
+    DEFAULT_FONT = "DejaVu"
+    DEFAULT_FONT_BOLD = "DejaVu-Bold"
+except Exception as e:
+    logger.warning(
+        f"Police DejaVu Sans introuvable ({e}), repli sur Helvetica — les "
+        f"caractères hors alphabet latin de base (cyrillique, grec...) ne "
+        f"s'afficheront pas correctement dans le PDF généré."
+    )
+    DEFAULT_FONT = DEFAULT_FONT
+    DEFAULT_FONT_BOLD = DEFAULT_FONT_BOLD
 
 RISK_COLORS_HEX = {
     "Critique": "D62728",
@@ -133,10 +169,32 @@ DISPLAY_COLUMNS = [
 ]
 
 
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+
+
+def _strip_control_characters(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Retire les caractères de contrôle invisibles (ex. NULL, caractères
+    non imprimables) des colonnes texte — présents parfois dans des
+    exports mal nettoyés (copier-coller, bug d'encodage). Sans ce
+    nettoyage, openpyxl refuse purement et simplement d'écrire la
+    cellule et fait planter tout l'export Excel ; ReportLab, lui, les
+    ignore silencieusement (pas de plantage, mais autant nettoyer pour
+    les deux formats de façon cohérente).
+    """
+    df = df.copy()
+    for col in df.columns:
+        df[col] = df[col].apply(
+            lambda v: _CONTROL_CHARS_RE.sub("", v) if isinstance(v, str) else v
+        )
+    return df
+
+
 def _prepare_export_df(df: pd.DataFrame) -> pd.DataFrame:
     available = [(col, label) for col, label in DISPLAY_COLUMNS if col in df.columns]
     export_df = df[[col for col, _ in available]].copy()
     export_df.columns = [label for _, label in available]
+    export_df = _strip_control_characters(export_df)
 
     risk_order = {"Critique": 0, "Élevé": 1, "Moyen": 2, "Faible": 3}
     if "Risque" in export_df.columns:
@@ -270,7 +328,10 @@ COLUMN_WIDTH_WEIGHTS = {
 }
 # Colonnes dont le texte doit pouvoir revenir à la ligne plutôt que
 # déborder ou être tronqué.
-WRAP_COLUMNS = {"Nom", "Système", "Action recommandée"}
+WRAP_COLUMNS = {
+    "Compte", "ID employé", "Nom", "Département", "Système", "Manager",
+    "Statut compte", "Statut RH", "Action recommandée",
+}
 
 
 def _compute_column_widths(columns: list[str], available_width: float) -> list[float]:
@@ -286,9 +347,9 @@ def _risk_styled_table(export_df: pd.DataFrame, available_width: float) -> Table
     ligne automatique — sur les en-têtes ET sur les colonnes de texte long
     (sans quoi un libellé de colonne trop long déborde silencieusement sur
     la colonne voisine plutôt que de simplement passer à la ligne)."""
-    cell_style = ParagraphStyle("Cell", fontSize=7.5, leading=9, fontName="Helvetica")
+    cell_style = ParagraphStyle("Cell", fontSize=7.5, leading=9, fontName=DEFAULT_FONT)
     header_style = ParagraphStyle(
-        "CellHeader", fontSize=7.5, leading=9, fontName="Helvetica-Bold", textColor=colors.white,
+        "CellHeader", fontSize=7.5, leading=9, fontName=DEFAULT_FONT_BOLD, textColor=colors.white,
     )
     columns = list(export_df.columns)
     col_widths = _compute_column_widths(columns, available_width)
@@ -312,7 +373,8 @@ def _risk_styled_table(export_df: pd.DataFrame, available_width: float) -> Table
     style_commands = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+        ("FONTNAME", (0, 1), (-1, -1), DEFAULT_FONT),
         ("FONTSIZE", (0, 0), (-1, -1), 7.5),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -376,6 +438,217 @@ def _build_exceptions_section(df: pd.DataFrame, section_style, exception_style, 
     return elements
 
 
+# Colonnes attendues par le contrôle 1 (Dump completeness and accuracy),
+# telles que décrites textuellement dans le template : User ID, creation
+# date, User rights, Password reset date, Last login, Account status, et
+# une donnée permettant d'identifier le titulaire (description).
+DUMP_COMPLETENESS_FIELDS = [
+    ("User ID", ["username", "user_id"]),
+    ("Creation date", ["account_created_date"]),
+    ("User rights", ["role"]),
+    ("Password reset date", ["password_last_set"]),
+    ("Last login", ["last_login_date"]),
+    ("Account status", ["account_status"]),
+    ("Description (holder identification)", ["full_name"]),
+]
+
+
+def _build_dump_completeness_table(df: pd.DataFrame, available_width: float) -> Table:
+    """Tableau du contrôle 1, avec les libellés de colonnes exacts du
+    template ('User logon (User ID)', 'User creation DATE', etc.)."""
+    rows = [["Field", "Status"]]
+    for label, candidates in DUMP_COMPLETENESS_COLUMNS:
+        present = any(c in df.columns and df[c].notna().any() for c in candidates)
+        rows.append([label, "OK" if present else "NOK"])
+    table = Table(rows, colWidths=[available_width * 0.7, available_width * 0.3])
+    style_commands = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]
+    for i, (label, candidates) in enumerate(DUMP_COMPLETENESS_COLUMNS, 1):
+        present = any(c in df.columns and df[c].notna().any() for c in candidates)
+        color = colors.HexColor("#0E6E57") if present else colors.HexColor("#A13D2E")
+        style_commands.append(("TEXTCOLOR", (1, i), (1, i), color))
+        style_commands.append(("FONTNAME", (1, i), (1, i), DEFAULT_FONT_BOLD))
+    table.setStyle(TableStyle(style_commands))
+    return table
+
+
+def _build_control_subsections(
+    df: pd.DataFrame, comparison_stats: dict, section_style, system_style, note_style, action_style,
+) -> list:
+    """
+    Reproduit fidèlement les sous-sections 2 à 18 de la section IV du
+    template — chacune avec son titre exact et, quand le template en
+    fournit une, sa consigne ("Guidance") reproduite mot pour mot. Chaque
+    sous-section affiche le compte réel calculé quand l'outil en est
+    capable, ou "N/A" avec une explication quand une configuration propre
+    à l'entreprise serait nécessaire (convention de nommage, marqueur de
+    compte de test...) — jamais un chiffre inventé.
+    """
+    elements = []
+    for number, title, guidance, key in CONTROL_SUBSECTIONS:
+        elements.append(Paragraph(f"{number}.{title}", system_style))
+        if guidance:
+            elements.append(Paragraph(guidance, note_style))
+
+        count = None
+        note = None
+        if key is None:
+            note = "N/A — nécessite une configuration propre à l'entreprise, non déductible des seules données ingérées."
+        elif key == "_active_count":
+            if "account_status" in df.columns:
+                count = int(df["account_status"].apply(_is_active_account).sum())
+            else:
+                note = "N/A — colonne 'account_status' absente."
+        elif key in ("_created", "_reactivated", "_deleted", "_profile_modified"):
+            stat_key = key.lstrip("_")
+            value = comparison_stats.get(stat_key)
+            if value is None:
+                note = "N/A — aucune revue précédente fournie pour établir la comparaison."
+            else:
+                count = value
+        elif key in df.columns:
+            count = int(df[key].sum())
+        else:
+            note = f"N/A — colonne '{key}' absente des données ingérées."
+
+        if count is not None:
+            elements.append(Paragraph(f"<b>{count}</b> compte(s) concerné(s).", action_style))
+        else:
+            elements.append(Paragraph(note, note_style))
+        elements.append(Spacer(1, 0.25 * cm))
+    return elements
+
+
+def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_style, note_style, available_width):
+    """
+    Section 'a. Summary of the review' : répartition des comptes par
+    statut, comparée au cycle précédent si `previous_df` est fourni —
+    calculée à partir des données réelles, pas déclarative.
+
+    Retourne (elements, stats) où `stats` est un dict {created, deleted,
+    reactivated, profile_modified} réutilisé par la section IV pour
+    éviter de recalculer la même comparaison deux fois.
+    """
+    stats = {"created": None, "deleted": None, "reactivated": None, "profile_modified": None}
+    elements = [Paragraph("a. Summary of the review", section_style)]
+    if "account_status" not in df.columns:
+        elements.append(Paragraph(
+            "Colonne 'account_status' absente : répartition par statut indisponible.", note_style,
+        ))
+        return elements, stats
+
+    current_counts = df["account_status"].value_counts()
+    if previous_df is not None and "account_status" in previous_df.columns:
+        previous_counts = previous_df["account_status"].value_counts()
+        elements.append(Paragraph(
+            "The review of the application accounts covers a total of accounts distributed as follows:",
+            note_style,
+        ))
+        statuses = sorted(set(current_counts.index) | set(previous_counts.index))
+        rows = [["Type of Users", "Previous review", "Current review", "Variation"]]
+        for status in statuses:
+            prev = int(previous_counts.get(status, 0))
+            curr = int(current_counts.get(status, 0))
+            rows.append([str(status), str(prev), str(curr), f"{curr - prev:+d}"])
+        rows.append(["TOTAL", str(len(previous_df)), str(len(df)), f"{len(df) - len(previous_df):+d}"])
+        comp_table = Table(rows, colWidths=[available_width * w for w in (0.35, 0.2, 0.2, 0.25)])
+        comp_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6F1")),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#DCE6F1")),
+            ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+            ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+            ("FONTNAME", (0, -1), (-1, -1), DEFAULT_FONT_BOLD),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(comp_table)
+        elements.append(Spacer(1, 0.2 * cm))
+
+        # Comparaison nominative : créés / supprimés / réactivés / profils modifiés
+        if "username" in df.columns and "username" in previous_df.columns:
+            key_col = "username"
+            current_keys = set(df[key_col].dropna())
+            previous_keys = set(previous_df[key_col].dropna())
+            created = current_keys - previous_keys
+            deleted = previous_keys - current_keys
+            common = current_keys & previous_keys
+
+            reactivated = 0
+            profile_modified = 0
+            if common:
+                curr_idx = df.set_index(key_col)
+                prev_idx = previous_df.set_index(key_col)
+                for uname in common:
+                    curr_row = curr_idx.loc[uname]
+                    prev_row = prev_idx.loc[uname]
+                    if isinstance(curr_row, pd.DataFrame):
+                        curr_row = curr_row.iloc[0]
+                    if isinstance(prev_row, pd.DataFrame):
+                        prev_row = prev_row.iloc[0]
+                    if "account_status" in df.columns:
+                        was_inactive = not _is_active_account(prev_row.get("account_status"))
+                        is_active_now = _is_active_account(curr_row.get("account_status"))
+                        if was_inactive and is_active_now:
+                            reactivated += 1
+                    if "role" in df.columns:
+                        if str(prev_row.get("role")) != str(curr_row.get("role")):
+                            profile_modified += 1
+
+            stats.update({
+                "created": len(created), "deleted": len(deleted),
+                "reactivated": reactivated, "profile_modified": profile_modified,
+            })
+            diff_rows = [
+                ["Indicator", "Count"],
+                ["Accounts created", str(len(created))],
+                ["Accounts deleted", str(len(deleted))],
+                ["Reactivated accounts", str(reactivated)],
+                ["Profile Modified", str(profile_modified)],
+            ]
+            diff_table = Table(diff_rows, colWidths=[available_width * 0.6, available_width * 0.4])
+            diff_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+                ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            elements.append(diff_table)
+    else:
+        elements.append(Paragraph(
+            "The review of the application accounts covers a total of accounts distributed as "
+            "follows (aucune revue précédente fournie pour comparaison) :",
+            note_style,
+        ))
+        rows = [["Type of Users", "Current review"]]
+        for status, count in current_counts.items():
+            rows.append([str(status), str(int(count))])
+        rows.append(["TOTAL", str(len(df))])
+        comp_table = Table(rows, colWidths=[available_width * 0.6, available_width * 0.4])
+        comp_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6F1")),
+            ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+            ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ]))
+        elements.append(comp_table)
+    return elements, stats
+
+
 def generate_pdf_report(
     df: pd.DataFrame,
     output_path: str | Path,
@@ -389,6 +662,8 @@ def generate_pdf_report(
     application_scope: str | None = None,
     document_version: str = "1.0",
     include_controls_reference: bool = True,
+    previous_df: pd.DataFrame | None = None,
+    logo_path: str | Path | None = None,
 ) -> Path:
     """
     Génère un rapport PDF de revue d'accès structuré et réutilisable d'un
@@ -411,9 +686,22 @@ def generate_pdf_report(
     l'outil officiel de l'équipe plutôt qu'un document lié à une personne
     ou une entreprise en particulier.
 
-    `include_controls_reference` : inclut ou non le tableau des 18
-    contrôles standards d'une revue d'accès, avec la mention explicite de
-    ceux que cet outil calcule automatiquement et ceux qui restent manuels.
+    `include_controls_reference` : conservé pour compatibilité ; les 18
+    contrôles (section I) et les principes de création (section II) font
+    désormais partie intégrante du document officiel et sont toujours
+    inclus, quelle que soit la valeur de ce paramètre.
+
+    `previous_df` : DataFrame de la revue précédente (même format que
+    `df`, déjà passé par analyze_access), pour calculer une vraie
+    comparaison chiffrée entre les deux cycles (comptes créés, supprimés,
+    réactivés, profils modifiés) en section "III.a Summary of the
+    review". Laissé à None, cette sous-section n'affiche que le cycle
+    courant, sans comparaison.
+
+    `logo_path` : chemin vers un fichier image (PNG/JPG) à afficher en
+    en-tête du document. Cet outil ne fournit et ne recrée aucun logo
+    d'entreprise — laissé à None (par défaut), l'en-tête reste sans logo.
+    Fournissez le fichier réel de votre entreprise pour l'inclure.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -425,138 +713,272 @@ def generate_pdf_report(
     )
     available_width = doc.pagesize[0] - doc.leftMargin - doc.rightMargin
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("TitleCustom", parent=styles["Title"], fontSize=18, spaceAfter=4)
-    subtitle_style = ParagraphStyle("Subtitle", parent=styles["Normal"], fontSize=10, textColor=colors.grey)
-    section_style = ParagraphStyle("SectionH", parent=styles["Heading2"], spaceBefore=14, spaceAfter=6)
+    title_style = ParagraphStyle("TitleCustom", parent=styles["Title"], fontSize=18, spaceAfter=4, fontName=DEFAULT_FONT_BOLD)
+    subtitle_style = ParagraphStyle("Subtitle", parent=styles["Normal"], fontSize=10, textColor=colors.grey, fontName=DEFAULT_FONT)
+    section_style = ParagraphStyle("SectionH", parent=styles["Heading2"], spaceBefore=14, spaceAfter=6, fontName=DEFAULT_FONT_BOLD)
     system_style = ParagraphStyle(
         "SystemH", parent=styles["Heading3"], textColor=colors.HexColor("#1F2937"),
-        spaceBefore=12, spaceAfter=4,
+        spaceBefore=12, spaceAfter=4, fontName=DEFAULT_FONT_BOLD,
     )
-    note_style = ParagraphStyle("Note", parent=styles["Normal"], fontSize=8.5, textColor=colors.grey, spaceAfter=10)
+    note_style = ParagraphStyle("Note", parent=styles["Normal"], fontSize=8.5, textColor=colors.grey, spaceAfter=10, fontName=DEFAULT_FONT)
     exception_style = ParagraphStyle(
-        "Exception", parent=styles["Normal"], fontSize=9.5, spaceBefore=8, spaceAfter=2,
+        "Exception", parent=styles["Normal"], fontSize=9.5, spaceBefore=8, spaceAfter=2, fontName=DEFAULT_FONT,
     )
     action_style = ParagraphStyle(
-        "ActionText", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#374151"), spaceAfter=4,
+        "ActionText", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#374151"), spaceAfter=4, fontName=DEFAULT_FONT,
     )
 
     elements = []
 
-    # ---- En-tête officiel du document (configurable, jamais figé) ----
+    # ---- Logo (optionnel — jamais fourni par l'outil lui-même) ----
+    if logo_path:
+        logo_path = Path(logo_path)
+        if logo_path.exists():
+            try:
+                from reportlab.platypus import Image as RLImage
+                logo_img = RLImage(str(logo_path))
+                # Limite raisonnable de hauteur pour ne pas déséquilibrer l'en-tête,
+                # en conservant les proportions réelles de l'image fournie.
+                max_height = 1.8 * cm
+                if logo_img.imageHeight > 0:
+                    ratio = logo_img.imageWidth / logo_img.imageHeight
+                    logo_img.drawHeight = max_height
+                    logo_img.drawWidth = max_height * ratio
+                elements.append(logo_img)
+                elements.append(Spacer(1, 0.3 * cm))
+            except Exception as e:
+                logger.warning(f"Logo non inséré ({logo_path}) : {e}")
+        else:
+            logger.warning(f"Chemin de logo introuvable, en-tête généré sans logo : {logo_path}")
+
+    # ---- En-tête officiel (structure fidèle au template) ----
     header_data = [
-        [department or "[Département]", "Éditeur : " + (editor or "[Nom, Prénom]")],
-        ["Revue des comptes applicatifs", f"Version {document_version}"],
-        ["Périmètre : " + (application_scope or "[Nom de l'application]"), f"Période : {period_label}"],
+        [department or "TECHNOLOGY DEPARTMENT", "Editor: " + (editor or "[FULL NAME]")],
+        ["REVIEW OF THE APPLICATION ACCOUNTS", f"Version {document_version}"],
+        ["Scope: " + (application_scope or "[Application Name]"), "ISM"],
+        ["", period_label],
     ]
     header_table = Table(header_data, colWidths=[available_width * 0.6, available_width * 0.4])
     header_table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("FONTNAME", (0, 1), (0, 1), "Helvetica-Bold"),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
     elements.append(header_table)
-    elements.append(Spacer(1, 0.5 * cm))
-    elements.append(Paragraph("Rapport de revue d'accès", title_style))
-    elements.append(Paragraph(
-        f"Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", subtitle_style,
-    ))
-    elements.append(Spacer(1, 0.5 * cm))
+    elements.append(Spacer(1, 0.6 * cm))
 
-    # ---- Objectifs (standards génériques d'une revue d'accès, valables
-    # quel que soit le système ou l'entreprise concernée) ----
-    elements.append(Paragraph("Objectifs", section_style))
-    elements.append(Paragraph(
-        "Cette revue vise à s'assurer que les comptes existants respectent les "
-        "critères de sécurité attendus, notamment :",
-        note_style,
-    ))
-    objectives = [
-        "Absence de comptes non documentés ou non autorisés.",
-        "Cohérence des privilèges accordés avec le besoin réel.",
-        "Identification et traitement des comptes inactifs ou orphelins.",
-        "Accès restreints de façon à limiter le risque de compromission.",
-    ]
-    for obj in objectives:
-        elements.append(Paragraph(f"•&nbsp;&nbsp;{obj}", note_style))
-    elements.append(Spacer(1, 0.2 * cm))
-
-    # ---- Procédure (méthodologie standard, en 4 étapes) ----
-    elements.append(Paragraph("Procédure", section_style))
-    procedure_steps = [
-        "Collecte de la liste des comptes et des journaux d'activité auprès des équipes concernées.",
-        "Revue des accès et des événements au regard des objectifs ci-dessus.",
-        "Constitution du rapport des exceptions.",
-        "Validation du rapport et clôture des exceptions.",
-    ]
-    for i, step in enumerate(procedure_steps, 1):
-        elements.append(Paragraph(f"{i}. {step}", note_style))
-    elements.append(Spacer(1, 0.2 * cm))
-
-    # ---- Scope (dérivé des données réelles, pas déclaratif) ----
-    elements.append(Paragraph("Périmètre (Scope)", section_style))
-    if "system" in df.columns:
-        systems_in_scope = sorted(df["system"].dropna().unique().tolist())
-        scope_text = ", ".join(systems_in_scope) if systems_in_scope else "Non renseigné"
-    else:
-        scope_text = "Non renseigné (colonne 'system' absente)"
-    elements.append(Paragraph(f"Systèmes couverts par cette revue : {scope_text}.", note_style))
+    elements.append(Paragraph("APPLICATION ACCOUNTS REVIEW", title_style))
     elements.append(Spacer(1, 0.3 * cm))
+    elements.append(Paragraph("Baseline evidence of the review", section_style))
+    elements.append(Paragraph("Data source: Email or automated reception", note_style))
+    elements.append(Paragraph(f"Date of extraction: {datetime.now().strftime('%d/%m/%Y')}", note_style))
+    elements.append(Paragraph(f"Review date: {datetime.now().strftime('%d/%m/%Y')}", note_style))
+    elements.append(Spacer(1, 0.4 * cm))
 
-    # ---- Référentiel des 18 contrôles (avec statut auto/manuel honnête) ----
-    if include_controls_reference:
-        elements.append(Paragraph("Référentiel des contrôles", section_style))
-        elements.append(Paragraph(
-            "18 contrôles standards d'une revue d'accès applicative. Seuls ceux marqués "
-            "« Automatisé » sont calculés directement par cet outil à partir des données "
-            "ingérées ; les autres exigent un jugement humain ou des données non disponibles "
-            "ici (historique des revues précédentes, contrats prestataires...).",
-            note_style,
-        ))
-        controls_data = [["N°", "Contrôle", "Description / Attendu", "Statut"]]
-        for i, (name, desc, automated) in enumerate(CONTROLS_REFERENCE, 1):
-            status = "Automatisé" if automated else "Manuel"
-            controls_data.append([str(i), name, desc, status])
-        controls_table = Table(
-            controls_data,
-            colWidths=[available_width * w for w in (0.04, 0.20, 0.62, 0.14)],
-            repeatRows=1,
+    version_data = [
+        ["Version", "Created / Edited", "By", "Comment"],
+        [document_version, datetime.now().strftime("%d/%m/%Y"), editor or "[SYSTEM OWNER FULL NAME]", "N/A"],
+    ]
+    version_table = Table(version_data, colWidths=[available_width * w for w in (0.12, 0.2, 0.44, 0.24)])
+    version_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(version_table)
+    elements.append(Spacer(1, 0.4 * cm))
+
+    distribution_data = [
+        ["Distribution", "Department/Role", "Action", "Information"],
+        [department or "OWNER DEPARTMENT", "SYSTEM OWNER ROLE", "X", "X"],
+        ["ENTERPRISE INFORMATION SECURITY", "ENTERPRISE INFORMATION SECURITY", "", "X"],
+    ]
+    distribution_table = Table(distribution_data, colWidths=[available_width * w for w in (0.32, 0.32, 0.18, 0.18)])
+    distribution_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F0F0F0")),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ALIGN", (2, 0), (3, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(distribution_table)
+    elements.append(Spacer(1, 0.5 * cm))
+
+    # ---- VALIDATION ----
+    elements.append(Paragraph("VALIDATION", section_style))
+    placeholder = "[TO BE COMPLETED]"
+    val_data = [
+        ["SYSTEM OWNER:", "MANAGER:", "SENIOR MANAGER:"],
+        [prepared_by or placeholder, reviewed_by or placeholder, approved_by or placeholder],
+        ["[SIGNATURE - DATE]", "[SIGNATURE - DATE]", "[SIGNATURE - DATE]"],
+    ]
+    val_table = Table(val_data, colWidths=[available_width / 3] * 3)
+    val_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(val_table)
+    elements.append(Spacer(1, 0.2 * cm))
+    ctio_table = Table(
+        [["CTIO:"], ["[FULL NAME]"], ["[SIGNATURE - DATE]"]],
+        colWidths=[available_width],
+    )
+    ctio_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
+        ("FONTNAME", (0, 0), (0, 0), DEFAULT_FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(ctio_table)
+    elements.append(Spacer(1, 0.6 * cm))
+
+    # ---- I. OBJECTIF ----
+    elements.append(Paragraph("I. OBJECTIF", section_style))
+    elements.append(Paragraph(OBJECTIVE_INTRO, note_style))
+    for b in OBJECTIVE_BULLETS:
+        elements.append(Paragraph(f"•&nbsp;&nbsp;{b}", note_style))
+    elements.append(Paragraph(OBJECTIVE_CONTROL_INTRO, note_style))
+    elements.append(Spacer(1, 0.2 * cm))
+
+    controls_data = [["SN", "Control", "Control Description/Expectations"]]
+    controls_cell_style = ParagraphStyle("ControlsCell", fontSize=8, leading=10.5, fontName=DEFAULT_FONT)
+    for sn, name, desc in TEMPLATE_CONTROLS:
+        controls_data.append([
+            str(sn),
+            Paragraph(name, controls_cell_style),
+            Paragraph(desc.replace("\n", "<br/>"), controls_cell_style),
+        ])
+    controls_table = Table(
+        controls_data,
+        colWidths=[available_width * w for w in (0.05, 0.20, 0.75)],
+        repeatRows=1,
+    )
+    controls_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9F9F9")]),
+    ]))
+    elements.append(controls_table)
+    elements.append(Spacer(1, 0.5 * cm))
+
+    # ---- II. PRINCIPLES OF APPLICATION ACCOUNT CREATION ----
+    elements.append(Paragraph("II. PRINCIPLES OF APPLICATION ACCOUNT CREATION", section_style))
+    elements.append(Paragraph(PRINCIPLES_INTRO, note_style))
+    elements.append(Spacer(1, 0.15 * cm))
+    elements.append(Paragraph("1. Types of Accounts Created", system_style))
+    for label, desc in ACCOUNT_TYPES:
+        elements.append(Paragraph(f"<b>{label}</b>{desc}", note_style))
+    elements.append(Spacer(1, 0.15 * cm))
+    elements.append(Paragraph("2. Account Creation Process", system_style))
+    elements.append(Paragraph(CREATION_PROCESS_INTRO, note_style))
+    for label, desc in CREATION_PROCESS_ITEMS:
+        elements.append(Paragraph(f"<b>{label}</b>{desc}", note_style))
+    elements.append(Spacer(1, 0.6 * cm))
+
+    # ==================================================================
+    # À partir d'ici : contenu généré dynamiquement à partir des données
+    # réellement ingérées (III. REVIEW DETAILS et suite) — pas une
+    # reproduction du template, mais son application concrète aux
+    # données de ce cycle de revue.
+    # ==================================================================
+    elements.append(Paragraph("III. REVIEW DETAILS", section_style))
+
+    if "_ocr_source" in df.columns and df["_ocr_source"].any():
+        ocr_count = int(df["_ocr_source"].sum())
+        ocr_warning_style = ParagraphStyle(
+            "OcrWarning", parent=styles["Normal"], fontSize=9.5,
+            textColor=colors.HexColor("#A13D2E"), fontName=DEFAULT_FONT_BOLD,
+            backColor=colors.HexColor("#FBEAE7"), borderPadding=8, spaceAfter=10,
         )
-        control_style_commands = [
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9F9F9")]),
-        ]
-        for i, (_, _, automated) in enumerate(CONTROLS_REFERENCE, 1):
-            if automated:
-                control_style_commands.append(("TEXTCOLOR", (3, i), (3, i), colors.HexColor("#0E6E57")))
-                control_style_commands.append(("FONTNAME", (3, i), (3, i), "Helvetica-Bold"))
-        controls_table.setStyle(TableStyle(control_style_commands))
-        elements.append(controls_table)
-        elements.append(Spacer(1, 0.3 * cm))
+        elements.append(Paragraph(
+            f"⚠ AVERTISSEMENT : {ocr_count} compte(s) de ce rapport proviennent d'une "
+            f"reconnaissance optique de caractères (OCR) sur image, pas d'un fichier "
+            f"structuré. L'OCR peut introduire des erreurs de lecture (ex. '1' lu comme "
+            f"'l', '0' lu comme 'O'). Ces comptes doivent être vérifiés manuellement "
+            f"avant toute décision — ne pas leur accorder la même confiance qu'aux autres.",
+            ocr_warning_style,
+        ))
 
-    # ---- Méthodologie (courte, pour rappeler le seuil appliqué) ----
     elements.append(Paragraph(
         f"Méthodologie : un compte est considéré « dormant » sans connexion depuis plus de "
         f"{dormant_threshold_days} jours — y compris un compte n'ayant jamais enregistré la "
         f"moindre connexion depuis sa création. Chaque compte reçoit un niveau de risque et une "
         f"action recommandée selon son statut (compte actif d'un employé parti, compte "
-        f"privilégié dormant, absence de manager identifié).",
+        f"privilégié dormant, absence de manager identifié). Cet outil ne recommande jamais la "
+        f"suppression d'un compte, uniquement sa désactivation — réversible, et applicable sans "
+        f"historique préalable.",
         note_style,
     ))
-    elements.append(Paragraph(
-        "Politique de traitement : cet outil ne recommande jamais la suppression d'un compte, "
-        "uniquement sa désactivation — réversible, et applicable sans historique préalable. La "
-        "suppression, quand elle est justifiée, reste une décision humaine prise après "
-        "vérification, hors du périmètre automatisé de ce rapport.",
-        note_style,
+
+    # ---- III.a Summary of the review (comparaison avec la revue précédente) ----
+    comparison_elements, comparison_stats = _build_review_comparison_section(
+        df, previous_df, section_style, note_style, available_width,
+    )
+    elements.extend(comparison_elements)
+    elements.append(Spacer(1, 0.4 * cm))
+
+    # ---- IV. ACCOUNT DETAILS BY CONTROL (18 sous-sections fidèles au template) ----
+    elements.append(Paragraph("IV. ACCOUNT DETAILS BY CONTROL", section_style))
+    elements.append(Paragraph(SECTION_IV_INTRO, note_style))
+    elements.append(Paragraph(DUMP_COMPLETENESS_HEADER, system_style))
+    elements.append(Paragraph(DUMP_COMPLETENESS_GUIDANCE, note_style))
+    elements.append(_build_dump_completeness_table(df, available_width))
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.extend(_build_control_subsections(
+        df, comparison_stats, section_style, system_style, note_style, action_style,
     ))
+
+    # ---- V. CONCLUSION ----
+    elements.append(Paragraph(CONCLUSION_HEADING, section_style))
+    total_accounts = len(df)
+    critical_count = int((df["risk_level"] == "Critique").sum()) if "risk_level" in df.columns else 0
+    elevated_count = int((df["risk_level"] == "Élevé").sum()) if "risk_level" in df.columns else 0
+    if total_accounts == 0:
+        conclusion_text = "No account was included in the scope of this review cycle."
+    elif critical_count == 0 and elevated_count == 0:
+        conclusion_text = (
+            f"Out of {total_accounts} account(s) reviewed, none were classified as Critical or "
+            f"High risk on this cycle. No immediate corrective action is required beyond the "
+            f"standard follow-up of any Medium-risk items listed above."
+        )
+    else:
+        conclusion_text = (
+            f"Out of {total_accounts} account(s) reviewed, {critical_count} were classified as "
+            f"Critical risk and {elevated_count} as High risk. Corrective actions are detailed in "
+            f"the exceptions report above and must be tracked to closure before the next review cycle."
+        )
+    elements.append(Paragraph(conclusion_text, note_style))
+    elements.append(Spacer(1, 0.5 * cm))
+
+    # ==================================================================
+    # Au-delà du template officiel : contenu opérationnel supplémentaire,
+    # généré à partir des données réelles pour faciliter le traitement
+    # concret des exceptions — pas une section du document original.
+    # ==================================================================
+    elements.append(Paragraph("Annexe opérationnelle — Détail exploitable du cycle", section_style))
 
     # ---- Résumé exécutif ----
     elements.append(Paragraph("Résumé exécutif", section_style))
@@ -582,7 +1004,8 @@ def generate_pdf_report(
     summary_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
@@ -632,7 +1055,8 @@ def generate_pdf_report(
     signoff_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("TOPPADDING", (0, 0), (-1, -1), 6),

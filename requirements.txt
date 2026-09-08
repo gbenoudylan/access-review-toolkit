@@ -8,3 +8,9 @@ lxml>=5.0
 html5lib>=1.1
 beautifulsoup4>=4.12
 pdfplumber>=0.11
+pytesseract>=0.3
+Pillow>=10.0
+# pytesseract nécessite aussi le binaire système 'tesseract-ocr' (pas
+# installable via pip) : sur Debian/Ubuntu, `apt install tesseract-ocr` ;
+# sur macOS, `brew install tesseract`. Sans ce binaire, la lecture de
+# fichiers image (.jpeg/.jpg/.png) échoue avec un message d'erreur clair.

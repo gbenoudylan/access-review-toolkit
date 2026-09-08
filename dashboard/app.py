@@ -67,7 +67,7 @@ def main():
         uploaded_file = st.file_uploader(
             "Export d'accès (tous formats supportés)",
             type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml",
-                  "html", "htm", "ldif", "pdf", "zip"],
+                  "html", "htm", "ldif", "pdf", "jpeg", "jpg", "png", "zip"],
             help="CSV, Excel, Word, texte libre, JSON, XML, HTML, LDIF "
                  "(export LDAP/AD), PDF, ou une archive ZIP contenant "
                  "plusieurs de ces fichiers.",
@@ -89,7 +89,7 @@ def main():
         hr_uploaded_file = st.file_uploader(
             "Export RH — source de vérité sur qui est employé",
             type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml",
-                  "html", "htm", "ldif", "pdf", "zip"],
+                  "html", "htm", "ldif", "pdf", "jpeg", "jpg", "png", "zip"],
             help="Corrige le statut RH réel des comptes, notamment pour les "
                  "exports LDAP/AD qui ne contiennent pas nativement cette "
                  "information. La source RH fait autorité sur le statut employé.",
@@ -241,6 +241,16 @@ def main():
              "sans modifier le code.",
     )
 
+    with st.expander("Comparer avec la revue précédente — optionnel"):
+        previous_file = st.file_uploader(
+            "Revue précédente (même format que l'export d'accès)",
+            type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml", "html", "htm", "ldif", "pdf", "jpeg", "jpg", "png", "zip"],
+            key="previous_review_upload",
+            help="Fournis le fichier de la revue précédente pour que le rapport calcule "
+                 "automatiquement les comptes créés, supprimés, réactivés et les profils "
+                 "modifiés entre les deux cycles.",
+        )
+
     with st.expander("En-tête du document officiel — optionnel"):
         header_col1, header_col2 = st.columns(2)
         with header_col1:
@@ -251,6 +261,12 @@ def main():
             document_version = st.text_input("Version du document", value="1.0")
         include_controls_reference = st.checkbox(
             "Inclure le référentiel des 18 contrôles standards", value=True,
+        )
+        logo_file = st.file_uploader(
+            "Logo de l'entreprise (optionnel — utilise assets/mtnlogo.png par défaut si présent)",
+            type=["png", "jpg", "jpeg"],
+            help="Un logo importé ici remplace ponctuellement celui par défaut, pour ce "
+                 "rapport uniquement.",
         )
 
     with st.expander("Validation (sign-off) — optionnel"):
@@ -278,7 +294,30 @@ def main():
     with report_col2:
         if st.button("Générer le rapport PDF", use_container_width=True):
             with st.spinner("Génération..."):
+                previous_df = None
+                if previous_file is not None:
+                    prev_suffix = Path(previous_file.name).suffix
+                    with tempfile.NamedTemporaryFile(suffix=prev_suffix, delete=False) as tmp_prev:
+                        tmp_prev.write(previous_file.getvalue())
+                        tmp_prev_path = tmp_prev.name
+                    try:
+                        previous_raw = load_file(tmp_prev_path, default_system=None)
+                        previous_df = analyze_access(previous_raw)
+                    except IngestionError as e:
+                        st.warning(f"Revue précédente ignorée (erreur d'ingestion) : {e}")
+
                 tmp_pdf = Path(tempfile.gettempdir()) / "rapport_revue_acces.pdf"
+                logo_path = None
+                if logo_file is not None:
+                    logo_suffix = Path(logo_file.name).suffix
+                    with tempfile.NamedTemporaryFile(suffix=logo_suffix, delete=False) as tmp_logo:
+                        tmp_logo.write(logo_file.getvalue())
+                        logo_path = tmp_logo.name
+                else:
+                    default_logo = Path(__file__).parent.parent / "assets" / "mtnlogo.png"
+                    if default_logo.exists():
+                        logo_path = str(default_logo)
+
                 generate_pdf_report(
                     filtered, tmp_pdf, period=period_label or None,
                     prepared_by=prepared_by or None,
@@ -289,6 +328,8 @@ def main():
                     application_scope=application_scope or None,
                     document_version=document_version or "1.0",
                     include_controls_reference=include_controls_reference,
+                    previous_df=previous_df,
+                    logo_path=logo_path,
                 )
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(

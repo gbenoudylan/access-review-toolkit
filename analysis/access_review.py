@@ -29,7 +29,7 @@ logger = logging.getLogger("access_review")
 DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
 PASSWORD_STALE_THRESHOLD_DAYS = 180  # rotation de mot de passe recommandée (politique courante : 90-180 jours)
 
-ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "true"}
+ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "true", "1"}
 TERMINATED_STATUS_VALUES = {
     "terminated", "termine", "terminé", "parti", "departed", "left",
     "inactive", "inactif", "resigned", "démissionné",
@@ -79,12 +79,76 @@ def _is_service_account_name(username) -> bool:
     return name.startswith("svc_") or name.endswith("_svc") or name.startswith("svc-") or name.endswith("-svc")
 
 
-def _days_since(date_value) -> float | None:
+_AMBIGUOUS_DATE_START_RE = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-]\d{2,4}")
+
+
+def _detect_dayfirst(series: pd.Series) -> bool:
+    """
+    Détermine si une colonne de dates au format 'A/B/Année' (non ISO,
+    donc potentiellement ambigu) doit être lue jour-premier (JJ/MM,
+    standard francophone/africain) ou mois-premier (MM/JJ, standard
+    américain — ex. un export venant d'un outil IAM/SIEM américain,
+    rencontré en pratique même dans un contexte MTN).
+
+    Un même fichier utilise presque toujours une convention cohérente sur
+    toute sa colonne : on cherche donc, dans les valeurs réellement
+    présentes, au moins UNE valeur qui lève l'ambiguïté (un groupe > 12,
+    qui ne peut donc pas être un mois) plutôt que de deviner à l'aveugle.
+    Cette preuve, trouvée une seule fois, s'applique à toute la colonne.
+    Si aucune valeur ne permet de trancher (tous les groupes <= 12 partout,
+    par simple coïncidence ou petit échantillon), on retombe sur
+    jour-premier par défaut (biais assumé vers le standard MTN).
+    """
+    for value in series.dropna():
+        match = _AMBIGUOUS_DATE_START_RE.match(str(value).strip())
+        if not match:
+            continue
+        first, second = int(match.group(1)), int(match.group(2))
+        if first > 12:
+            return True  # le 1er groupe ne peut être qu'un jour -> jour-premier confirmé
+        if second > 12:
+            return False  # le 2nd groupe ne peut être qu'un jour -> mois-premier confirmé
+    return True  # aucune preuve trouvée : repli par défaut (standard MTN)
+
+
+def _detect_yearfirst(series: pd.Series) -> bool:
+    """
+    Détermine si une colonne 'A-B-C' à année sur 2 chiffres place l'année
+    en PREMIER (ex. '26-01-15' pour le 15/01/2026) plutôt qu'en dernier
+    (ex. '15-01-26' pour la même date, ordre JJ-MM-AA ou MM-JJ-AA). Le
+    groupe du milieu est toujours le mois quelle que soit la convention ;
+    seule la position de l'année (1er ou 3e groupe) reste à déterminer.
+
+    Un 1er groupe > 31 ne peut être qu'une année (aucun jour ne dépasse
+    31) : preuve directe et suffisante, cherchée dans toute la colonne.
+    Sans cette preuve, l'ambiguïté reste entière quand le 1er groupe est
+    un nombre à la fois plausible comme jour ET comme année à 2 chiffres
+    (ex. '26') — dans ce cas, on ne force PAS yearfirst (on laisse
+    _detect_dayfirst trancher jour/mois comme pour un format classique à
+    année sur 4 chiffres ou en dernière position).
+    """
+    for value in series.dropna():
+        match = _AMBIGUOUS_DATE_START_RE.match(str(value).strip())
+        if not match:
+            continue
+        if int(match.group(1)) > 31:
+            return True
+    return False
+
+
+def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> float | None:
     """
     Retourne le nombre de jours écoulés depuis une date, ou None si non
     calculable. Gère aussi le format de date LDAP/Active Directory
     (Generalized Time, ex. '20260807120000.0Z'), non reconnu nativement
     par le parseur de dates générique.
+
+    `dayfirst` et `yearfirst` : à déterminer par colonne via
+    _detect_dayfirst/_detect_yearfirst plutôt que de supposer une
+    convention unique valable pour tous les fichiers — différents
+    systèmes sources (ex. un outil IAM américain vs un export AD local)
+    peuvent utiliser des conventions différentes au sein d'une même
+    entreprise.
     """
     if pd.isna(date_value) or date_value is None:
         return None
@@ -98,8 +162,54 @@ def _days_since(date_value) -> float | None:
         except ValueError:
             return None
 
+    # Numéro de série Excel (ex. 45678) : un export Excel dont la colonne
+    # a perdu son format "Date" affiche parfois le nombre brut de jours
+    # depuis le 30/12/1899. pd.to_datetime() sur un simple entier
+    # l'interprète par défaut comme des nanosecondes depuis 1970, ce qui
+    # produit une date totalement fausse (des dizaines d'années d'écart)
+    # sans la moindre erreur visible. On détecte ce cas précisément :
+    # une valeur purement numérique, sans séparateur de date (-, /, :),
+    # dans une plage plausible pour un export récent (env. 1990-2100).
+    is_bare_number = re.fullmatch(r"\d+(\.\d+)?", text_value) is not None
+    if is_bare_number:
+        serial = float(text_value)
+        if 32874 <= serial <= 73050:  # ~ 01/01/1990 à 01/01/2100
+            excel_epoch = datetime(1899, 12, 30)
+            parsed_dt = excel_epoch + pd.Timedelta(days=serial)
+            return (datetime.now() - parsed_dt).days
+        return None  # nombre hors plage plausible : probablement pas une date
+
+    # dayfirst=True lève l'ambiguïté JJ/MM (voir plus haut), mais appliqué
+    # à un format déjà commençant par l'année (ISO, ex. '2026-09-01') il
+    # produit l'effet inverse : pandas peut alors interpréter le second et
+    # troisième groupe comme JOUR-MOIS plutôt que MOIS-JOUR, inversant
+    # silencieusement une date par ailleurs déjà non ambiguë (le 1er
+    # septembre devient le 9 janvier). On ne force donc dayfirst que
+    # lorsque l'année n'est PAS le premier groupe du texte.
+    #
+    # Dans un format à 3 groupes ('A-B-C'), le groupe du MILIEU est
+    # toujours le mois, quelle que soit la convention (AAAA-MM-JJ,
+    # JJ-MM-AAAA, MM-JJ-AAAA) — seule l'identité du 1er groupe (jour ou
+    # année) reste ambiguë quand l'année est écrite sur 2 chiffres. Un
+    # 1er groupe > 31 ne peut alors être qu'une année (aucun jour ne
+    # dépasse 31) : ex. '26-01-15' pour 2026-01-15, sans quoi il aurait
+    # été lu comme le 26 janvier 2015 (décalage de 11 ans, silencieux).
+    year_first_4digit = bool(re.match(r"^\d{4}[-/]", text_value))
+    year_first = year_first_4digit or yearfirst
+
     try:
-        parsed = pd.to_datetime(date_value, errors="coerce")
+        import warnings
+        with warnings.catch_warnings():
+            # dayfirst=True est sans effet sur un format déjà non ambigu
+            # (ISO, ou timestamp Excel/pandas) ; pandas émet un avertissement
+            # informatif dans ce cas précis, sans rapport avec un vrai risque
+            # d'erreur — supprimé ici pour ne pas polluer les journaux.
+            warnings.filterwarnings("ignore", message=".*dayfirst.*")
+            parsed = pd.to_datetime(
+                date_value, errors="coerce",
+                dayfirst=dayfirst and not year_first,
+                yearfirst=year_first and not year_first_4digit,
+            )
         if pd.isna(parsed):
             return None
         return (datetime.now() - parsed.to_pydatetime().replace(tzinfo=None)).days
@@ -126,7 +236,11 @@ def analyze_access(
     df = df.copy()
 
     if "last_login_date" in df.columns:
-        df["days_since_last_login"] = df["last_login_date"].apply(_days_since)
+        _dayfirst_login = _detect_dayfirst(df["last_login_date"])
+        _yearfirst_login = _detect_yearfirst(df["last_login_date"])
+        df["days_since_last_login"] = df["last_login_date"].apply(
+            lambda v: _days_since(v, dayfirst=_dayfirst_login, yearfirst=_yearfirst_login)
+        )
     else:
         logger.warning("Colonne 'last_login_date' absente : détection de dormance désactivée.")
         df["days_since_last_login"] = None
@@ -135,9 +249,17 @@ def analyze_access(
     # n'est pas un cas à exclure de la détection — c'est au contraire le cas
     # le plus net de dormance : le compte n'a jamais servi depuis sa
     # création. Sans cette règle, ces comptes échappaient entièrement au
-    # contrôle de dormance faute de date à comparer au seuil.
+    # contrôle de dormance faute de date à comparer au seuil. Certains
+    # exports encodent ce même fait par un texte littéral ('Never', 'N/A',
+    # 'Jamais'...) plutôt qu'une case vide — traité de façon identique.
+    NEVER_LOGGED_IN_MARKERS = {"never", "n/a", "na", "jamais", "none", "-", "aucune", "aucun"}
     if "last_login_date" in df.columns:
-        never_logged_in = df["last_login_date"].isna() | (df["last_login_date"].astype(str).str.strip() == "")
+        stripped_lower = df["last_login_date"].astype(str).str.strip().str.lower()
+        never_logged_in = (
+            df["last_login_date"].isna()
+            | (stripped_lower == "")
+            | stripped_lower.isin(NEVER_LOGGED_IN_MARKERS)
+        )
     else:
         never_logged_in = pd.Series(False, index=df.index)
 
@@ -169,7 +291,11 @@ def analyze_access(
         df["has_no_manager"] = False
 
     if "password_last_set" in df.columns:
-        df["days_since_password_change"] = df["password_last_set"].apply(_days_since)
+        _dayfirst_pwd = _detect_dayfirst(df["password_last_set"])
+        _yearfirst_pwd = _detect_yearfirst(df["password_last_set"])
+        df["days_since_password_change"] = df["password_last_set"].apply(
+            lambda v: _days_since(v, dayfirst=_dayfirst_pwd, yearfirst=_yearfirst_pwd)
+        )
     else:
         logger.warning("Colonne 'password_last_set' absente : détection de mot de passe périmé désactivée.")
         df["days_since_password_change"] = None
