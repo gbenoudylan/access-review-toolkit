@@ -339,10 +339,22 @@ def analyze_access(
     # sur des exports serveur. Ignorer la seconde ferait passer à travers
     # les mailles du filet tous les comptes administrateurs d'un fichier
     # qui n'a que ce seul indicateur.
-    PRIVILEGED_ROLE_KEYWORDS = {
+    #
+    # Recherche par MOT ENTIER (limites \b), pas par simple sous-chaîne :
+    # un simple "in" faisait remonter en masse de faux positifs sur des
+    # intitulés qui contiennent "admin" sans être un privilège IT réel
+    # ('Administrative Assistant', 'Sales Administration'...) — repéré
+    # sur un vrai fichier où ça avait fait exploser le compteur de
+    # comptes privilégiés à un niveau franchement irréaliste (~60% du
+    # fichier), signe évident du faux positif plutôt que d'un vrai
+    # résultat.
+    PRIVILEGED_ROLE_KEYWORDS = [
         "admin", "administrator", "administrateur", "root", "superuser",
         "super user", "superadmin", "super admin", "sysadmin",
-    }
+    ]
+    _PRIVILEGED_ROLE_RE = re.compile(
+        r"\b(" + "|".join(re.escape(k) for k in PRIVILEGED_ROLE_KEYWORDS) + r")\b"
+    )
     privileged_from_flag = pd.Series(False, index=df.index)
     if "is_privileged" in df.columns:
         privileged_from_flag = df["is_privileged"].apply(_is_privileged)
@@ -351,7 +363,7 @@ def analyze_access(
     if "role" in df.columns:
         role_lower = df["role"].astype(str).str.strip().str.lower()
         privileged_from_role = role_lower.apply(
-            lambda r: any(keyword in r for keyword in PRIVILEGED_ROLE_KEYWORDS)
+            lambda r: bool(_PRIVILEGED_ROLE_RE.search(r))
         )
 
     df["is_privileged_flag"] = privileged_from_flag | privileged_from_role

@@ -556,3 +556,25 @@ def test_administrator_role_alone_flags_privileged():
     assert result.loc[1, "is_privileged_flag"] == True
     assert result.loc[2, "is_privileged_flag"] == True
     print("OK - test_administrator_role_alone_flags_privileged")
+
+
+def test_admin_role_detection_uses_word_boundaries_not_substring():
+    """
+    Régression réelle et sévère : la détection par simple sous-chaîne
+    ('admin' in role) faisait remonter en masse des faux positifs sur
+    des intitulés qui contiennent 'admin' sans être un privilège IT réel
+    ('Administrative Assistant', 'Sales Administration'...) — repéré sur
+    un vrai fichier où ça faisait passer ~60% des comptes comme
+    'privilégié', un chiffre irréaliste qui aurait complètement faussé
+    l'audit. Doit détecter par mot entier, pas par simple inclusion.
+    """
+    df = pd.DataFrame({
+        "username": [f"u{i}" for i in range(4)], "system": ["Server"] * 4,
+        "role": ["Administrative Assistant", "Administration", "Sales Administration", "System Administrator"],
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_privileged_flag"] == False, "Administrative Assistant ne doit PAS être privilégié"
+    assert result.loc[1, "is_privileged_flag"] == False, "Administration (service) ne doit PAS être privilégié"
+    assert result.loc[2, "is_privileged_flag"] == False, "Sales Administration ne doit PAS être privilégié"
+    assert result.loc[3, "is_privileged_flag"] == True, "System Administrator DOIT rester privilégié"
+    print("OK - test_admin_role_detection_uses_word_boundaries_not_substring")
