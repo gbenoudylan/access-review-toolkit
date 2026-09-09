@@ -53,6 +53,29 @@ _LDAP_GENERALIZED_TIME_RE = re.compile(r"^(\d{14})(\.\d+)?Z?$")
 # comme un MOIS avec un jour arbitraire (voir _days_since).
 _TRUNCATED_DATE_RE = re.compile(r"^\d{1,2}\s+\d{1,2}:\d{2}:\d{2}\s+[+-]\d{4}\s+\d{4}$")
 
+# Mois en français (complets et abrégés, avec ou sans point) -> anglais.
+# pandas/dateutil ne reconnaissent que les noms de mois en anglais par
+# défaut : un export en français ('Avril 27, 2022', 'Mars 15, 2023')
+# échoue silencieusement à l'analyse (None) sans cette traduction — les
+# abréviations qui ressemblent par coïncidence à l'anglais ('Sept.',
+# 'Oct.') passaient déjà, ce qui masquait le problème pour les autres.
+_FRENCH_MONTHS = {
+    "janvier": "January", "février": "February", "fevrier": "February", "mars": "March",
+    "avril": "April", "mai": "May", "juin": "June", "juillet": "July", "août": "August",
+    "aout": "August", "septembre": "September", "octobre": "October", "novembre": "November",
+    "décembre": "December", "decembre": "December",
+    "janv": "Jan", "févr": "Feb", "fevr": "Feb", "avr": "Apr", "juil": "Jul",
+    "sept": "Sep", "oct": "Oct", "nov": "Nov", "déc": "Dec", "dec": "Dec",
+}
+_FRENCH_MONTH_RE = re.compile(
+    r"\b(" + "|".join(sorted(_FRENCH_MONTHS.keys(), key=len, reverse=True)) + r")\.?",
+    re.IGNORECASE,
+)
+
+
+def _translate_french_month(text_value: str) -> str:
+    return _FRENCH_MONTH_RE.sub(lambda m: _FRENCH_MONTHS[m.group(1).lower()], text_value)
+
 
 def _is_active_account(value) -> bool:
     if value is None:
@@ -283,6 +306,21 @@ def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> f
     year_first_4digit = bool(re.match(r"^\d{4}[-/]", text_value))
     year_first = year_first_4digit or yearfirst
 
+    # Mois en français ('Avril', 'Mars'...) non reconnus par le parseur
+    # par défaut (anglais) : traduits avant analyse. Les abréviations qui
+    # ressemblent par coïncidence à l'anglais ('Sept.', 'Oct.') passaient
+    # déjà, ce qui masquait le problème pour les mois complets.
+    translated_text = _translate_french_month(text_value)
+    parse_input = translated_text if translated_text != text_value else date_value
+
+    # Date sans année (ex. 'Fri Jan 17 16:05', horodatage type journal
+    # système) : pandas ne suppose PAS l'année courante par défaut, mais
+    # l'année 1 (0001) — une date absurdement lointaine, sans la moindre
+    # erreur visible. On détecte l'absence de toute séquence à 4 chiffres
+    # et on corrige après coup vers l'occurrence la plus récente plausible
+    # (année courante, ou l'année précédente si ça tomberait dans le futur).
+    has_no_year = not re.search(r"\d{4}", text_value)
+
     try:
         import warnings
         with warnings.catch_warnings():
@@ -292,13 +330,23 @@ def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> f
             # d'erreur — supprimé ici pour ne pas polluer les journaux.
             warnings.filterwarnings("ignore", message=".*dayfirst.*")
             parsed = pd.to_datetime(
-                date_value, errors="coerce",
+                parse_input, errors="coerce",
                 dayfirst=dayfirst and not year_first,
                 yearfirst=year_first and not year_first_4digit,
             )
         if pd.isna(parsed):
             return None
-        return (datetime.now() - parsed.to_pydatetime().replace(tzinfo=None)).days
+        parsed_dt = parsed.to_pydatetime().replace(tzinfo=None)
+        if has_no_year and parsed_dt.year < 1900:
+            candidate = parsed_dt.replace(year=datetime.now().year)
+            # Comparaison au jour près, pas à l'heure près : un horodatage
+            # simplement "plus tard aujourd'hui" ne doit pas déclencher un
+            # recul d'une année entière (seule une date réellement future
+            # — demain ou après — le justifie).
+            if candidate.date() > datetime.now().date():
+                candidate = candidate.replace(year=candidate.year - 1)
+            parsed_dt = candidate
+        return (datetime.now() - parsed_dt).days
     except Exception:
         return None
 
@@ -353,6 +401,7 @@ def analyze_access(
     NEVER_LOGGED_IN_MARKERS = {
         "never", "n/a", "na", "jamais", "none", "-", "aucune", "aucun",
         "no data", "never logged in", "aucune donnée", "aucune donnee",
+        "no info", "no information",
     }
     if "last_login_date" in df.columns:
         stripped_lower = df["last_login_date"].astype(str).str.strip().str.lower()

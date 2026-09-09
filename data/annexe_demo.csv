@@ -1,0 +1,49 @@
+username,full_name,department,system,manager,account_status,employee_status,is_privileged,last_login_date,role
+akouame0,Aya Kouame,Marketing,CRM,,Active,Active,No,2026-08-25,User
+gtraore1,Gisele Traore,Operations,VPN,,Active,Active,Yes,2026-09-04,Administrator
+ikouame2,Ines Kouame,Operations,SAP,A. Kouassi,Active,Active,No,2026-01-02,User
+dsanogo3,Didier Sanogo,Sales,Active Directory,B. Traore,Active,Active,No,2026-08-25,User
+ydiallo4,Yves Diallo,IT,CRM,B. Traore,Active,Active,Yes,2026-06-06,Administrator
+ibamba5,Ines Bamba,Finance,VPN,B. Traore,Active,Terminated,No,2026-06-06,User
+iroux6,Ines Roux,Sales,SAP,B. Traore,Active,Active,No,2026-09-04,User
+kpetit7,Konan Petit,IT,Active Directory,B. Traore,Active,Active,No,2026-06-06,User
+fkone8,Fatou Kone,Sales,SAP,,Active,Active,No,2026-01-02,User
+ksanogo9,Konan Sanogo,Marketing,SAP,B. Traore,Active,Active,No,2026-08-25,User
+yroux10,Yves Roux,Marketing,SAP,A. Kouassi,Active,Active,No,2025-08-05,User
+apetit11,Awa Petit,Finance,CRM,,Active,Active,No,2026-09-04,User
+souattara12,Serge Ouattara,Marketing,VPN,B. Traore,Active,Active,No,2026-01-02,User
+pouattara13,Paul Ouattara,Marketing,CRM,B. Traore,Active,Active,No,2026-06-06,User
+nouattara14,Nadège Ouattara,IT,VPN,A. Kouassi,Active,Active,Yes,2026-09-04,Administrator
+fbernard15,Fatou Bernard,Marketing,VPN,B. Traore,Active,Active,No,2026-06-06,User
+fbamba16,Franck Bamba,Operations,Active Directory,,Active,Active,No,2026-09-04,User
+ybernard17,Yves Bernard,Marketing,CRM,A. Kouassi,Active,Active,Yes,2026-06-06,Administrator
+ytoure18,Yves Toure,IT,Active Directory,,Active,Active,No,2026-07-26,User
+iouattara19,Ines Ouattara,IT,CRM,,Active,Active,No,2026-03-13,User
+jsanogo20,Jean Sanogo,Sales,VPN,B. Traore,Active,Active,Yes,2026-07-26,Administrator
+akouame21,Awa Kouame,IT,Active Directory,,Active,Active,Yes,2026-06-06,Administrator
+pdiallo22,Paul Diallo,Marketing,VPN,,Active,Active,No,2026-08-25,User
+couattara23,Chantal Ouattara,Operations,SAP,,Active,Active,No,2026-06-06,User
+ncoulibaly24,Nadège Coulibaly,Operations,VPN,A. Kouassi,Active,Terminated,Yes,2026-08-25,Administrator
+htoure25,Hervé Toure,IT,SAP,A. Kouassi,Active,Active,Yes,2026-01-02,Administrator
+kroux26,Konan Roux,Finance,CRM,B. Traore,Active,Active,Yes,2026-08-25,Administrator
+ktoure27,Kouassi Toure,IT,VPN,A. Kouassi,Active,Active,No,2026-06-06,User
+atraore28,Aya Traore,Marketing,VPN,,Active,Active,No,2026-06-06,User
+mdupont29,Marie Dupont,Marketing,Active Directory,A. Kouassi,Active,Active,Yes,2026-01-02,Administrator
+aouattara30,Awa Ouattara,IT,VPN,A. Kouassi,Active,Active,Yes,2026-08-25,Administrator
+kcoulibaly31,Konan Coulibaly,Operations,Active Directory,A. Kouassi,Active,Active,Yes,2026-03-13,Administrator
+adiallo32,Awa Diallo,HR,VPN,A. Kouassi,Active,Active,No,2025-08-05,User
+fyao33,Fatou Yao,Finance,VPN,B. Traore,Active,Active,No,2025-08-05,User
+cmartin34,Chantal Martin,Marketing,VPN,A. Kouassi,Active,Active,No,2026-07-26,User
+hmartin35,Hervé Martin,Operations,Active Directory,B. Traore,Active,Terminated,No,2026-09-04,User
+froux36,Franck Roux,Operations,SAP,A. Kouassi,Active,Active,Yes,2026-03-13,Administrator
+ksanogo37,Konan Sanogo,Finance,SAP,,Active,Active,No,2026-03-13,User
+msanogo38,Marie Sanogo,Finance,VPN,B. Traore,Active,Active,No,2026-03-13,User
+kdupont39,Kouassi Dupont,Marketing,CRM,,Active,Active,No,2026-06-06,User
+acoulibaly40,Adjoua Coulibaly,Sales,Active Directory,A. Kouassi,Active,Active,Yes,2026-03-13,Administrator
+ktoure41,Konan Toure,IT,CRM,A. Kouassi,Active,Active,Yes,2026-07-26,Administrator
+nbamba42,Nadège Bamba,IT,VPN,,Active,Active,No,2026-01-02,User
+fkouame43,Franck Kouame,Marketing,CRM,A. Kouassi,Active,Active,No,2026-09-04,User
+ytraore44,Yves Traore,Finance,SAP,B. Traore,Active,Active,No,2026-03-13,User
+kdupont45,Kouassi Dupont,Marketing,CRM,A. Kouassi,Active,Active,No,2026-07-26,User
+kdupont46,Konan Dupont,HR,CRM,,Active,Active,Yes,2026-07-26,Administrator
+ydiallo47,Yves Diallo,Marketing,VPN,A. Kouassi,Active,Active,No,2026-06-06,User

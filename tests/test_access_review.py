@@ -791,3 +791,45 @@ def test_load_custom_sod_matrix_from_csv():
     matrix = load_custom_sod_matrix(content.encode(), "matrice.csv")
     assert matrix == [("Admin", "Auditeur")]
     print("OK - test_load_custom_sod_matrix_from_csv")
+
+
+def test_french_month_names_recognized():
+    """
+    Vrai bug trouvé : les mois en français complets ('Avril', 'Juin',
+    'Mars') n'étaient pas du tout reconnus par le parseur (anglais par
+    défaut) et retournaient silencieusement None — alors que certaines
+    abréviations françaises ('Sept.', 'Oct.') passaient par pure
+    coïncidence avec l'anglais, masquant le problème.
+    """
+    from analysis.access_review import _days_since
+    from datetime import datetime, timedelta
+    tests = [("Avril 27, 2022", 4, 27, 2022), ("Juin 14, 2022", 6, 14, 2022), ("Mars 15, 2023", 3, 15, 2023)]
+    for value, exp_month, exp_day, exp_year in tests:
+        days = _days_since(value)
+        assert days is not None, f"'{value}' aurait dû être reconnu"
+        computed = datetime.now() - timedelta(days=int(days))
+        assert (computed.year, computed.month, computed.day) == (exp_year, exp_month, exp_day), value
+    print("OK - test_french_month_names_recognized")
+
+
+def test_date_without_year_resolved_to_recent_occurrence():
+    """
+    Vrai bug trouvé : une date sans année (ex. 'Fri Jan 17 16:05', motif
+    d'horodatage type journal système) était interprétée par pandas comme
+    l'année 1 (0001) — une date absurde, sans la moindre erreur visible.
+    Doit être ramenée à l'occurrence récente la plus plausible.
+    """
+    from analysis.access_review import _days_since
+    days = _days_since("Fri Jan 17 16:05")
+    assert days is not None
+    assert days < 3650, "Ne doit pas rester sur l'année 1 (des milliers d'années d'écart)"
+    print("OK - test_date_without_year_resolved_to_recent_occurrence")
+
+
+def test_no_info_marker_treated_as_never_logged_in():
+    """'No info' (nouveau marqueur réel rencontré) doit être traité comme
+    'jamais connecté' (is_never_used), comme 'Never'/'No Data' déjà."""
+    df = pd.DataFrame({"username": ["u1"], "system": ["AD"], "last_login_date": ["No info"]})
+    result = analyze_access(df)
+    assert result.loc[0, "is_never_used"] == True
+    print("OK - test_no_info_marker_treated_as_never_logged_in")
