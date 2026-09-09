@@ -1,196 +1,173 @@
 # Access Review & IAM Anomaly Detection Toolkit
 
-Outil d'ingestion universelle et de détection automatique des anomalies
-d'accès (comptes orphelins, dormants, privilèges non justifiés), conçu pour
-absorber des exports IAM à formats variables sans réécriture de code.
+Outil d'automatisation de la revue périodique des habilitations (Access
+Review IAM) : ingestion universelle de tout export d'accès, application
+des 18 contrôles standards du secteur, détection d'anomalies, workflow de
+validation humaine, et production d'un rapport d'audit exploitable —
+Excel, PDF ou Word.
 
-Projet mené en parallèle du stage Data Protection & IAM chez MTN Côte d'Ivoire.
-
-## Statut du projet
-
-- [x] **Phase 1 — Ingestion universelle** (11 formats)
-- [x] **Phase 2 — Détection des anomalies d'accès**
-- [x] **Phase 3 — Dashboard Streamlit**
-- [x] **Phase 4 — Export du rapport de revue (Excel/PDF)**
-- [x] **Phase 5 — Croisement IAM+RH, conflits SoD, workflow de validation**
-
-**Projet complet.**
-
-## Phase 5 : Croisement RH, conflits SoD, workflow de validation
-
-### Croisement IAM + RH (`analysis/hr_crossref.py`)
-
-**Convention de nommage** : dans `data/`, tout fichier préfixé `HR_` est un
-export RH (à passer en second argument des commandes de croisement, ou
-dans le champ dédié du dashboard) — jamais en fichier IAM principal, il
-lui manque volontairement les champs `username`/`system` au sens IAM.
-
-**Le problème résolu** : un export LDAP/AD pur ne contient jamais le statut
-RH réel d'un employé (parti ou non) — cette information vit dans le SIRH,
-pas dans l'annuaire. Sans croisement, la détection "employé parti mais
-compte actif" est structurellement impossible sur ce type d'export.
-
-Ce module prend un second fichier (export RH, n'importe lequel des 11
-formats supportés) et vient enrichir le statut employé réel de chaque
-compte IAM. Un compte IAM sans correspondance RH est marqué comme tel
-plutôt qu'ignoré — c'est en soi une anomalie potentielle (compte fantôme
-ou prestataire externe non déclaré).
-
-```bash
-python -m analysis.hr_crossref data/scenario_iam_export.ldif data/HR_scenario_hr_export.csv
-```
-
-### Conflits de séparation des tâches (`analysis/sod_detection.py`)
-
-**Le principe** : certaines combinaisons de rôles ne doivent jamais être
-cumulées par une même personne (ex. créer un paiement ET le valider) —
-contrôle standard en audit interne et conformité financière.
-
-La matrice de conflits par défaut (`DEFAULT_SOD_CONFLICTS`) est un point
-de départ générique, à adapter à la matrice de rôles réelle de ton
-organisation.
-
-```bash
-python -m analysis.sod_detection data/example_iam_with_sod_conflict.csv
-```
-
-### Workflow de validation (`analysis/review_workflow.py`)
-
-Chaque anomalie détectée doit être explicitement validée par un
-responsable — c'est le principe même d'une revue d'accès. Ce module ajoute
-un statut ("En attente" / "Validé - accès légitime" / "Révoqué"), avec
-horodatage et nom du validateur, **persisté localement** (`data/review_decisions.json`)
-pour survivre d'une revue mensuelle à l'autre.
-
-Intégré directement dans le dashboard : une table éditable permet de
-changer le statut de chaque compte et d'enregistrer les décisions en un
-clic.
-
-### Tests
-
-10 tests supplémentaires (`tests/test_enrichments.py`), portant le total
-du projet à **36 tests automatisés**.
+Projet mené en parallèle du stage Data Protection & IAM chez MTN Côte
+d'Ivoire.
 
 ## Le problème résolu
 
-Une revue d'accès périodique (access review) doit répondre à des questions
-simples mais critiques : *quels comptes appartiennent à des personnes
-parties ? lesquels ne se sont pas connectés depuis des mois ? qui a des
-droits privilégiés sans justification claire ?* Fait manuellement sur un
-export brut, ce travail est long et sujet à l'oubli. Cet outil l'automatise.
+Une revue d'accès périodique doit répondre à des questions simples mais
+critiques : *quels comptes appartiennent à des personnes parties ?
+lesquels ne se sont pas connectés depuis des mois ? qui a des droits
+privilégiés sans justification claire ? qui a changé de rôle depuis la
+dernière revue ?* Fait manuellement sur un export brut — souvent dans un
+format différent selon le système source — ce travail est long, sujet à
+l'erreur, et rarement traçable. Cet outil l'automatise de bout en bout.
 
-## Anomalies détectées
+## Fonctionnalités
 
-| Anomalie | Critère | Niveau de risque |
-|---|---|---|
-| **Compte actif d'un employé parti** | `account_status` actif + `employee_status` terminé | Critique |
-| **Compte privilégié dormant** | Pas de connexion depuis > 90 jours + droits admin | Critique |
-| **Compte standard dormant** | Pas de connexion depuis > 90 jours | Moyen/Élevé |
-| **Compte sans owner identifié** | Champ `manager` vide | Moyen |
+**Ingestion universelle** — CSV, Excel (mono/multi-feuilles), Word, JSON,
+XML, HTML, LDIF (export LDAP/AD natif), PDF, images scannées (OCR), ou une
+archive ZIP contenant plusieurs de ces formats. Reconnaissance automatique
+des colonnes par correspondance approximative, fusion intelligente quand
+plusieurs sources décrivent les mêmes comptes.
 
-Chaque compte reçoit une **action recommandée** ("Révoquer immédiatement",
-"Désactiver", "Identifier un owner"...) et un **niveau de risque**, pour
-transformer un export brut en plan d'action priorisé.
+**Les 18 contrôles standards d'une revue IAM** — comptes dormants, jamais
+utilisés, orphelins, de test, de service, en doublon, mots de passe
+périmés, comptes administrateurs, employés partis mais encore actifs,
+convention de nommage, et plus. Chaque contrôle produit une liste
+nominative complète (pas seulement un chiffre), avec les colonnes qui
+justifient le classement et l'action recommandée — sans plafond, ce sont
+les sections effectivement revues.
+
+**Score de risque explicable (0-100)** — en plus du niveau catégoriel
+(Critique/Élevé/Moyen/Faible), chaque compte a un score additif détaillé
+ligne par ligne : *pourquoi* ce compte est à 100/100, pas seulement qu'il
+l'est.
+
+**Détection SoD (Separation of Duties)** — repère les cumuls de rôles
+incompatibles, avec une matrice personnalisable chargeable depuis un
+simple fichier Excel/CSV.
+
+**Comparaison entre deux cycles de revue** — comptes créés, supprimés,
+réactivés, profils modifiés, et détection spécifique des escalades de
+privilège (un compte standard devenu administrateur).
+
+**Contrôle qualité des données** — avant même l'analyse IAM, vérifie la
+fiabilité du fichier source (identifiants manquants, doublons, dates
+illisibles, statuts non reconnus) avec un pourcentage de fiabilité.
+
+**Workflow de validation avec audit trail complet** — chaque compte peut
+être marqué Validé / Révoqué / En attente, avec commentaire et validateur.
+L'historique complet est conservé (pas seulement la dernière décision)
+pour répondre à *qui a validé quoi, quand, et pourquoi*.
+
+**Trois formats de restitution, cohérents entre eux** — PDF et Word fidèles
+à un template d'audit officiel (mêmes calculs, moteurs de rendu
+différents ; Word reste modifiable après génération), et Excel pour le
+suivi opérationnel.
+
+**Dashboard interactif (Streamlit)** — vue d'ensemble, répartition par
+risque, Control Coverage, détail des comptes filtrable, fiche
+d'investigation par compte, validation en ligne, génération des rapports.
 
 ## Architecture
-
-Reprend la même architecture validée sur le projet de gestion des
-vulnérabilités (voir `vuln_tracker`), adaptée au domaine IAM :
 
 ```
 Export d'accès (n'importe quel format)
         │
         ▼
- config/column_mapping.py   -> référentiel des variantes de colonnes IAM
+ config/column_mapping.py     -> référentiel des variantes de colonnes IAM
         │
         ▼
- ingestion/ingest.py        -> détection d'en-tête, standardisation
+ ingestion/ingest.py          -> détection d'en-tête, standardisation,
+        │                        contrôle qualité des données
+        ▼
+ analysis/access_review.py    -> les 18 contrôles, score de risque,
+        │                        action recommandée
+        ▼
+ analysis/sod_detection.py    -> conflits de séparation des tâches
+ analysis/hr_crossref.py      -> croisement avec un export RH
+ analysis/review_workflow.py  -> validation humaine, audit trail
         │
         ▼
- analysis/access_review.py  -> détection des anomalies, scoring de risque
+ reporting/export.py          -> génération Excel / PDF / Word
+        │
+        ▼
+ dashboard/app.py             -> interface Streamlit
 ```
 
 ### Formats de fichiers acceptés en entrée
 
 | Format | Comportement |
 |---|---|
-| **CSV** (`.csv`) | Détection automatique du séparateur, gestion des lignes de longueur inégale |
-| **Excel** (`.xlsx`, `.xls`) | Lecture directe de la première feuille |
-| **Word** (`.docx`) | Cherche un tableau (le plus pertinent s'il y en a plusieurs) ; à défaut, retombe sur la lecture en cascade du texte des paragraphes (voir Texte brut) |
-| **Texte brut** (`.txt`) | 3 stratégies en cascade — voir détail ci-dessous |
-| **JSON** (`.json`) | Liste d'objets, ou objet contenant une liste sous une clé courante (`results`, `data`, `users`, `accounts`, `records`, `items`, `value`) |
-| **XML** (`.xml`) | Éléments répétitifs représentant chacun un compte (ex. `<user>...</user>`) |
-| **HTML** (`.html`, `.htm`) | Le tableau le plus pertinent parmi ceux présents dans la page (export copié depuis une page web/intranet) |
-| **LDIF** (`.ldif`) | Export natif LDAP/Active Directory. Décode automatiquement `userAccountControl` (bitmask) en statut Active/Disabled lisible. Ajoute une colonne `system` par défaut (un LDIF représente un seul annuaire, donc l'info n'existe structurellement pas dans les données) |
-| **PDF** (`.pdf`) | Extraction de tableau par bordures visibles, avec repli sur une détection par alignement de texte si aucune bordure n'est trouvée (moins fiable — un avertissement est loggé dans ce cas) |
-| **ZIP** (`.zip`) | Extrait et traite chaque fichier supporté à l'intérieur, puis combine tous les résultats en un seul jeu de données. Un fichier illisible dans l'archive est ignoré (avec avertissement) sans faire échouer les autres |
+| **CSV** (`.csv`) | Détection automatique du séparateur, encodage, lignes de longueur inégale |
+| **Excel** (`.xlsx`, `.xls`) | Mono ou multi-feuilles, fusion automatique si plusieurs feuilles décrivent les mêmes comptes |
+| **Word** (`.docx`) | Un ou plusieurs tableaux, avec repli sur la lecture du texte si absent |
+| **Texte brut** (`.txt`) | Délimité, colonnes alignées, ou blocs clé-valeur — 3 stratégies en cascade |
+| **JSON** (`.json`) | Liste d'objets, ou objet contenant une liste sous une clé courante |
+| **XML** (`.xml`) | Éléments répétitifs représentant chacun un compte |
+| **HTML** (`.html`, `.htm`) | Le tableau le plus pertinent de la page |
+| **LDIF** (`.ldif`) | Export LDAP/AD natif, décodage de `userAccountControl` en statut lisible |
+| **PDF** (`.pdf`) | Extraction de tableau par bordures, repli sur alignement de texte sinon |
+| **Images** (`.png`, `.jpg`, `.jpeg`) | OCR (avec avertissement explicite sur la fiabilité) |
+| **ZIP** (`.zip`) | Traite chaque fichier supporté à l'intérieur et combine les résultats |
 
-**Stratégies pour le texte brut** (`.txt`, et repli du Word/LDIF sans structure claire), essayées dans l'ordre jusqu'à ce que l'une fonctionne :
-1. **Délimité** : virgule, point-virgule, tabulation ou pipe.
-2. **Colonnes alignées par espaces** : rapports en ligne de commande, exports legacy.
-3. **Blocs clé-valeur** : une fiche par enregistrement, séparée par des lignes vides, au format `clé: valeur`.
+Seuls `username` et `system` sont obligatoires — l'outil ne plante jamais
+faute d'une colonne optionnelle manquante, il désactive juste le contrôle
+concerné avec un avertissement explicite.
 
-Si aucune stratégie ne produit de structure reconnaissable, l'erreur l'indique clairement plutôt que d'échouer silencieusement ou de produire des données incohérentes.
-
-### Limites connues, assumées
-
-- **PDF sans bordures visibles** : l'extraction par alignement de texte peut mal découper certaines colonnes ou lignes. Un PDF avec un vrai tableau (bordures) est toujours plus fiable.
-- **Formats volontairement exclus** : OCR sur image/scan (peu fiable, hors périmètre), fichiers `.eml` (mieux vaut en extraire la pièce jointe séparément). Ces cas sont rares et mieux traités au cas par cas qu'en complexifiant le pipeline pour un gain marginal.
-
-### Colonnes reconnues
-
-`username`, `full_name`, `email`, `department`, `job_title`, `manager`,
-`system`, `role`, `account_status`, `is_privileged`, `last_login_date`,
-`account_created_date`, `employee_status`.
-
-Seuls `username` et `system` sont obligatoires — plus il y a de colonnes
-disponibles, plus l'analyse est précise, mais l'outil ne plante jamais
-faute de colonne optionnelle manquante (juste un avertissement en log).
-
-## Utilisation
+## Installation
 
 ```bash
 pip install -r requirements.txt
-python -m analysis.access_review data/export_test_A.csv
 ```
 
-## Tests
+## Utilisation
 
-Deux fichiers de test aux formats différents sont fournis (`data/`), avec
-des données **entièrement synthétiques** (noms et emails fictifs, pas de
-données personnelles réelles) :
-- `export_test_A.csv` : format anglais standard
-- `export_test_B.csv` : format français, en-tête décalée, colonnes
-  réordonnées, lignes de méta-données parasites
-
-```bash
-python tests/test_access_review.py
-```
-
-6 tests valident : la détection des comptes terminés-mais-actifs, la
-détection de dormance, la non-détection sur connexion récente, la
-priorisation des comptes privilégiés dormants, l'absence de plantage sans
-colonnes optionnelles, et l'exactitude du résumé chiffré.
-
-## Prochaines étapes
-
-- ~~Phase 3 : dashboard Streamlit~~ ✅
-- ~~Phase 4 : export Excel/PDF~~ ✅
-
-## Utilisation du dashboard
+### Dashboard (recommandé)
 
 ```bash
 streamlit run dashboard/app.py
 ```
 
-Upload d'un fichier (ou utilisation du fichier d'exemple), visualisation des
-comptes par niveau de risque, filtres, et génération de rapports Excel/PDF
-directement depuis l'interface — en ne gardant que la sélection filtrée
-(par exemple, uniquement les comptes "Critique" pour un rapport ciblé).
+Import du fichier (ou fichier d'exemple fourni), seuils des contrôles
+configurables, croisement RH et matrice SoD personnalisée en option,
+détail des comptes filtrable, fiche d'investigation, validation, et
+génération des rapports Excel/PDF/Word en un clic.
 
-## Utilisation en ligne de commande (export direct)
+### Ligne de commande
 
 ```bash
+python -m analysis.access_review data/export_test_A.csv
 python -m reporting.export data/export_test_A.csv
 ```
-Génère `output/rapport_revue_acces.xlsx` et `.pdf`.
+
+## Tests
+
+```bash
+pytest tests/ -v
+```
+
+**151 tests automatisés**, dont la majorité couvrent des cas réels
+rencontrés en pratique (formats de date ambigus selon la région ou le
+système source, encodages, caractères non-latins, structures de fichiers
+inhabituelles, valeurs tronquées) plutôt que des scénarios uniquement
+synthétiques.
+
+## Limites connues, assumées
+
+- **PDF sans bordures visibles** : l'extraction par alignement de texte
+  peut mal découper certaines colonnes.
+- **OCR sur image** : moins fiable qu'un export structuré — signalé
+  explicitement dans le rapport si utilisé.
+- **Ambiguïté de date sans preuve dans la colonne** : si aucune valeur
+  d'une colonne ne permet de trancher entre jour-premier et mois-premier,
+  l'ambiguïté reste réellement insoluble mathématiquement (repli sur le
+  standard jour-premier par défaut).
+- **Contrôles nécessitant une configuration propre à l'entreprise**
+  (comptes orphelins par rapprochement RH avancé, tiers 3PP, revue
+  annuelle des profils) : marqués N/A avec l'explication précise plutôt
+  qu'un chiffre inventé.
+
+## Confidentialité
+
+`data/review_decisions.json` peut contenir des décisions de revue réelles
+(commentaires, noms de validateurs) une fois l'outil utilisé en
+conditions réelles — à exclure de tout dépôt public ou partagé, au même
+titre que tout export IAM réel placé dans `data/`.
