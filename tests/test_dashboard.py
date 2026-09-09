@@ -30,7 +30,7 @@ def test_dashboard_banner_and_kpi_cards_render():
     at.run(timeout=60)
     all_markdown = "\n".join(m.value for m in at.markdown)
     assert "Access Review & IAM" in all_markdown
-    assert "Comptes analysés" in all_markdown
+    assert "COMPTES ANALYSÉS" in all_markdown
     print("OK - test_dashboard_banner_and_kpi_cards_render")
 
 

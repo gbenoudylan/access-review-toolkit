@@ -489,19 +489,19 @@ def _build_dump_completeness_table(df: pd.DataFrame, available_width: float) -> 
     return table
 
 
-def _build_control_summary_table(df: pd.DataFrame, comparison_stats: dict, available_width: float) -> Table:
+def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[tuple]:
     """
-    Vue d'ensemble compacte des 18 contrôles — une ligne par contrôle,
-    statut OK/⚠️/N/A et le compte associé, pour une lecture en un coup
-    d'œil avant le détail verbeux des sous-sections IV.2 à IV.18.
+    Calcul PUR (aucun rendu) de l'état des 18 contrôles — réutilisé à la
+    fois par le PDF (_build_control_summary_table) et le dashboard
+    (Control Coverage), pour ne jamais dupliquer cette logique.
+    Retourne une liste de tuples (numéro, titre, statut, affichage_compte).
     """
-    rows = [["N°", "Contrôle", "Résultat", "Anomalies"]]
-
+    rows = []
     dump_ok = all(
         any(c in df.columns and df[c].notna().any() for c in candidates)
         for _, candidates in DUMP_COMPLETENESS_COLUMNS
     )
-    rows.append(["1", "Dump completeness and accuracy", "OK" if dump_ok else "⚠️", "—"])
+    rows.append((1, "Dump completeness and accuracy", "OK" if dump_ok else "⚠️", "—"))
 
     for number, title, _, key in CONTROL_SUBSECTIONS:
         count = None
@@ -524,6 +524,19 @@ def _build_control_summary_table(df: pd.DataFrame, comparison_stats: dict, avail
             count_display = str(count)
         else:
             status, count_display = "N/A", "—"
+        rows.append((number, title, status, count_display))
+    return rows
+
+
+def _build_control_summary_table(df: pd.DataFrame, comparison_stats: dict, available_width: float) -> Table:
+    """
+    Vue d'ensemble compacte des 18 contrôles — une ligne par contrôle,
+    statut OK/⚠️/N/A et le compte associé, pour une lecture en un coup
+    d'œil avant le détail verbeux des sous-sections IV.2 à IV.18.
+    """
+    coverage = compute_control_coverage(df, comparison_stats)
+    rows = [["N°", "Contrôle", "Résultat", "Anomalies"]]
+    for number, title, status, count_display in coverage:
         rows.append([str(number), title, status, count_display])
 
     table = Table(rows, colWidths=[available_width * w for w in (0.06, 0.52, 0.14, 0.28)], repeatRows=1)

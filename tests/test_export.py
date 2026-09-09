@@ -761,3 +761,25 @@ def test_control_specific_justifying_columns_shown():
     assert "Action recommandée" in snippet
     assert "982" in snippet  # la vraie valeur en jours doit apparaître
     print("OK - test_control_specific_justifying_columns_shown")
+
+
+def test_compute_control_coverage_shared_by_pdf_and_dashboard():
+    """
+    compute_control_coverage doit être la SEULE source de vérité pour
+    l'état des 18 contrôles — réutilisée par le PDF (Control Summary) et
+    le dashboard (Control Coverage), sans dupliquer la logique."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import compute_control_coverage
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"], "account_status": ["Active"],
+        "last_login_date": ["2024-01-01"],
+    })
+    result = analyze_access(df)
+    coverage = compute_control_coverage(result, {})
+    assert len(coverage) == 18
+    dormant_entry = next(c for c in coverage if c[1] == "Dormant Accounts")
+    assert dormant_entry[2] == "⚠️"  # jdupont est dormant -> anomalie détectée
+    assert dormant_entry[3] == "1"
+    print("OK - test_compute_control_coverage_shared_by_pdf_and_dashboard")
