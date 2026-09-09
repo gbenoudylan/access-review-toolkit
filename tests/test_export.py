@@ -434,9 +434,12 @@ def test_control_subsection_shows_account_detail_table():
     print("OK - test_control_subsection_shows_account_detail_table")
 
 
-def test_control_subsection_table_capped_on_large_dataset():
-    """Au-delà du plafond, une mention doit renvoyer vers le détail
-    complet plutôt que de faire exploser le document."""
+def test_control_subsection_table_shows_all_accounts_no_cap():
+    """
+    Les 18 sections de contrôle sont celles effectivement revues : elles
+    ne doivent JAMAIS être plafonnées, même sur un gros volume — tous les
+    comptes doivent apparaître nommément.
+    """
     import pandas as pd
     from analysis.access_review import analyze_access
     from reporting.export import generate_pdf_report
@@ -445,11 +448,13 @@ def test_control_subsection_table_capped_on_large_dataset():
     rows = [{"username": f"user{i:03d}", "system": "AD", "account_status": "Active",
               "last_login_date": "2024-01-01"} for i in range(50)]
     result = analyze_access(pd.DataFrame(rows))
-    output = generate_pdf_report(result, "output/test_capped_regression.pdf")
+    output = generate_pdf_report(result, "output/test_nocap_regression.pdf")
     with pdfplumber.open(output) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    assert "autre(s) compte(s)" in full_text
-    print("OK - test_control_subsection_table_capped_on_large_dataset")
+    assert "autre(s) compte(s)" not in full_text
+    assert "user000" in full_text
+    assert "user049" in full_text
+    print("OK - test_control_subsection_table_shows_all_accounts_no_cap")
 
 
 def test_word_report_generates_without_crash():
@@ -553,9 +558,9 @@ def test_word_report_empty_dataframe_no_crash():
     print("OK - test_word_report_empty_dataframe_no_crash")
 
 
-def test_word_report_large_dataset_table_capped():
-    """Au-delà du plafond de 30 comptes par contrôle, une mention doit
-    renvoyer vers le détail complet — cohérent avec le comportement PDF."""
+def test_word_report_large_dataset_table_shows_all_no_cap():
+    """Les 18 sections de contrôle ne doivent jamais être plafonnées,
+    même sur un gros volume — cohérent avec le comportement PDF."""
     import pandas as pd
     from analysis.access_review import analyze_access
     from reporting.export import generate_word_report
@@ -564,11 +569,16 @@ def test_word_report_large_dataset_table_capped():
     rows = [{"username": f"user{i:03d}", "system": "AD", "account_status": "Active",
               "last_login_date": "2024-01-01"} for i in range(50)]
     result = analyze_access(pd.DataFrame(rows))
-    output = generate_word_report(result, "output/test_word_capped_regression.docx")
+    output = generate_word_report(result, "output/test_word_nocap_regression.docx")
     doc = Document(str(output))
-    full_text = "\n".join(p.text for p in doc.paragraphs)
-    assert "autre(s) compte(s)" in full_text
-    print("OK - test_word_report_large_dataset_table_capped")
+    full_text = ""
+    for table in doc.tables:
+        for row in table.rows:
+            full_text += " ".join(c.text for c in row.cells) + "\n"
+    assert "autre(s) compte(s)" not in full_text
+    assert "user000" in full_text
+    assert "user049" in full_text
+    print("OK - test_word_report_large_dataset_table_shows_all_no_cap")
 
 
 def test_control_action_clarification_note_present():
@@ -655,13 +665,12 @@ def test_word_report_includes_risk_score_explainability_section():
     print("OK - test_word_report_includes_risk_score_explainability_section")
 
 
-def test_word_report_includes_exceptions_and_detail_by_system():
+def test_word_report_includes_exceptions_section():
     """
-    Régression réelle, trouvée par comparaison systématique PDF/Word :
-    'Rapport des exceptions' et 'Détail par système' existaient
-    seulement dans le PDF — absentes de Word. Or plusieurs notes de
-    plafonnement ('voir le détail complet par système') y renvoient
-    explicitement : sans cette section, la promesse n'est pas tenue.
+    'Rapport des exceptions' doit exister dans Word, comme dans PDF —
+    régression trouvée par comparaison systématique entre les deux
+    formats. 'Détail par système' a depuis été retiré (redondant avec
+    les 18 sections de contrôle désormais complètes et sans plafond).
     """
     import pandas as pd
     from analysis.access_review import analyze_access
@@ -680,9 +689,8 @@ def test_word_report_includes_exceptions_and_detail_by_system():
         for row in table.rows:
             full_text += "\n" + " ".join(c.text for c in row.cells)
     assert "Rapport des exceptions" in full_text
-    assert "Détail par système" in full_text
     assert "jdupont" in full_text
-    print("OK - test_word_report_includes_exceptions_and_detail_by_system")
+    print("OK - test_word_report_includes_exceptions_section")
 
 
 def test_deleted_accounts_found_in_previous_df_not_current():
@@ -743,7 +751,13 @@ def test_control_specific_justifying_columns_shown():
     with pdfplumber.open(output) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     idx = full_text.find("2.Dormant Accounts")
-    snippet = full_text[idx:idx + 400]
-    assert "Dernière connexion" in snippet
-    assert "Jours sans connexion" in snippet
+    snippet = full_text[idx:idx + 600]
+    # Vérification par mot plutôt que par phrase exacte : un en-tête un
+    # peu long s'enveloppe légitimement sur plusieurs lignes dans le PDF
+    # (vérifié visuellement, rendu correct), ce que l'ordre de lecture du
+    # texte extrait ne préserve pas toujours fidèlement.
+    assert "Dernière" in snippet and "connexion" in snippet
+    assert "Jours" in snippet and "sans" in snippet
+    assert "Action recommandée" in snippet
+    assert "982" in snippet  # la vraie valeur en jours doit apparaître
     print("OK - test_control_specific_justifying_columns_shown")

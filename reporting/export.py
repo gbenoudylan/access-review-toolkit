@@ -168,20 +168,20 @@ ALL_COLUMN_LABELS = {**dict(DISPLAY_COLUMNS), **_EXTRA_COLUMN_LABELS}
 # en jours, pas seulement l'action "Désactiver". Clé = même clé que
 # CONTROL_SUBSECTIONS (booléenne, ou "_created"/"_deleted"/...).
 CONTROL_TABLE_COLUMNS = {
-    "is_dormant": ["username", "full_name", "system", "account_status", "last_login_date", "days_since_last_login"],
-    "is_test_account": ["username", "full_name", "system", "account_status"],
-    "_active_count": ["username", "full_name", "system", "account_status", "last_login_date"],
-    "is_never_used": ["username", "full_name", "system", "account_created_date", "last_login_date"],
-    "is_service_account": ["username", "full_name", "system", "account_status", "last_login_date"],
-    "is_duplicate_account": ["username", "full_name", "system", "department", "account_status"],
-    "is_non_compliant_naming": ["username", "full_name", "system", "account_status"],
-    "_created": ["username", "full_name", "system", "account_created_date", "account_status"],
-    "_profile_modified": ["username", "full_name", "system", "role", "account_status"],
-    "_reactivated": ["username", "full_name", "system", "account_status"],
-    "_deleted": ["username", "full_name", "system"],
-    "is_password_stale": ["username", "full_name", "system", "password_last_set", "days_since_password_change"],
-    "is_privileged_flag": ["username", "full_name", "system", "role", "account_status"],
-    "is_terminated_but_active": ["username", "full_name", "system", "employee_status", "account_status"],
+    "is_dormant": ["username", "full_name", "system", "account_status", "last_login_date", "days_since_last_login", "review_action"],
+    "is_test_account": ["username", "full_name", "system", "account_status", "review_action"],
+    "_active_count": ["username", "full_name", "system", "account_status", "last_login_date", "review_action"],
+    "is_never_used": ["username", "full_name", "system", "account_created_date", "last_login_date", "review_action"],
+    "is_service_account": ["username", "full_name", "system", "account_status", "last_login_date", "review_action"],
+    "is_duplicate_account": ["username", "full_name", "system", "department", "account_status", "review_action"],
+    "is_non_compliant_naming": ["username", "full_name", "system", "account_status", "review_action"],
+    "_created": ["username", "full_name", "system", "account_created_date", "account_status", "review_action"],
+    "_profile_modified": ["username", "full_name", "system", "role", "account_status", "review_action"],
+    "_reactivated": ["username", "full_name", "system", "account_status", "review_action"],
+    "_deleted": ["username", "full_name", "system"],  # n'existe plus dans le cycle courant : pas d'action à afficher
+    "is_password_stale": ["username", "full_name", "system", "password_last_set", "days_since_password_change", "review_action"],
+    "is_privileged_flag": ["username", "full_name", "system", "role", "account_status", "review_action"],
+    "is_terminated_but_active": ["username", "full_name", "system", "employee_status", "account_status", "review_action"],
 }
 
 
@@ -341,12 +341,19 @@ COLUMN_WIDTH_WEIGHTS = {
     "MDP n'expire jamais": 1.0,
     "Action recommandée": 2.2,
     "Risque": 0.8,
+    "Dernière connexion (brute)": 1.3,
+    "Date de création": 1.1,
+    "Dernier changement MDP (brut)": 1.3,
+    "Rôle": 1.2,
+    "Statut mot de passe": 1.0,
 }
 # Colonnes dont le texte doit pouvoir revenir à la ligne plutôt que
 # déborder ou être tronqué.
 WRAP_COLUMNS = {
     "Compte", "ID employé", "Nom", "Département", "Système", "Manager",
     "Statut compte", "Statut RH", "Action recommandée",
+    "Dernière connexion (brute)", "Date de création",
+    "Dernier changement MDP (brut)", "Rôle", "Statut mot de passe",
 }
 
 
@@ -446,7 +453,7 @@ def _build_exceptions_section(df: pd.DataFrame, section_style, exception_style, 
                 exception_style,
             ))
             narrative = ACTION_NARRATIVE.get(
-                action, "Action recommandée : voir le détail par système ci-dessous."
+                action, "Voir la sous-section de contrôle correspondante ci-dessus pour le détail nominatif."
             )
             elements.append(Paragraph(narrative, action_style))
             counter += 1
@@ -540,26 +547,40 @@ def _build_control_summary_table(df: pd.DataFrame, comparison_stats: dict, avail
 
 
 def _build_capped_account_table(
-    subset_df: pd.DataFrame, available_width: float, max_rows: int = 30,
+    subset_df: pd.DataFrame, available_width: float,
     columns: list[str] | None = None,
 ) -> list:
     """
-    Tableau des comptes concernés par un contrôle donné, avec les colonnes
-    justificatives propres à CE contrôle (ex. dernière connexion réelle
-    pour "Dormant", pas seulement l'action qui en résulte) — plafonné
-    pour qu'un fichier volumineux (plusieurs milliers de lignes) ne fasse
-    pas exploser le document. Au-delà du plafond, une mention renvoie
-    vers le détail complet par système, qui liste tous les comptes.
+    Tableau complet des comptes concernés par un contrôle donné, avec les
+    colonnes justificatives propres à CE contrôle (ex. dernière connexion
+    réelle pour "Dormant", pas seulement l'action qui en résulte) ET
+    l'action recommandée — pour que la revue soit directement exploitable
+    à partir de cette seule section, sans plafond : ce sont les 18
+    sections qui sont effectivement revues, la complétude prime ici sur
+    la longueur du document. Largeurs de colonnes proportionnelles et
+    retour à la ligne automatique (même infrastructure que le détail
+    principal) — sans quoi un en-tête un peu long chevauche son voisin.
     """
     default_cols = ["username", "full_name", "system", "review_action"]
     cols = [c for c in (columns or default_cols) if c in subset_df.columns]
     if not cols or subset_df.empty:
         return []
-    labels = ALL_COLUMN_LABELS
-    display = subset_df[cols].head(max_rows).fillna("").astype(str)
-    rows = [[labels.get(c, c) for c in cols]] + display.values.tolist()
-    col_width = available_width / len(cols)
-    table = Table(rows, colWidths=[col_width] * len(cols), repeatRows=1)
+    labels = [ALL_COLUMN_LABELS.get(c, c) for c in cols]
+    col_widths = _compute_column_widths(labels, available_width)
+
+    cell_style = ParagraphStyle("CapCell", fontSize=7.5, leading=9, fontName=DEFAULT_FONT)
+    header_style = ParagraphStyle(
+        "CapHeader", fontSize=7.5, leading=9, fontName=DEFAULT_FONT_BOLD, textColor=colors.white,
+    )
+    header_row = [Paragraph(label, header_style) for label in labels]
+    data_rows = []
+    for record in subset_df[cols].fillna("").astype(str).values.tolist():
+        row = []
+        for label, value in zip(labels, record):
+            row.append(Paragraph(value, cell_style) if label in WRAP_COLUMNS else value)
+        data_rows.append(row)
+
+    table = Table([header_row] + data_rows, colWidths=col_widths, repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -567,17 +588,12 @@ def _build_capped_account_table(
         ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9F9F9")]),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
-    result = [table]
-    if len(subset_df) > max_rows:
-        result.append(Paragraph(
-            f"… et {len(subset_df) - max_rows} autre(s) compte(s) — voir le détail complet par système.",
-            ParagraphStyle("CapNote", fontSize=8, textColor=colors.grey, fontName=DEFAULT_FONT, spaceAfter=6),
-        ))
-    return result
+    return [table]
 
 
 def _build_control_subsections(
@@ -1110,14 +1126,12 @@ def generate_word_report(
                 default_cols = ["username", "full_name", "system", "review_action"]
                 cols = [c for c in (CONTROL_TABLE_COLUMNS.get(key) or default_cols) if c in subset.columns]
                 if cols:
-                    max_rows = 30
-                    display = subset[cols].head(max_rows).fillna("").astype(str)
+                    # Pas de plafond ici : ce sont les 18 sections qui sont
+                    # effectivement revues, la complétude prime sur la
+                    # longueur du document.
+                    display = subset[cols].fillna("").astype(str)
                     detail_rows = [[ALL_COLUMN_LABELS.get(c, c) for c in cols]] + display.values.tolist()
                     _docx_add_table(doc, detail_rows)
-                    if len(subset) > max_rows:
-                        note_p = doc.add_paragraph(f"… et {len(subset) - max_rows} autre(s) compte(s) — voir le détail complet par système.")
-                        note_p.runs[0].italic = True
-                        note_p.runs[0].font.size = Pt(8)
         else:
             doc.add_paragraph(note)
 
@@ -1197,10 +1211,8 @@ def generate_word_report(
         labels = dict(DISPLAY_COLUMNS)
         if len(priority_df) and cols:
             display = priority_df[cols].fillna("").astype(str)
-            rows = [[labels[c] for c in cols]] + display.head(50).values.tolist()
+            rows = [[labels[c] for c in cols]] + display.values.tolist()
             _docx_add_table(doc, rows)
-            if len(priority_df) > 50:
-                doc.add_paragraph(f"… et {len(priority_df) - 50} autre(s) — voir le détail complet par système.")
         else:
             doc.add_paragraph("Aucun compte en risque Critique ou Élevé sur ce cycle.")
     doc.add_paragraph()
@@ -1242,29 +1254,10 @@ def generate_word_report(
                     p.add_run(f"Exception {counter} — {system_name} : ").bold = True
                     p.add_run(f"{count} compte(s) avec le statut « {action} ».")
                     narrative = ACTION_NARRATIVE.get(
-                        action, "Action recommandée : voir le détail par système ci-dessous."
+                        action, "Voir la sous-section de contrôle correspondante ci-dessus pour le détail nominatif."
                     )
                     doc.add_paragraph(narrative)
                     counter += 1
-    doc.add_paragraph()
-
-    # ---- Détail par système (liste complète, sans plafond — c'est la
-    # référence vers laquelle renvoient les tableaux plafonnés ci-dessus) ----
-    doc.add_heading("Détail par système", level=2)
-    detail_cols = [c for c, _ in DISPLAY_COLUMNS if c in df.columns]
-    detail_labels = dict(DISPLAY_COLUMNS)
-    if "system" in df.columns and detail_cols:
-        for system_name in sorted(df["system"].dropna().unique().tolist()):
-            system_df = df[df["system"] == system_name]
-            doc.add_heading(f"{system_name} — {len(system_df)} compte(s)", level=3)
-            display = system_df[detail_cols].fillna("").astype(str)
-            rows = [[detail_labels[c] for c in detail_cols]] + display.values.tolist()
-            _docx_add_table(doc, rows)
-            doc.add_paragraph()
-    elif detail_cols:
-        display = df[detail_cols].fillna("").astype(str)
-        rows = [[detail_labels[c] for c in detail_cols]] + display.values.tolist()
-        _docx_add_table(doc, rows)
     doc.add_paragraph()
 
     doc.add_heading("Validation", level=2)
@@ -1741,19 +1734,6 @@ def generate_pdf_report(
 
     # ---- Rapport des exceptions (narratif, format audit classique) ----
     elements.extend(_build_exceptions_section(df, section_style, exception_style, action_style))
-
-    # ---- Détail par système ----
-    elements.append(Paragraph("Détail par système", section_style))
-    if "system" in df.columns and "Système" in export_df_full.columns:
-        systems = sorted(export_df_full["Système"].dropna().unique().tolist())
-        for system_name in systems:
-            system_df = export_df_full[export_df_full["Système"] == system_name]
-            elements.append(Paragraph(f"{system_name} — {len(system_df)} compte(s)", system_style))
-            elements.append(_risk_styled_table(system_df, available_width))
-            elements.append(Spacer(1, 0.4 * cm))
-    else:
-        elements.append(Paragraph("Détail des comptes (triés par risque)", system_style))
-        elements.append(_risk_styled_table(export_df_full, available_width))
 
     # ---- Sign-off (validation) ----
     elements.append(Paragraph("Validation", section_style))
