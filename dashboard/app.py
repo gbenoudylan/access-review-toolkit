@@ -294,355 +294,352 @@ def main():
             if count:
                 st.warning(f"⚠️ {label} : {count}")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 Vue d'ensemble", "📋 Détail des comptes", "🔎 Investigation",
-        "✅ Validation", "📄 Rapports",
-    ])
+    st.subheader("Vue d'ensemble")
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    with col1:
+        _kpi_card("Comptes analysés", summary["total_accounts"])
+    with col2:
+        _kpi_card("🔴 Employés partis, accès actif", summary["terminated_but_active"])
+    with col3:
+        _kpi_card("Comptes dormants", summary["dormant_accounts"])
+    with col4:
+        _kpi_card("⚠️ Conflits SoD", n_sod_conflicts)
+    with col5:
+        _kpi_card("Traité (revue)", f"{workflow_summary.get('taux_traitement', 0)}%")
+    with col6:
+        _kpi_card("🔑 Privilégiés, MDP n'expire jamais", summary["privileged_non_expiring_password"])
 
-    with tab1:
-        st.subheader("Vue d'ensemble")
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
-        with col1:
-            _kpi_card("Comptes analysés", summary["total_accounts"])
-        with col2:
-            _kpi_card("🔴 Employés partis, accès actif", summary["terminated_but_active"])
-        with col3:
-            _kpi_card("Comptes dormants", summary["dormant_accounts"])
-        with col4:
-            _kpi_card("⚠️ Conflits SoD", n_sod_conflicts)
-        with col5:
-            _kpi_card("Traité (revue)", f"{workflow_summary.get('taux_traitement', 0)}%")
-        with col6:
-            _kpi_card("🔑 Privilégiés, MDP n'expire jamais", summary["privileged_non_expiring_password"])
+    st.divider()
 
-        st.divider()
-
-        st.subheader("Répartition par niveau de risque")
-        risk_counts = df["risk_level"].value_counts().reindex(RISK_ORDER, fill_value=0)
-        st.bar_chart(risk_counts)
+    st.subheader("Répartition par niveau de risque")
+    risk_counts = df["risk_level"].value_counts().reindex(RISK_ORDER, fill_value=0)
+    st.bar_chart(risk_counts)
 
 
-    with tab2:
-        st.subheader("Détail des comptes")
-        filter_col1, filter_col2 = st.columns(2)
-        with filter_col1:
-            selected_risks = st.multiselect("Filtrer par risque", options=RISK_ORDER, default=RISK_ORDER)
-        with filter_col2:
-            show_action_needed_only = st.checkbox("Actions requises uniquement", value=False)
+    st.divider()
 
-        filtered = df[df["risk_level"].isin(selected_risks)]
-        if show_action_needed_only and "review_action" in df.columns:
-            filtered = filtered[filtered["review_action"] != "Aucune action"]
+    st.subheader("Détail des comptes")
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        selected_risks = st.multiselect("Filtrer par risque", options=RISK_ORDER, default=RISK_ORDER)
+    with filter_col2:
+        show_action_needed_only = st.checkbox("Actions requises uniquement", value=False)
 
-        display_cols = [
-            c for c in [
-                "username", "full_name", "department", "system", "manager",
-                "account_status", "employee_status", "days_since_last_login",
-                "is_privileged_flag", "sod_conflict_detail", "review_action",
-                "risk_level", "review_status",
-            ] if c in filtered.columns
-        ]
-        risk_rank = {"Critique": 0, "Élevé": 1, "Moyen": 2, "Faible": 3}
-        filtered_sorted = filtered[display_cols].copy()
-        filtered_sorted["_rank"] = filtered_sorted["risk_level"].map(risk_rank)
-        filtered_sorted = filtered_sorted.sort_values("_rank").drop(columns="_rank")
+    filtered = df[df["risk_level"].isin(selected_risks)]
+    if show_action_needed_only and "review_action" in df.columns:
+        filtered = filtered[filtered["review_action"] != "Aucune action"]
 
-        st.dataframe(filtered_sorted, width="stretch", hide_index=True)
+    display_cols = [
+        c for c in [
+            "username", "full_name", "department", "system", "manager",
+            "account_status", "employee_status", "days_since_last_login",
+            "is_privileged_flag", "sod_conflict_detail", "review_action",
+            "risk_level", "review_status",
+        ] if c in filtered.columns
+    ]
+    risk_rank = {"Critique": 0, "Élevé": 1, "Moyen": 2, "Faible": 3}
+    filtered_sorted = filtered[display_cols].copy()
+    filtered_sorted["_rank"] = filtered_sorted["risk_level"].map(risk_rank)
+    filtered_sorted = filtered_sorted.sort_values("_rank").drop(columns="_rank")
 
-        st.download_button(
-            "⬇️ Télécharger en CSV",
-            data=filtered_sorted.to_csv(index=False).encode("utf-8"),
-            file_name="revue_acces.csv",
-            mime="text/csv",
-        )
+    st.dataframe(filtered_sorted, width="stretch", hide_index=True)
+
+    st.download_button(
+        "⬇️ Télécharger en CSV",
+        data=filtered_sorted.to_csv(index=False).encode("utf-8"),
+        file_name="revue_acces.csv",
+        mime="text/csv",
+    )
 
 
-    with tab3:
-        st.subheader("🔎 Investigation de compte")
-        st.caption(
-            "Sélectionne un compte pour voir sa fiche complète — identité, accès, activité, "
-            "risque détaillé et historique complet des décisions de revue."
-        )
-        if "username" not in df.columns:
-            st.info("Colonne 'username' absente : investigation de compte indisponible.")
+    st.divider()
+
+    st.subheader("🔎 Investigation de compte")
+    st.caption(
+        "Sélectionne un compte pour voir sa fiche complète — identité, accès, activité, "
+        "risque détaillé et historique complet des décisions de revue."
+    )
+    if "username" not in df.columns:
+        st.info("Colonne 'username' absente : investigation de compte indisponible.")
+    else:
+        usernames_available = sorted(df["username"].dropna().unique().tolist())
+        if not usernames_available:
+            st.info("Aucun compte exploitable dans ce fichier.")
         else:
-            usernames_available = sorted(df["username"].dropna().unique().tolist())
-            if not usernames_available:
-                st.info("Aucun compte exploitable dans ce fichier.")
+            selected_username = st.selectbox("Compte à investiguer", options=usernames_available)
+            matches = df[df["username"] == selected_username]
+            if "system" in df.columns and matches["system"].nunique() > 1:
+                selected_system = st.selectbox(
+                    "Ce compte existe sur plusieurs systèmes — lequel ?",
+                    options=sorted(matches["system"].dropna().unique().tolist()),
+                )
+                matches = matches[matches["system"] == selected_system]
+            account = matches.iloc[0]
+
+            inv_col1, inv_col2, inv_col3 = st.columns(3)
+            with inv_col1:
+                st.markdown("**Identity**")
+                st.write(f"Username : {account.get('username', '—')}")
+                st.write(f"Nom : {account.get('full_name', '—')}")
+                st.write(f"Département : {account.get('department', '—')}")
+                st.write(f"Manager : {account.get('manager') or '—'}")
+                st.write(f"Statut RH : {account.get('employee_status', '—')}")
+            with inv_col2:
+                st.markdown("**Access**")
+                st.write(f"Système : {account.get('system', '—')}")
+                st.write(f"Rôle : {account.get('role', '—')}")
+                st.write(f"Privilégié : {'Oui' if account.get('is_privileged_flag') else 'Non'}")
+                st.write(f"Statut compte : {account.get('account_status', '—')}")
+                st.write(f"Verrouillé : {'Oui' if account.get('is_locked') else 'Non'}")
+            with inv_col3:
+                st.markdown("**Activity**")
+                days_login = account.get("days_since_last_login")
+                st.write(f"Dernière connexion : {int(days_login) if pd.notna(days_login) else 'inconnue'} jour(s)")
+                days_pwd = account.get("days_since_password_change")
+                st.write(f"Âge du mot de passe : {int(days_pwd) if pd.notna(days_pwd) else 'inconnu'} jour(s)")
+                st.write(f"Créé le : {account.get('account_created_date') or '—'}")
+
+            st.markdown("**Findings**")
+            finding_labels = {
+                "is_terminated_but_active": "🔴 Employé parti, compte encore actif",
+                "is_dormant": "🔴 Compte dormant",
+                "is_never_used": "🔴 Jamais utilisé depuis sa création",
+                "is_password_stale": "🟠 Mot de passe périmé",
+                "has_non_expiring_password": "🟠 Mot de passe n'expirant jamais",
+                "has_no_manager": "🟠 Aucun manager identifié",
+                "is_duplicate_account": "🟠 Compte en doublon",
+                "is_test_account": "🟡 Nom évoquant un compte de test",
+                "is_non_compliant_naming": "🟡 Nom non conforme à la convention",
+                "sod_conflict": "🔴 Conflit de séparation des tâches (SoD)",
+            }
+            findings = [label for key, label in finding_labels.items() if account.get(key)]
+            if findings:
+                for f in findings:
+                    st.write(f)
             else:
-                selected_username = st.selectbox("Compte à investiguer", options=usernames_available)
-                matches = df[df["username"] == selected_username]
-                if "system" in df.columns and matches["system"].nunique() > 1:
-                    selected_system = st.selectbox(
-                        "Ce compte existe sur plusieurs systèmes — lequel ?",
-                        options=sorted(matches["system"].dropna().unique().tolist()),
-                    )
-                    matches = matches[matches["system"] == selected_system]
-                account = matches.iloc[0]
+                st.write("✅ Aucune anomalie détectée sur ce compte.")
 
-                inv_col1, inv_col2, inv_col3 = st.columns(3)
-                with inv_col1:
-                    st.markdown("**Identity**")
-                    st.write(f"Username : {account.get('username', '—')}")
-                    st.write(f"Nom : {account.get('full_name', '—')}")
-                    st.write(f"Département : {account.get('department', '—')}")
-                    st.write(f"Manager : {account.get('manager') or '—'}")
-                    st.write(f"Statut RH : {account.get('employee_status', '—')}")
-                with inv_col2:
-                    st.markdown("**Access**")
-                    st.write(f"Système : {account.get('system', '—')}")
-                    st.write(f"Rôle : {account.get('role', '—')}")
-                    st.write(f"Privilégié : {'Oui' if account.get('is_privileged_flag') else 'Non'}")
-                    st.write(f"Statut compte : {account.get('account_status', '—')}")
-                    st.write(f"Verrouillé : {'Oui' if account.get('is_locked') else 'Non'}")
-                with inv_col3:
-                    st.markdown("**Activity**")
-                    days_login = account.get("days_since_last_login")
-                    st.write(f"Dernière connexion : {int(days_login) if pd.notna(days_login) else 'inconnue'} jour(s)")
-                    days_pwd = account.get("days_since_password_change")
-                    st.write(f"Âge du mot de passe : {int(days_pwd) if pd.notna(days_pwd) else 'inconnu'} jour(s)")
-                    st.write(f"Créé le : {account.get('account_created_date') or '—'}")
+            if "risk_score" in account:
+                risk_level_val = account.get("risk_level", "")
+                badge_color = RISK_HEX.get(risk_level_val, INK)
+                st.markdown(
+                    f"<span style='background:{badge_color}; color:white; padding:3px 10px; "
+                    f"border-radius:6px; font-weight:600; font-family: JetBrains Mono, monospace;'>"
+                    f"Risk score : {int(account['risk_score'])}/100 — {risk_level_val}</span>",
+                    unsafe_allow_html=True,
+                )
+                reasons = account.get("risk_score_reasons") or []
+                for label, pts in reasons:
+                    st.write(f"+ {pts} — {label}")
 
-                st.markdown("**Findings**")
-                finding_labels = {
-                    "is_terminated_but_active": "🔴 Employé parti, compte encore actif",
-                    "is_dormant": "🔴 Compte dormant",
-                    "is_never_used": "🔴 Jamais utilisé depuis sa création",
-                    "is_password_stale": "🟠 Mot de passe périmé",
-                    "has_non_expiring_password": "🟠 Mot de passe n'expirant jamais",
-                    "has_no_manager": "🟠 Aucun manager identifié",
-                    "is_duplicate_account": "🟠 Compte en doublon",
-                    "is_test_account": "🟡 Nom évoquant un compte de test",
-                    "is_non_compliant_naming": "🟡 Nom non conforme à la convention",
-                    "sod_conflict": "🔴 Conflit de séparation des tâches (SoD)",
-                }
-                findings = [label for key, label in finding_labels.items() if account.get(key)]
-                if findings:
-                    for f in findings:
-                        st.write(f)
+            st.markdown("**Review — historique complet**")
+            if "system" in df.columns:
+                history = get_audit_trail(
+                    str(account.get("username")), str(account.get("system")), store_path=DECISIONS_STORE_PATH,
+                )
+                if history:
+                    for entry in history:
+                        st.write(
+                            f"{entry.get('date', '?')} — **{entry.get('status', '?')}** "
+                            f"(par {entry.get('validated_by') or 'non renseigné'})"
+                            + (f" — _{entry.get('comment')}_" if entry.get("comment") else "")
+                        )
                 else:
-                    st.write("✅ Aucune anomalie détectée sur ce compte.")
-
-                if "risk_score" in account:
-                    risk_level_val = account.get("risk_level", "")
-                    badge_color = RISK_HEX.get(risk_level_val, INK)
-                    st.markdown(
-                        f"<span style='background:{badge_color}; color:white; padding:3px 10px; "
-                        f"border-radius:6px; font-weight:600; font-family: JetBrains Mono, monospace;'>"
-                        f"Risk score : {int(account['risk_score'])}/100 — {risk_level_val}</span>",
-                        unsafe_allow_html=True,
-                    )
-                    reasons = account.get("risk_score_reasons") or []
-                    for label, pts in reasons:
-                        st.write(f"+ {pts} — {label}")
-
-                st.markdown("**Review — historique complet**")
-                if "system" in df.columns:
-                    history = get_audit_trail(
-                        str(account.get("username")), str(account.get("system")), store_path=DECISIONS_STORE_PATH,
-                    )
-                    if history:
-                        for entry in history:
-                            st.write(
-                                f"{entry.get('date', '?')} — **{entry.get('status', '?')}** "
-                                f"(par {entry.get('validated_by') or 'non renseigné'})"
-                                + (f" — _{entry.get('comment')}_" if entry.get("comment") else "")
-                            )
-                    else:
-                        st.write("Aucune décision enregistrée pour ce compte pour l'instant.")
+                    st.write("Aucune décision enregistrée pour ce compte pour l'instant.")
 
 
-    with tab4:
-        st.subheader("✅ Validation de la revue")
-        st.caption(
-            "Change le statut de chaque compte, puis clique sur 'Enregistrer les "
-            "décisions'. Les décisions sont conservées d'une revue à l'autre."
+    st.divider()
+
+    st.subheader("✅ Validation de la revue")
+    st.caption(
+        "Change le statut de chaque compte, puis clique sur 'Enregistrer les "
+        "décisions'. Les décisions sont conservées d'une revue à l'autre."
+    )
+
+    editable_cols = ["username", "system", "risk_level", "review_status"]
+    editable_cols = [c for c in editable_cols if c in filtered.columns]
+    editable_df = filtered[editable_cols].copy().reset_index(drop=True)
+
+    edited_df = st.data_editor(
+        editable_df,
+        width="stretch",
+        hide_index=True,
+        disabled=["username", "system", "risk_level"],
+        column_config={
+            "review_status": st.column_config.SelectboxColumn(
+                "Statut de revue", options=VALID_STATUSES, required=True,
+            ),
+        },
+        key="review_editor",
+    )
+
+    validated_by = st.text_input("Validé par (ton nom)", value="")
+
+    if st.button("💾 Enregistrer les décisions"):
+        n_changes = 0
+        for i in range(len(edited_df)):
+            original_status = editable_df.loc[i, "review_status"]
+            new_status = edited_df.loc[i, "review_status"]
+            if new_status != original_status:
+                apply_review_decision(
+                    username=edited_df.loc[i, "username"],
+                    system=edited_df.loc[i, "system"],
+                    status=new_status,
+                    validated_by=validated_by,
+                    store_path=DECISIONS_STORE_PATH,
+                )
+                n_changes += 1
+        if n_changes:
+            st.success(f"{n_changes} décision(s) enregistrée(s).")
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.info("Aucun changement à enregistrer.")
+
+
+    st.divider()
+
+    st.subheader("📄 Rapports formatés")
+
+    period_label = st.text_input(
+        "Période couverte par ce rapport",
+        placeholder="ex. T1 2026, Mars 2026...",
+        help="Laisser vide pour utiliser automatiquement le trimestre courant. "
+             "Ce champ permet de relancer ce même rapport à chaque cycle de revue "
+             "sans modifier le code.",
+    )
+
+    with st.expander("Comparer avec la revue précédente — optionnel"):
+        previous_file = st.file_uploader(
+            "Revue précédente (même format que l'export d'accès)",
+            type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml", "html", "htm", "ldif", "pdf", "jpeg", "jpg", "png", "zip"],
+            key="previous_review_upload",
+            help="Fournis le fichier de la revue précédente pour que le rapport calcule "
+                 "automatiquement les comptes créés, supprimés, réactivés et les profils "
+                 "modifiés entre les deux cycles.",
         )
 
-        editable_cols = ["username", "system", "risk_level", "review_status"]
-        editable_cols = [c for c in editable_cols if c in filtered.columns]
-        editable_df = filtered[editable_cols].copy().reset_index(drop=True)
-
-        edited_df = st.data_editor(
-            editable_df,
-            width="stretch",
-            hide_index=True,
-            disabled=["username", "system", "risk_level"],
-            column_config={
-                "review_status": st.column_config.SelectboxColumn(
-                    "Statut de revue", options=VALID_STATUSES, required=True,
-                ),
-            },
-            key="review_editor",
+    with st.expander("En-tête du document officiel — optionnel"):
+        header_col1, header_col2 = st.columns(2)
+        with header_col1:
+            department = st.text_input("Département émetteur", placeholder="ex. Technology Department")
+            application_scope = st.text_input("Périmètre / Application", placeholder="ex. Active Directory")
+        with header_col2:
+            editor = st.text_input("Éditeur du document", placeholder="Nom, Prénom")
+            document_version = st.text_input("Version du document", value="1.0")
+        include_controls_reference = st.checkbox(
+            "Inclure le référentiel des 18 contrôles standards", value=True,
+        )
+        logo_file = st.file_uploader(
+            "Logo de l'entreprise (optionnel — utilise assets/mtnlogo.png par défaut si présent)",
+            type=["png", "jpg", "jpeg"],
+            help="Un logo importé ici remplace ponctuellement celui par défaut, pour ce "
+                 "rapport uniquement.",
         )
 
-        validated_by = st.text_input("Validé par (ton nom)", value="")
+    with st.expander("Validation (sign-off) — optionnel"):
+        signoff_col1, signoff_col2, signoff_col3 = st.columns(3)
+        with signoff_col1:
+            prepared_by = st.text_input("Préparé par", placeholder="Nom, Prénom")
+        with signoff_col2:
+            reviewed_by = st.text_input("Revu par", placeholder="Nom, Prénom")
+        with signoff_col3:
+            approved_by = st.text_input("Approuvé par", placeholder="Nom, Prénom")
 
-        if st.button("💾 Enregistrer les décisions"):
-            n_changes = 0
-            for i in range(len(edited_df)):
-                original_status = editable_df.loc[i, "review_status"]
-                new_status = edited_df.loc[i, "review_status"]
-                if new_status != original_status:
-                    apply_review_decision(
-                        username=edited_df.loc[i, "username"],
-                        system=edited_df.loc[i, "system"],
-                        status=new_status,
-                        validated_by=validated_by,
-                        store_path=DECISIONS_STORE_PATH,
-                    )
-                    n_changes += 1
-            if n_changes:
-                st.success(f"{n_changes} décision(s) enregistrée(s).")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.info("Aucun changement à enregistrer.")
-
-
-    with tab5:
-        st.subheader("📄 Rapports formatés")
-
-        period_label = st.text_input(
-            "Période couverte par ce rapport",
-            placeholder="ex. T1 2026, Mars 2026...",
-            help="Laisser vide pour utiliser automatiquement le trimestre courant. "
-                 "Ce champ permet de relancer ce même rapport à chaque cycle de revue "
-                 "sans modifier le code.",
-        )
-
-        with st.expander("Comparer avec la revue précédente — optionnel"):
-            previous_file = st.file_uploader(
-                "Revue précédente (même format que l'export d'accès)",
-                type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml", "html", "htm", "ldif", "pdf", "jpeg", "jpg", "png", "zip"],
-                key="previous_review_upload",
-                help="Fournis le fichier de la revue précédente pour que le rapport calcule "
-                     "automatiquement les comptes créés, supprimés, réactivés et les profils "
-                     "modifiés entre les deux cycles.",
+    report_col1, report_col2, report_col3 = st.columns(3)
+    with report_col1:
+        if st.button("Générer le rapport Excel", use_container_width=True):
+            with st.spinner("Génération..."):
+                tmp_xlsx = Path(tempfile.gettempdir()) / "rapport_revue_acces.xlsx"
+                generate_excel_report(filtered, tmp_xlsx)
+                buf = BytesIO(tmp_xlsx.read_bytes())
+            st.download_button(
+                "⬇️ Télécharger le rapport Excel", data=buf.getvalue(),
+                file_name="rapport_revue_acces.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
             )
 
-        with st.expander("En-tête du document officiel — optionnel"):
-            header_col1, header_col2 = st.columns(2)
-            with header_col1:
-                department = st.text_input("Département émetteur", placeholder="ex. Technology Department")
-                application_scope = st.text_input("Périmètre / Application", placeholder="ex. Active Directory")
-            with header_col2:
-                editor = st.text_input("Éditeur du document", placeholder="Nom, Prénom")
-                document_version = st.text_input("Version du document", value="1.0")
-            include_controls_reference = st.checkbox(
-                "Inclure le référentiel des 18 contrôles standards", value=True,
+    def _resolve_previous_df_and_logo():
+        previous_df = None
+        if previous_file is not None:
+            prev_suffix = Path(previous_file.name).suffix
+            with tempfile.NamedTemporaryFile(suffix=prev_suffix, delete=False) as tmp_prev:
+                tmp_prev.write(previous_file.getvalue())
+                tmp_prev_path = tmp_prev.name
+            try:
+                previous_raw = load_file(tmp_prev_path, default_system=None)
+                previous_df = analyze_access(
+                    previous_raw,
+                    dormant_threshold_days=dormant_threshold_days,
+                    password_stale_threshold_days=password_stale_threshold_days,
+                    never_used_threshold_days=never_used_threshold_days,
+                )
+            except IngestionError as e:
+                st.warning(f"Revue précédente ignorée (erreur d'ingestion) : {e}")
+
+        logo_path = None
+        if logo_file is not None:
+            logo_suffix = Path(logo_file.name).suffix
+            with tempfile.NamedTemporaryFile(suffix=logo_suffix, delete=False) as tmp_logo:
+                tmp_logo.write(logo_file.getvalue())
+                logo_path = tmp_logo.name
+        else:
+            default_logo = Path(__file__).parent.parent / "assets" / "mtnlogo.png"
+            if default_logo.exists():
+                logo_path = str(default_logo)
+        return previous_df, logo_path
+
+    with report_col2:
+        if st.button("Générer le rapport PDF", use_container_width=True):
+            with st.spinner("Génération..."):
+                previous_df, logo_path = _resolve_previous_df_and_logo()
+                tmp_pdf = Path(tempfile.gettempdir()) / "rapport_revue_acces.pdf"
+                generate_pdf_report(
+                    filtered, tmp_pdf, period=period_label or None,
+                    prepared_by=prepared_by or None,
+                    reviewed_by=reviewed_by or None,
+                    approved_by=approved_by or None,
+                    department=department or None,
+                    editor=editor or None,
+                    application_scope=application_scope or None,
+                    document_version=document_version or "1.0",
+                    include_controls_reference=include_controls_reference,
+                    previous_df=previous_df,
+                    logo_path=logo_path,
+                    dormant_threshold_days=dormant_threshold_days,
+                )
+                buf = BytesIO(tmp_pdf.read_bytes())
+            st.download_button(
+                "⬇️ Télécharger le rapport PDF", data=buf.getvalue(),
+                file_name="rapport_revue_acces.pdf", mime="application/pdf",
+                use_container_width=True,
             )
-            logo_file = st.file_uploader(
-                "Logo de l'entreprise (optionnel — utilise assets/mtnlogo.png par défaut si présent)",
-                type=["png", "jpg", "jpeg"],
-                help="Un logo importé ici remplace ponctuellement celui par défaut, pour ce "
-                     "rapport uniquement.",
+    with report_col3:
+        if st.button("Générer le rapport Word", use_container_width=True):
+            with st.spinner("Génération..."):
+                previous_df, logo_path = _resolve_previous_df_and_logo()
+                tmp_docx = Path(tempfile.gettempdir()) / "rapport_revue_acces.docx"
+                generate_word_report(
+                    filtered, tmp_docx, period=period_label or None,
+                    prepared_by=prepared_by or None,
+                    reviewed_by=reviewed_by or None,
+                    approved_by=approved_by or None,
+                    department=department or None,
+                    editor=editor or None,
+                    application_scope=application_scope or None,
+                    document_version=document_version or "1.0",
+                    previous_df=previous_df,
+                    logo_path=logo_path,
+                    dormant_threshold_days=dormant_threshold_days,
+                )
+                buf = BytesIO(tmp_docx.read_bytes())
+            st.download_button(
+                "⬇️ Télécharger le rapport Word", data=buf.getvalue(),
+                file_name="rapport_revue_acces.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
             )
-
-        with st.expander("Validation (sign-off) — optionnel"):
-            signoff_col1, signoff_col2, signoff_col3 = st.columns(3)
-            with signoff_col1:
-                prepared_by = st.text_input("Préparé par", placeholder="Nom, Prénom")
-            with signoff_col2:
-                reviewed_by = st.text_input("Revu par", placeholder="Nom, Prénom")
-            with signoff_col3:
-                approved_by = st.text_input("Approuvé par", placeholder="Nom, Prénom")
-
-        report_col1, report_col2, report_col3 = st.columns(3)
-        with report_col1:
-            if st.button("Générer le rapport Excel", use_container_width=True):
-                with st.spinner("Génération..."):
-                    tmp_xlsx = Path(tempfile.gettempdir()) / "rapport_revue_acces.xlsx"
-                    generate_excel_report(filtered, tmp_xlsx)
-                    buf = BytesIO(tmp_xlsx.read_bytes())
-                st.download_button(
-                    "⬇️ Télécharger le rapport Excel", data=buf.getvalue(),
-                    file_name="rapport_revue_acces.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-
-        def _resolve_previous_df_and_logo():
-            previous_df = None
-            if previous_file is not None:
-                prev_suffix = Path(previous_file.name).suffix
-                with tempfile.NamedTemporaryFile(suffix=prev_suffix, delete=False) as tmp_prev:
-                    tmp_prev.write(previous_file.getvalue())
-                    tmp_prev_path = tmp_prev.name
-                try:
-                    previous_raw = load_file(tmp_prev_path, default_system=None)
-                    previous_df = analyze_access(
-                        previous_raw,
-                        dormant_threshold_days=dormant_threshold_days,
-                        password_stale_threshold_days=password_stale_threshold_days,
-                        never_used_threshold_days=never_used_threshold_days,
-                    )
-                except IngestionError as e:
-                    st.warning(f"Revue précédente ignorée (erreur d'ingestion) : {e}")
-
-            logo_path = None
-            if logo_file is not None:
-                logo_suffix = Path(logo_file.name).suffix
-                with tempfile.NamedTemporaryFile(suffix=logo_suffix, delete=False) as tmp_logo:
-                    tmp_logo.write(logo_file.getvalue())
-                    logo_path = tmp_logo.name
-            else:
-                default_logo = Path(__file__).parent.parent / "assets" / "mtnlogo.png"
-                if default_logo.exists():
-                    logo_path = str(default_logo)
-            return previous_df, logo_path
-
-        with report_col2:
-            if st.button("Générer le rapport PDF", use_container_width=True):
-                with st.spinner("Génération..."):
-                    previous_df, logo_path = _resolve_previous_df_and_logo()
-                    tmp_pdf = Path(tempfile.gettempdir()) / "rapport_revue_acces.pdf"
-                    generate_pdf_report(
-                        filtered, tmp_pdf, period=period_label or None,
-                        prepared_by=prepared_by or None,
-                        reviewed_by=reviewed_by or None,
-                        approved_by=approved_by or None,
-                        department=department or None,
-                        editor=editor or None,
-                        application_scope=application_scope or None,
-                        document_version=document_version or "1.0",
-                        include_controls_reference=include_controls_reference,
-                        previous_df=previous_df,
-                        logo_path=logo_path,
-                        dormant_threshold_days=dormant_threshold_days,
-                    )
-                    buf = BytesIO(tmp_pdf.read_bytes())
-                st.download_button(
-                    "⬇️ Télécharger le rapport PDF", data=buf.getvalue(),
-                    file_name="rapport_revue_acces.pdf", mime="application/pdf",
-                    use_container_width=True,
-                )
-        with report_col3:
-            if st.button("Générer le rapport Word", use_container_width=True):
-                with st.spinner("Génération..."):
-                    previous_df, logo_path = _resolve_previous_df_and_logo()
-                    tmp_docx = Path(tempfile.gettempdir()) / "rapport_revue_acces.docx"
-                    generate_word_report(
-                        filtered, tmp_docx, period=period_label or None,
-                        prepared_by=prepared_by or None,
-                        reviewed_by=reviewed_by or None,
-                        approved_by=approved_by or None,
-                        department=department or None,
-                        editor=editor or None,
-                        application_scope=application_scope or None,
-                        document_version=document_version or "1.0",
-                        previous_df=previous_df,
-                        logo_path=logo_path,
-                        dormant_threshold_days=dormant_threshold_days,
-                    )
-                    buf = BytesIO(tmp_docx.read_bytes())
-                st.download_button(
-                    "⬇️ Télécharger le rapport Word", data=buf.getvalue(),
-                    file_name="rapport_revue_acces.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True,
-                )
-
 
 
 if __name__ == "__main__":
