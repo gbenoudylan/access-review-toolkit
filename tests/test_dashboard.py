@@ -21,16 +21,16 @@ def test_dashboard_runs_without_exception_on_sample_file():
 
 
 def test_dashboard_banner_and_kpi_cards_render():
-    """La bannière personnalisée et les cartes KPI doivent apparaître
-    avec le bon contenu — vérifie que la réorganisation visuelle n'a
-    rien cassé dans le contenu affiché."""
+    """Le titre et les indicateurs clés doivent apparaître avec le bon
+    contenu — style Streamlit natif, sans emoji ni bannière personnalisée
+    dans la partie principale."""
     from streamlit.testing.v1 import AppTest
 
     at = AppTest.from_file(str(Path(__file__).parent.parent / "dashboard" / "app.py"))
     at.run(timeout=60)
-    all_markdown = "\n".join(m.value for m in at.markdown)
-    assert "Access Review & IAM" in all_markdown
-    assert "COMPTES ANALYSÉS" in all_markdown
+    assert "Access Review & IAM" in at.title[0].value
+    metric_labels = [m.label for m in at.metric]
+    assert "Comptes analysés" in metric_labels
     print("OK - test_dashboard_banner_and_kpi_cards_render")
 
 
@@ -51,12 +51,40 @@ def test_dashboard_is_single_page_with_reports_at_the_bottom():
         "🔐 Matrice SoD personnalisée (optionnel)",
     }
     main_subheaders = [s.value for s in at.subheader if s.value not in sidebar_subheaders]
-    assert main_subheaders[-1] == "📄 Rapports formatés"
+    assert main_subheaders[-1] == "Rapports formatés"
     print("OK - test_dashboard_is_single_page_with_reports_at_the_bottom")
+
+
+def test_dashboard_main_content_has_no_emoji():
+    """
+    Demande explicite : aucun emoji dans la partie principale (à droite
+    de la barre latérale) — la barre latérale elle-même n'est pas
+    concernée par cette contrainte.
+    """
+    import re
+    app_path = Path(__file__).parent.parent / "dashboard" / "app.py"
+    with open(app_path, encoding="utf-8") as f:
+        source = f.read()
+
+    emoji_pattern = re.compile(r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF]")
+    # Lignes autorisées à contenir un emoji : icône de page (onglet
+    # navigateur, invisible dans la page) et code de statut interne
+    # (comparaison de chaîne, pas un affichage décoratif).
+    allowed_snippets = ["page_icon=", 'status == "⚠️"']
+    offending_lines = []
+    for line in source.splitlines():
+        if emoji_pattern.search(line) and not any(a in line for a in allowed_snippets):
+            # La barre latérale a ses propres emojis, hors du périmètre de cette contrainte.
+            if "st.header(" in line or "🔗" in line or "⚙️" in line or "🔐" in line:
+                continue
+            offending_lines.append(line)
+    assert not offending_lines, f"Emoji(s) trouvé(s) hors barre latérale : {offending_lines}"
+    print("OK - test_dashboard_main_content_has_no_emoji")
 
 
 if __name__ == "__main__":
     test_dashboard_runs_without_exception_on_sample_file()
     test_dashboard_banner_and_kpi_cards_render()
     test_dashboard_is_single_page_with_reports_at_the_bottom()
+    test_dashboard_main_content_has_no_emoji()
     print("Tous les tests passent.")

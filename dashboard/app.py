@@ -28,127 +28,7 @@ from reporting.export import generate_excel_report, generate_pdf_report, generat
 st.set_page_config(page_title="Access Review Toolkit", page_icon="🔐", layout="wide")
 
 RISK_ORDER = ["Critique", "Élevé", "Moyen", "Faible"]
-RISK_HEX = {"Critique": "#B91C1C", "Élevé": "#B45309", "Moyen": "#525252", "Faible": "#A3A3A3"}
 DECISIONS_STORE_PATH = Path(__file__).parent.parent / "data" / "review_decisions.json"
-
-INK = "#171717"
-INK_SOFT = "#3F3F3F"
-SLATE = "#666666"
-GREY_BORDER = "#E5E5E5"
-GREY_BG = "#F7F7F5"
-WHITE = "#FFFFFF"
-
-
-def _inject_style():
-    st.markdown(f"""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
-
-    html, body, [class*="css"] {{ font-family: 'Inter', sans-serif; }}
-    h1, h2, h3 {{ font-family: 'Inter', sans-serif; font-weight: 600; color: {INK}; }}
-    code, .stMetric [data-testid="stMetricValue"] {{ font-family: 'JetBrains Mono', monospace; }}
-
-    .stApp {{ background-color: {GREY_BG}; }}
-
-    [data-testid="stSidebar"] {{
-        background-color: {WHITE};
-        border-right: 1px solid {GREY_BORDER};
-    }}
-    [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {{ color: {INK}; }}
-
-    .stButton button, .stDownloadButton button {{
-        background-color: {INK};
-        color: {WHITE};
-        border: none;
-        border-radius: 6px;
-        font-weight: 500;
-        transition: background-color 0.15s ease;
-    }}
-    .stButton button:hover, .stDownloadButton button:hover {{
-        background-color: {INK_SOFT};
-        color: {WHITE};
-    }}
-
-    /* En-tête sobre : fond blanc, fine ligne noire en dessous — pas de
-    grand bandeau coloré. */
-    .arh-banner {{
-        background: {WHITE};
-        padding: 1.2rem 0 1rem 0;
-        border-bottom: 2px solid {INK};
-        margin-bottom: 1.6rem;
-    }}
-    .arh-banner .arh-eyebrow {{
-        font-size: 0.72rem; letter-spacing: 0.06em; color: {SLATE};
-        font-weight: 600; margin: 0 0 0.15rem 0;
-    }}
-    .arh-banner h1 {{
-        color: {INK}; margin: 0; font-size: 1.35rem; font-weight: 700;
-    }}
-    .arh-banner p {{
-        color: {SLATE}; margin: 0.3rem 0 0 0; font-size: 0.9rem;
-    }}
-
-    .kpi-card {{
-        background: {WHITE};
-        border: 1px solid {GREY_BORDER};
-        border-radius: 6px;
-        padding: 0.9rem 1.1rem;
-        height: 100%;
-    }}
-    .kpi-card .kpi-label {{
-        font-size: 0.7rem; color: {SLATE}; font-weight: 600;
-        letter-spacing: 0.04em; margin-bottom: 0.4rem;
-    }}
-    .kpi-card .kpi-value {{
-        font-family: 'JetBrains Mono', monospace; font-size: 1.9rem;
-        font-weight: 600; color: {INK}; line-height: 1;
-    }}
-
-    /* Barres de risque horizontales personnalisées, plus lisibles que
-    st.bar_chart et cohérentes avec les couleurs de risque du reste de
-    l'outil (PDF/Excel/Word). */
-    .risk-bar-row {{
-        display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.55rem;
-    }}
-    .risk-bar-label {{
-        width: 80px; font-size: 0.8rem; font-weight: 600; color: {INK};
-        flex-shrink: 0;
-    }}
-    .risk-bar-track {{
-        flex-grow: 1; background: {GREY_BORDER}; border-radius: 4px; height: 14px;
-        overflow: hidden;
-    }}
-    .risk-bar-fill {{ height: 100%; border-radius: 4px; }}
-    .risk-bar-value {{
-        width: 42px; text-align: right; font-family: 'JetBrains Mono', monospace;
-        font-size: 0.82rem; color: {INK}; flex-shrink: 0;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
-
-
-def _kpi_card(label: str, value, sublabel: str = ""):
-    sub_html = f'<div style="font-size:0.72rem; color:{SLATE}; margin-top:0.25rem;">{sublabel}</div>' if sublabel else ""
-    st.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-value">{value}</div>
-        {sub_html}
-    </div>
-    """, unsafe_allow_html=True)
-
-
-def _risk_bar(label: str, value: int, max_value: int, color: str):
-    pct = min(100, round(100 * value / max_value)) if max_value else 0
-    st.markdown(f"""
-    <div class="risk-bar-row">
-        <div class="risk-bar-label">{label}</div>
-        <div class="risk-bar-track">
-            <div class="risk-bar-fill" style="width:{pct}%; background:{color};"></div>
-        </div>
-        <div class="risk-bar-value">{value}</div>
-    </div>
-    """, unsafe_allow_html=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -185,14 +65,11 @@ def run_pipeline(
 
 
 def main():
-    _inject_style()
-    st.markdown("""
-    <div class="arh-banner">
-        <h1>🔐 Access Review & IAM Anomaly Detection Toolkit</h1>
-        <p>Ingestion universelle · Détection des comptes orphelins, dormants et privilèges non
-        justifiés · Plan de revue priorisé</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("Access Review & IAM Anomaly Detection Toolkit")
+    st.caption(
+        "Ingestion universelle · Détection des comptes orphelins, dormants "
+        "et privilèges non justifiés · Plan de revue priorisé"
+    )
 
     with st.sidebar:
         st.header("📁 Import")
@@ -304,7 +181,7 @@ def main():
 
     quality_report = compute_data_quality_report(df)
     with st.expander(
-        f"🧪 Qualité des données — fiabilité {quality_report['reliability_pct']}%",
+        f"Qualité des données — fiabilité {quality_report['reliability_pct']}%",
         expanded=quality_report["reliability_pct"] < 90,
     ):
         st.caption(
@@ -327,30 +204,22 @@ def main():
         for key, label in issue_labels.items():
             count = quality_report["issues"].get(key)
             if count:
-                st.warning(f"⚠️ {label} : {count}")
+                st.warning(f"{label} : {count}")
 
     st.subheader("Vue d'ensemble")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
-    with col1:
-        _kpi_card("COMPTES ANALYSÉS", summary["total_accounts"])
-    with col2:
-        _kpi_card("PARTIS, ACCÈS ACTIF", summary["terminated_but_active"], "Action requise" if summary["terminated_but_active"] else "")
-    with col3:
-        _kpi_card("COMPTES DORMANTS", summary["dormant_accounts"])
-    with col4:
-        _kpi_card("CONFLITS SoD", n_sod_conflicts)
-    with col5:
-        _kpi_card("REVUE TRAITÉE", f"{workflow_summary.get('taux_traitement', 0)}%")
-    with col6:
-        _kpi_card("PRIVILÉGIÉ / MDP PERMANENT", summary["privileged_non_expiring_password"])
+    col1.metric("Comptes analysés", summary["total_accounts"])
+    col2.metric("Partis, accès actif", summary["terminated_but_active"])
+    col3.metric("Comptes dormants", summary["dormant_accounts"])
+    col4.metric("Conflits SoD", n_sod_conflicts)
+    col5.metric("Revue traitée", f"{workflow_summary.get('taux_traitement', 0)}%")
+    col6.metric("Privilégié, MDP permanent", summary["privileged_non_expiring_password"])
 
     st.divider()
 
     st.subheader("Répartition par niveau de risque")
     risk_counts = df["risk_level"].value_counts().reindex(RISK_ORDER, fill_value=0)
-    max_count = int(risk_counts.max()) if len(risk_counts) else 0
-    for risk in RISK_ORDER:
-        _risk_bar(risk.upper(), int(risk_counts.get(risk, 0)), max_count, RISK_HEX[risk])
+    st.bar_chart(risk_counts)
 
     coverage = compute_control_coverage(df, {})
     n_ok = sum(1 for _, _, status, _ in coverage if status == "OK")
@@ -360,16 +229,11 @@ def main():
         st.caption(
             f"{n_ok} OK · {n_warn} avec anomalie(s) · {n_na} non applicable (données insuffisantes)."
         )
-        for number, title, status, count_display in coverage:
-            badge_color = {"OK": "#2E7D32", "⚠️": RISK_HEX["Élevé"], "N/A": SLATE}.get(status, SLATE)
-            st.markdown(
-                f"<div style='display:flex; justify-content:space-between; padding:0.2rem 0; "
-                f"border-bottom:1px solid {GREY_BORDER}; font-size:0.85rem;'>"
-                f"<span>{number:02d} {title}</span>"
-                f"<span style='color:{badge_color}; font-weight:600;'>{status} {count_display if count_display != '—' else ''}</span>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+        coverage_table = [
+            {"N°": number, "Contrôle": title, "Résultat": status, "Comptes": count_display}
+            for number, title, status, count_display in coverage
+        ]
+        st.dataframe(coverage_table, width="stretch", hide_index=True)
 
     st.divider()
 
@@ -400,7 +264,7 @@ def main():
     st.dataframe(filtered_sorted, width="stretch", hide_index=True)
 
     st.download_button(
-        "⬇️ Télécharger en CSV",
+        "Télécharger en CSV",
         data=filtered_sorted.to_csv(index=False).encode("utf-8"),
         file_name="revue_acces.csv",
         mime="text/csv",
@@ -409,7 +273,7 @@ def main():
 
     st.divider()
 
-    st.subheader("🔎 Investigation de compte")
+    st.subheader("Investigation de compte")
     st.caption(
         "Sélectionne un compte pour voir sa fiche complète — identité, accès, activité, "
         "risque détaillé et historique complet des décisions de revue."
@@ -456,33 +320,27 @@ def main():
 
             st.markdown("**Findings**")
             finding_labels = {
-                "is_terminated_but_active": "🔴 Employé parti, compte encore actif",
-                "is_dormant": "🔴 Compte dormant",
-                "is_never_used": "🔴 Jamais utilisé depuis sa création",
-                "is_password_stale": "🟠 Mot de passe périmé",
-                "has_non_expiring_password": "🟠 Mot de passe n'expirant jamais",
-                "has_no_manager": "🟠 Aucun manager identifié",
-                "is_duplicate_account": "🟠 Compte en doublon",
-                "is_test_account": "🟡 Nom évoquant un compte de test",
-                "is_non_compliant_naming": "🟡 Nom non conforme à la convention",
-                "sod_conflict": "🔴 Conflit de séparation des tâches (SoD)",
+                "is_terminated_but_active": "Employé parti, compte encore actif",
+                "is_dormant": "Compte dormant",
+                "is_never_used": "Jamais utilisé depuis sa création",
+                "is_password_stale": "Mot de passe périmé",
+                "has_non_expiring_password": "Mot de passe n'expirant jamais",
+                "has_no_manager": "Aucun manager identifié",
+                "is_duplicate_account": "Compte en doublon",
+                "is_test_account": "Nom évoquant un compte de test",
+                "is_non_compliant_naming": "Nom non conforme à la convention",
+                "sod_conflict": "Conflit de séparation des tâches (SoD)",
             }
             findings = [label for key, label in finding_labels.items() if account.get(key)]
             if findings:
                 for f in findings:
                     st.write(f)
             else:
-                st.write("✅ Aucune anomalie détectée sur ce compte.")
+                st.write("Aucune anomalie détectée sur ce compte.")
 
             if "risk_score" in account:
                 risk_level_val = account.get("risk_level", "")
-                badge_color = RISK_HEX.get(risk_level_val, INK)
-                st.markdown(
-                    f"<span style='background:{badge_color}; color:white; padding:3px 10px; "
-                    f"border-radius:6px; font-weight:600; font-family: JetBrains Mono, monospace;'>"
-                    f"Risk score : {int(account['risk_score'])}/100 — {risk_level_val}</span>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f"**Risk score : {int(account['risk_score'])}/100 — {risk_level_val}**")
                 reasons = account.get("risk_score_reasons") or []
                 for label, pts in reasons:
                     st.write(f"+ {pts} — {label}")
@@ -505,7 +363,7 @@ def main():
 
     st.divider()
 
-    st.subheader("✅ Validation de la revue")
+    st.subheader("Validation de la revue")
     st.caption(
         "Change le statut de chaque compte, puis clique sur 'Enregistrer les "
         "décisions'. Les décisions sont conservées d'une revue à l'autre."
@@ -530,7 +388,7 @@ def main():
 
     validated_by = st.text_input("Validé par (ton nom)", value="")
 
-    if st.button("💾 Enregistrer les décisions"):
+    if st.button("Enregistrer les décisions"):
         n_changes = 0
         for i in range(len(edited_df)):
             original_status = editable_df.loc[i, "review_status"]
@@ -554,7 +412,7 @@ def main():
 
     st.divider()
 
-    st.subheader("📄 Rapports formatés")
+    st.subheader("Rapports formatés")
 
     period_label = st.text_input(
         "Période couverte par ce rapport",
@@ -609,7 +467,7 @@ def main():
                 generate_excel_report(filtered, tmp_xlsx)
                 buf = BytesIO(tmp_xlsx.read_bytes())
             st.download_button(
-                "⬇️ Télécharger le rapport Excel", data=buf.getvalue(),
+                "Télécharger le rapport Excel", data=buf.getvalue(),
                 file_name="rapport_revue_acces.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
@@ -666,7 +524,7 @@ def main():
                 )
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(
-                "⬇️ Télécharger le rapport PDF", data=buf.getvalue(),
+                "Télécharger le rapport PDF", data=buf.getvalue(),
                 file_name="rapport_revue_acces.pdf", mime="application/pdf",
                 use_container_width=True,
             )
@@ -690,7 +548,7 @@ def main():
                 )
                 buf = BytesIO(tmp_docx.read_bytes())
             st.download_button(
-                "⬇️ Télécharger le rapport Word", data=buf.getvalue(),
+                "Télécharger le rapport Word", data=buf.getvalue(),
                 file_name="rapport_revue_acces.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
