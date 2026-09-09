@@ -176,10 +176,10 @@ def _check_naming_convention(row) -> bool | None:
     return actual != expected and actual_no_suffix != expected
 
 
-_AMBIGUOUS_DATE_START_RE = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-]\d{2,4}")
+_AMBIGUOUS_DATE_START_RE = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})")
 
 
-def _detect_dayfirst(series: pd.Series) -> bool:
+def _detect_dayfirst(series: pd.Series) -> tuple[bool, str]:
     """
     Détermine si une colonne de dates au format 'A/B/Année' (non ISO,
     donc potentiellement ambigu) doit être lue jour-premier (JJ/MM,
@@ -187,28 +187,73 @@ def _detect_dayfirst(series: pd.Series) -> bool:
     américain — ex. un export venant d'un outil IAM/SIEM américain,
     rencontré en pratique même dans un contexte MTN).
 
+    Retourne (dayfirst, statut) où statut est :
+        - "proven"  : convention réellement prouvée par au moins une
+          valeur, cohérente sur toute la colonne — fiable.
+        - "guessed" : aucune valeur de la colonne ne permet de trancher —
+          repli par défaut (jour-premier, standard MTN), à traiter comme
+          une supposition, pas une certitude.
+        - "mixed"   : la colonne contient des preuves CONTRADICTOIRES —
+          au moins une valeur prouve jour-premier ET au moins une autre
+          prouve mois-premier. Les exports fusionnant plusieurs systèmes
+          sources (chacun avec sa propre convention) peuvent réellement
+          mélanger les deux formats au sein d'une même colonne : dans ce
+          cas, seules les valeurs qui ont LEUR PROPRE preuve individuelle
+          peuvent être déterminées de façon fiable (voir _days_since) —
+          les valeurs individuellement ambiguës dans une colonne "mixed"
+          sont refusées plutôt que rattachées à une convention majoritaire
+          qui pourrait très bien ne pas être la leur.
+
     Un même fichier utilise presque toujours une convention cohérente sur
     toute sa colonne : on cherche donc, dans les valeurs réellement
     présentes, au moins UNE valeur qui lève l'ambiguïté (un groupe > 12,
     qui ne peut donc pas être un mois) plutôt que de deviner à l'aveugle.
-    Cette preuve, trouvée une seule fois, s'applique à toute la colonne.
-    Si aucune valeur ne permet de trancher (tous les groupes <= 12 partout,
-    par simple coïncidence ou petit échantillon), on retombe sur
-    jour-premier par défaut (biais assumé vers le standard MTN).
+    Toute la colonne est parcourue (pas seulement jusqu'à la première
+    preuve trouvée) pour détecter un mélange réel de conventions.
     """
+    dayfirst_evidence = 0
+    monthfirst_evidence = 0
     for value in series.dropna():
         match = _AMBIGUOUS_DATE_START_RE.match(str(value).strip())
         if not match:
             continue
         first, second = int(match.group(1)), int(match.group(2))
         if first > 12:
-            return True  # le 1er groupe ne peut être qu'un jour -> jour-premier confirmé
-        if second > 12:
-            return False  # le 2nd groupe ne peut être qu'un jour -> mois-premier confirmé
-    return True  # aucune preuve trouvée : repli par défaut (standard MTN)
+            dayfirst_evidence += 1
+        elif second > 12:
+            monthfirst_evidence += 1
+
+    if dayfirst_evidence and monthfirst_evidence:
+        logger.warning(
+            f"Convention de date MÉLANGÉE détectée dans une colonne : "
+            f"{dayfirst_evidence} valeur(s) prouvent jour-premier (JJ/MM), "
+            f"{monthfirst_evidence} valeur(s) prouvent mois-premier (MM/JJ). "
+            f"Chaque valeur ayant sa propre preuve individuelle sera lue "
+            f"correctement quelle que soit sa convention ; les valeurs "
+            f"individuellement ambiguës (ex. '03/04/2026') ne peuvent en "
+            f"revanche pas être rattachées de façon fiable à l'une ou "
+            f"l'autre convention et resteront non exploitables plutôt que "
+            f"devinées au hasard."
+        )
+        return dayfirst_evidence >= monthfirst_evidence, "mixed"
+    if dayfirst_evidence:
+        return True, "proven"
+    if monthfirst_evidence:
+        return False, "proven"
+    # Aucune preuve trouvée nulle part dans la colonne : repli par défaut,
+    # signalé comme une supposition plutôt que présenté avec la même
+    # assurance qu'une convention réellement prouvée.
+    logger.warning(
+        "Convention jour/mois non déterminable pour une colonne de dates "
+        "(aucune valeur ne permet de trancher entre JJ/MM et MM/JJ) — "
+        "repli par défaut sur jour-premier (standard MTN), à vérifier "
+        "si le fichier provient d'un système utilisant une autre convention."
+    )
+    return True, "guessed"
 
 
-def _detect_yearfirst(series: pd.Series) -> bool:
+
+def _detect_yearfirst(series: pd.Series) -> tuple[bool, str]:
     """
     Détermine si une colonne 'A-B-C' à année sur 2 chiffres place l'année
     en PREMIER (ex. '26-01-15' pour le 15/01/2026) plutôt qu'en dernier
@@ -216,24 +261,79 @@ def _detect_yearfirst(series: pd.Series) -> bool:
     groupe du milieu est toujours le mois quelle que soit la convention ;
     seule la position de l'année (1er ou 3e groupe) reste à déterminer.
 
-    Un 1er groupe > 31 ne peut être qu'une année (aucun jour ne dépasse
-    31) : preuve directe et suffisante, cherchée dans toute la colonne.
-    Sans cette preuve, l'ambiguïté reste entière quand le 1er groupe est
-    un nombre à la fois plausible comme jour ET comme année à 2 chiffres
-    (ex. '26') — dans ce cas, on ne force PAS yearfirst (on laisse
-    _detect_dayfirst trancher jour/mois comme pour un format classique à
-    année sur 4 chiffres ou en dernière position).
+    Retourne (yearfirst, statut) — même principe que _detect_dayfirst :
+        - "proven"  : au moins une valeur prouve sans ambiguïté la
+          position de l'année (voir preuves ci-dessous), cohérente sur
+          toute la colonne.
+        - "guessed" : aucune valeur ne permet de trancher — yearfirst
+          n'est PAS forcé (on laisse _detect_dayfirst trancher jour/mois
+          comme pour un format classique).
+        - "mixed"   : des valeurs de la colonne prouvent des positions
+          d'année CONTRADICTOIRES — un export fusionnant plusieurs
+          systèmes sources peut réellement mélanger les deux. Toute la
+          colonne est parcourue (pas seulement jusqu'à la première
+          preuve) pour détecter ce cas plutôt que le masquer derrière la
+          première preuve rencontrée.
+
+    Preuves recherchées (un groupe > 31 ne peut être qu'une année, aucun
+    jour ne dépassant 31) :
+        - 1er groupe > 31 -> preuve directe que l'année est en PREMIER.
+        - 3e groupe > 31  -> preuve directe que l'année est en DERNIER
+          (symétrique, jamais vérifiée par l'ancienne version de cette
+          fonction, qui ne pouvait donc jamais prouver cette direction —
+          seulement la déduire par défaut, à tort, avec la même
+          assurance qu'une vraie preuve).
     """
+    yearfirst_evidence = 0
+    yearlast_evidence = 0
     for value in series.dropna():
         match = _AMBIGUOUS_DATE_START_RE.match(str(value).strip())
         if not match:
             continue
-        if int(match.group(1)) > 31:
-            return True
-    return False
+        first, third = int(match.group(1)), int(match.group(3))
+        if first > 31:
+            yearfirst_evidence += 1
+        elif len(match.group(3)) == 2 and third > 31:
+            yearlast_evidence += 1
+
+    if yearfirst_evidence and yearlast_evidence:
+        logger.warning(
+            f"Position de l'année MÉLANGÉE détectée dans une colonne à année "
+            f"sur 2 chiffres : {yearfirst_evidence} valeur(s) prouvent l'année "
+            f"en premier, {yearlast_evidence} valeur(s) prouvent l'année en "
+            f"dernier. Chaque valeur ayant sa propre preuve individuelle sera "
+            f"lue correctement ; les valeurs individuellement ambiguës ne "
+            f"peuvent en revanche pas être rattachées de façon fiable à l'une "
+            f"ou l'autre position."
+        )
+        return yearfirst_evidence >= yearlast_evidence, "mixed"
+    if yearfirst_evidence:
+        return True, "proven"
+    if yearlast_evidence:
+        return False, "proven"
+    return False, "guessed"
 
 
-def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> float | None:
+def _combine_convention_status(*statuses: str) -> str:
+    """
+    Combine les statuts de _detect_dayfirst et _detect_yearfirst pour une
+    même colonne — le pire des deux l'emporte : si l'un des deux aspects
+    (jour/mois OU position de l'année) est prouvé mélangé, la colonne
+    entière doit être traitée avec la prudence "mixed" par _days_since,
+    même si l'autre aspect est parfaitement prouvé.
+    """
+    if "mixed" in statuses:
+        return "mixed"
+    if "guessed" in statuses:
+        return "guessed"
+    return "proven"
+
+
+def _days_since(
+    date_value, dayfirst: bool = True, yearfirst: bool = False,
+    reference_datetime: datetime | None = None,
+    column_convention_status: str = "proven",
+) -> float | None:
     """
     Retourne le nombre de jours écoulés depuis une date, ou None si non
     calculable. Gère aussi le format de date LDAP/Active Directory
@@ -246,11 +346,43 @@ def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> f
     systèmes sources (ex. un outil IAM américain vs un export AD local)
     peuvent utiliser des conventions différentes au sein d'une même
     entreprise.
+
+    `column_convention_status` : statut retourné par _detect_dayfirst
+    ("proven" / "guessed" / "mixed"). Quand la colonne mélange RÉELLEMENT
+    deux conventions ("mixed" — plusieurs systèmes sources fusionnés,
+    chacun avec son propre format), une valeur qui a SA PROPRE preuve
+    individuelle (un groupe > 12) est toujours lue correctement quel que
+    soit ce statut ; mais une valeur individuellement ambiguë (les deux
+    groupes <= 12, ex. '03/04/2026') ne peut alors être rattachée en
+    toute confiance à aucune des deux conventions prouvées dans la
+    colonne — refusée explicitement plutôt que devinée via la convention
+    majoritaire, qui pourrait très bien ne pas être la sienne.
+
+    `reference_datetime` : date de référence pour le calcul de
+    l'ancienneté — datetime.now() par défaut, mais peut être fixée
+    explicitement pour qu'une revue reste rejouable à l'identique des
+    mois plus tard (reproductibilité d'audit : "pourquoi ce compte
+    était-il dormant lors de la revue du 15 juin ?" doit redonner
+    exactement le même résultat, pas un résultat qui dérive avec la date
+    du jour où on relance l'analyse).
     """
+    reference_datetime = reference_datetime or datetime.now()
     if pd.isna(date_value) or date_value is None:
         return None
 
     text_value = str(date_value).strip()
+
+    # Colonne prouvée "mixed" (voir _detect_dayfirst) : une valeur qui n'a
+    # PAS sa propre preuve individuelle (ni premier ni second groupe > 12)
+    # ne peut être rattachée en confiance à aucune des deux conventions
+    # cohabitant dans la colonne — refusée plutôt que devinée au hasard
+    # via la convention majoritaire.
+    if column_convention_status == "mixed":
+        ambiguous_match = _AMBIGUOUS_DATE_START_RE.match(text_value)
+        if ambiguous_match:
+            first, second = int(ambiguous_match.group(1)), int(ambiguous_match.group(2))
+            if first <= 12 and second <= 12:
+                return None
 
     # Motif tronqué rencontré en pratique (export coupant le jour de la
     # semaine ET le mois, ne laissant qu'un nombre isolé en tête — ex.
@@ -267,7 +399,7 @@ def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> f
     if ldap_match:
         try:
             parsed_dt = datetime.strptime(ldap_match.group(1), "%Y%m%d%H%M%S")
-            return (datetime.now() - parsed_dt).days
+            return (reference_datetime - parsed_dt).days
         except ValueError:
             return None
 
@@ -285,7 +417,7 @@ def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> f
         if 32874 <= serial <= 73050:  # ~ 01/01/1990 à 01/01/2100
             excel_epoch = datetime(1899, 12, 30)
             parsed_dt = excel_epoch + pd.Timedelta(days=serial)
-            return (datetime.now() - parsed_dt).days
+            return (reference_datetime - parsed_dt).days
         return None  # nombre hors plage plausible : probablement pas une date
 
     # dayfirst=True lève l'ambiguïté JJ/MM (voir plus haut), mais appliqué
@@ -303,7 +435,7 @@ def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> f
     # 1er groupe > 31 ne peut alors être qu'une année (aucun jour ne
     # dépasse 31) : ex. '26-01-15' pour 2026-01-15, sans quoi il aurait
     # été lu comme le 26 janvier 2015 (décalage de 11 ans, silencieux).
-    year_first_4digit = bool(re.match(r"^\d{4}[-/]", text_value))
+    year_first_4digit = bool(re.match(r"^\d{4}[-/.]", text_value))
     year_first = year_first_4digit or yearfirst
 
     # Mois en français ('Avril', 'Mars'...) non reconnus par le parseur
@@ -338,15 +470,15 @@ def _days_since(date_value, dayfirst: bool = True, yearfirst: bool = False) -> f
             return None
         parsed_dt = parsed.to_pydatetime().replace(tzinfo=None)
         if has_no_year and parsed_dt.year < 1900:
-            candidate = parsed_dt.replace(year=datetime.now().year)
+            candidate = parsed_dt.replace(year=reference_datetime.year)
             # Comparaison au jour près, pas à l'heure près : un horodatage
             # simplement "plus tard aujourd'hui" ne doit pas déclencher un
             # recul d'une année entière (seule une date réellement future
             # — demain ou après — le justifie).
-            if candidate.date() > datetime.now().date():
+            if candidate.date() > reference_datetime.date():
                 candidate = candidate.replace(year=candidate.year - 1)
             parsed_dt = candidate
-        return (datetime.now() - parsed_dt).days
+        return (reference_datetime - parsed_dt).days
     except Exception:
         return None
 
@@ -356,6 +488,7 @@ def analyze_access(
     dormant_threshold_days: int = DORMANT_THRESHOLD_DAYS,
     password_stale_threshold_days: int = PASSWORD_STALE_THRESHOLD_DAYS,
     never_used_threshold_days: int = 30,
+    reference_datetime: datetime | None = None,
 ) -> pd.DataFrame:
     """
     Analyse un DataFrame standardisé (sortie du module d'ingestion) et
@@ -371,6 +504,7 @@ def analyze_access(
         - risk_level : niveau de risque (Critique / Élevé / Moyen / Faible)
     """
     df = df.copy()
+    reference_datetime = reference_datetime or datetime.now()
 
     if "last_login_date" in df.columns:
         _truncated_count = df["last_login_date"].astype(str).str.match(_TRUNCATED_DATE_RE).sum()
@@ -382,14 +516,33 @@ def analyze_access(
                 f"Ces comptes ne sont ni comptés dormants ni exclus : leur ancienneté "
                 f"réelle de connexion reste simplement inconnue."
             )
-        _dayfirst_login = _detect_dayfirst(df["last_login_date"])
-        _yearfirst_login = _detect_yearfirst(df["last_login_date"])
+        _dayfirst_login, _login_date_status = _detect_dayfirst(df["last_login_date"])
+        _yearfirst_login, _yearfirst_login_status = _detect_yearfirst(df["last_login_date"])
         df["days_since_last_login"] = df["last_login_date"].apply(
-            lambda v: _days_since(v, dayfirst=_dayfirst_login, yearfirst=_yearfirst_login)
+            lambda v: _days_since(v, dayfirst=_dayfirst_login, yearfirst=_yearfirst_login, reference_datetime=reference_datetime, column_convention_status=_combine_convention_status(_login_date_status, _yearfirst_login_status))
         )
+        # Fiabilité maximale : distingue une convention JJ/MM réellement
+        # PROUVÉE par au moins une valeur de la colonne d'un simple repli
+        # par défaut faute de preuve, ou d'un mélange réel de conventions
+        # — pour que le rapport puisse dire honnêtement "convention
+        # devinée" ou "convention mélangée" plutôt que la présenter avec
+        # la même assurance qu'une conclusion réellement démontrée.
+        df["last_login_date_convention_uncertain"] = _login_date_status != "proven"
+        df["last_login_date_convention_status"] = _login_date_status
     else:
         logger.warning("Colonne 'last_login_date' absente : détection de dormance désactivée.")
         df["days_since_last_login"] = None
+        df["last_login_date_convention_uncertain"] = False
+        df["last_login_date_convention_status"] = None
+
+    # Une date de dernière connexion dans le futur (par rapport à la date
+    # de référence) est une anomalie de données à part entière pour un
+    # contrôle IAM — pas juste une valeur "non dormante" comme une autre.
+    # Signalée séparément plutôt que silencieusement absorbée dans un
+    # simple "pas dormant" qui masquerait le problème de donnée sous-jacent.
+    df["last_login_future"] = df["days_since_last_login"].apply(
+        lambda d: d is not None and d < 0
+    )
 
     # Un compte sans aucune date de dernière connexion ('Never Logon Status')
     # n'est pas un cas à exclure de la détection — c'est au contraire le cas
@@ -423,15 +576,17 @@ def analyze_access(
     # différent (accès jamais activé plutôt qu'oublié), qui mérite son
     # propre contrôle plutôt que d'être noyé dans les mêmes dormants.
     if "account_created_date" in df.columns:
-        _dayfirst_created = _detect_dayfirst(df["account_created_date"])
-        _yearfirst_created = _detect_yearfirst(df["account_created_date"])
-        days_since_creation = df["account_created_date"].apply(
-            lambda v: _days_since(v, dayfirst=_dayfirst_created, yearfirst=_yearfirst_created)
+        _dayfirst_created, _created_date_status = _detect_dayfirst(df["account_created_date"])
+        _yearfirst_created, _yearfirst_created_status = _detect_yearfirst(df["account_created_date"])
+        df["days_since_creation"] = df["account_created_date"].apply(
+            lambda v: _days_since(v, dayfirst=_dayfirst_created, yearfirst=_yearfirst_created, reference_datetime=reference_datetime, column_convention_status=_combine_convention_status(_created_date_status, _yearfirst_created_status))
         )
+        days_since_creation = df["days_since_creation"]
         df["is_never_used"] = never_logged_in & days_since_creation.apply(
             lambda d: d is None or d > never_used_threshold_days
         )
     else:
+        df["days_since_creation"] = None
         # Sans date de création, impossible de vérifier la règle des 30
         # jours à la lettre — on retient quand même le signal "jamais
         # connecté" plutôt que de le perdre, par sécurité (mieux vaut
@@ -513,14 +668,18 @@ def analyze_access(
         df["has_no_manager"] = False
 
     if "password_last_set" in df.columns:
-        _dayfirst_pwd = _detect_dayfirst(df["password_last_set"])
-        _yearfirst_pwd = _detect_yearfirst(df["password_last_set"])
+        _dayfirst_pwd, _password_date_status = _detect_dayfirst(df["password_last_set"])
+        _yearfirst_pwd, _yearfirst_pwd_status = _detect_yearfirst(df["password_last_set"])
         df["days_since_password_change"] = df["password_last_set"].apply(
-            lambda v: _days_since(v, dayfirst=_dayfirst_pwd, yearfirst=_yearfirst_pwd)
+            lambda v: _days_since(v, dayfirst=_dayfirst_pwd, yearfirst=_yearfirst_pwd, reference_datetime=reference_datetime, column_convention_status=_combine_convention_status(_password_date_status, _yearfirst_pwd_status))
         )
     else:
         logger.warning("Colonne 'password_last_set' absente : détection de mot de passe périmé désactivée.")
         df["days_since_password_change"] = None
+
+    df["password_change_future"] = df["days_since_password_change"].apply(
+        lambda d: d is not None and d < 0
+    )
 
     df["is_password_stale"] = df["days_since_password_change"].apply(
         lambda d: d is not None and d > password_stale_threshold_days
@@ -571,6 +730,30 @@ def analyze_access(
         df.loc[active_mask, "is_duplicate_account"] = dup_counts.reindex(df.index[active_mask]).fillna(0) > 1
     else:
         df["is_duplicate_account"] = False
+
+    # Cohérence temporelle : un compte ne peut pas s'être connecté (ou
+    # avoir changé son mot de passe) AVANT sa propre date de création —
+    # une date valide syntaxiquement peut rester absurde métier. "Jours
+    # écoulés" (days_since) est PLUS GRAND pour une date PLUS ANCIENNE :
+    # une connexion/un changement de mot de passe dont l'ancienneté
+    # dépasse celle de la création daterait donc d'avant la création —
+    # impossible ; signalé comme anomalie de qualité de donnée plutôt que
+    # silencieusement ignoré.
+    df["temporal_inconsistency"] = False
+    if "days_since_creation" in df.columns:
+        creation = df["days_since_creation"]
+        if "days_since_last_login" in df.columns:
+            login = df["days_since_last_login"]
+            both_known = creation.notna() & login.notna()
+            df.loc[both_known, "temporal_inconsistency"] |= (
+                login[both_known] > creation[both_known]
+            )
+        if "days_since_password_change" in df.columns:
+            pwd = df["days_since_password_change"]
+            both_known = creation.notna() & pwd.notna()
+            df.loc[both_known, "temporal_inconsistency"] |= (
+                pwd[both_known] > creation[both_known]
+            )
 
     df["review_action"] = df.apply(_determine_action, axis=1)
     df["risk_level"] = df.apply(_determine_risk_level, axis=1)
@@ -719,6 +902,21 @@ def summarize(df: pd.DataFrame) -> dict:
         "service_accounts": int(df.get("is_service_account", pd.Series(dtype=bool)).sum()),
         "duplicate_accounts": int(df.get("is_duplicate_account", pd.Series(dtype=bool)).sum()),
         "critical_risk": int((df["risk_level"] == "Critique").sum()),
+        "temporal_inconsistencies": int(df.get("temporal_inconsistency", pd.Series(dtype=bool)).sum()),
+        "future_dates": int(
+            (
+                df.get("last_login_future", pd.Series(dtype=bool))
+                | df.get("password_change_future", pd.Series(dtype=bool))
+            ).sum()
+        ),
+        # Fiabilité maximale sur les dates : True si la convention JJ/MM a
+        # dû être devinée par défaut faute de toute preuve dans la
+        # colonne (pas si elle a été réellement démontrée) — un seul
+        # indicateur au niveau du fichier plutôt que par ligne, puisque
+        # la convention s'applique à toute la colonne uniformément.
+        "date_convention_uncertain": bool(
+            df.get("last_login_date_convention_uncertain", pd.Series([False])).iloc[0]
+        ) if len(df) else False,
     }
 
 

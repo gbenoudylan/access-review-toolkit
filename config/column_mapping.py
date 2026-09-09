@@ -111,6 +111,7 @@ COLUMN_MAPPING = {
         "dernier changement mot de passe", "pwdlastset",
         "last password reset date", "password reset date",  # variantes espacées
         "passwordlastset",  # variante sans espace
+        "last password change date", "password change date", "last password change",
     ],
     "password_expiry_date": [
         "password_expiry_date", "password expiry date", "expiration_mdp",

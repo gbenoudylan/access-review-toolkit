@@ -205,6 +205,23 @@ def main():
             count = quality_report["issues"].get(key)
             if count:
                 st.warning(f"{label} : {count}")
+        if summary.get("date_convention_uncertain"):
+            st.warning(
+                "Convention jour/mois pour la dernière connexion devinée par défaut "
+                "(aucune valeur de la colonne ne permet de trancher entre JJ/MM et MM/JJ) — "
+                "à vérifier si le fichier provient d'un système utilisant une autre convention."
+            )
+        if summary.get("temporal_inconsistencies"):
+            st.warning(
+                f"{summary['temporal_inconsistencies']} compte(s) avec une incohérence "
+                f"temporelle (connexion ou changement de mot de passe antérieur à la "
+                f"date de création du compte)."
+            )
+        if summary.get("future_dates"):
+            st.warning(
+                f"{summary['future_dates']} compte(s) avec une date de connexion ou de "
+                f"mot de passe dans le futur — probable anomalie de données à la source."
+            )
 
     st.subheader("Vue d'ensemble")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
