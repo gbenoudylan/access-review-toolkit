@@ -986,6 +986,22 @@ def _read_image_ocr(path: Path, column_mapping: dict = None) -> pd.DataFrame:
     return result
 
 
+# Comptes génériques/partagés, susceptibles d'exister INDÉPENDAMMENT sur
+# de nombreux systèmes distincts (un 'admin' local à chaque système, pas
+# la même personne) — exclus du calcul de recouvrement de comptes qui
+# décide fusion (colonne) vs empilement entre plusieurs tables sources,
+# pour ne pas confondre une coïncidence de nommage avec une véritable
+# coïncidence d'identité. Mot entier uniquement (\b), pas une simple
+# sous-chaîne : ne doit pas attraper un vrai prénom/nom qui contiendrait
+# ces lettres par hasard.
+_GENERIC_ACCOUNT_NAME_RE = re.compile(
+    r"^(admin|administrator|administrateur|root|guest|invite|test|service|svc|"
+    r"system|support|helpdesk|superadmin|demo|sample|default|backup|sa|"
+    r"anonymous|public)([_\-.]?\d*)?$",
+    re.IGNORECASE,
+)
+
+
 def _merge_or_stack_named_tables(
     named_dfs: dict, default_system: str | None, allow_name_as_system: bool,
 ) -> pd.DataFrame:
@@ -1029,18 +1045,37 @@ def _merge_or_stack_named_tables(
             keys_b = set(df_b["username"].dropna())
             if not keys_b:
                 continue
-            overlap = len(keys_a & keys_b) / min(len(keys_a), len(keys_b))
-            # Un fort recouvrement de noms d'utilisateur seul est un
-            # signal trompeur : des comptes génériques/partagés ('admin',
-            # 'test', 'service', 'guest'...) sont RÉELLEMENT présents,
-            # indépendamment les uns des autres, sur de nombreux systèmes
-            # distincts en pratique — ce ne sont pas la même personne
-            # pour autant. Si les deux tables précisent DÉJÀ un système
-            # (colonne 'system' déjà renseignée, pas à déduire du nom de
-            # la feuille) et que ces systèmes sont manifestement
-            # DIFFÉRENTS (aucun recouvrement), c'est une preuve bien plus
-            # fiable que ce sont deux populations de comptes distinctes à
-            # empiler, même avec un fort recouvrement de noms.
+            # Un fort recouvrement de noms d'utilisateur seul est un signal
+            # trompeur : des comptes génériques/partagés ('admin', 'test',
+            # 'root', 'guest'...) sont RÉELLEMENT présents, indépendamment
+            # les uns des autres, sur de nombreux systèmes distincts en
+            # pratique — ce ne sont pas la même personne pour autant. On
+            # calcule donc le recouvrement en excluant ces noms génériques,
+            # pour que la décision fusion/empilement repose sur une
+            # véritable coïncidence d'IDENTITÉ, pas sur des comptes
+            # partagés qui existeraient de toute façon sur chaque système
+            # pris séparément. S'applique uniformément à tous les formats
+            # (Excel multi-feuilles, ZIP multi-fichiers, Word multi-
+            # tableaux, PDF) puisqu'ils passent tous par cette même
+            # fonction.
+            specific_keys_a = {k for k in keys_a if not _GENERIC_ACCOUNT_NAME_RE.match(str(k).strip())}
+            specific_keys_b = {k for k in keys_b if not _GENERIC_ACCOUNT_NAME_RE.match(str(k).strip())}
+            if specific_keys_a and specific_keys_b:
+                overlap = len(specific_keys_a & specific_keys_b) / min(len(specific_keys_a), len(specific_keys_b))
+            else:
+                # Aucun nom "spécifique" des deux côtés (ex. seulement des
+                # comptes génériques) : pas assez de preuve d'identité pour
+                # fusionner en confiance — on retombe sur le calcul brut,
+                # plus prudent de laisser une petite table 100% générique
+                # décider seule serait pire.
+                overlap = len(keys_a & keys_b) / min(len(keys_a), len(keys_b))
+            # Second filet de sécurité, complémentaire : si les deux tables
+            # précisent déjà un système EXPLICITE (colonne 'system') et que
+            # ces systèmes sont manifestement différents, c'est empilé
+            # quel que soit le recouvrement — utile quand le nom de la
+            # feuille sert lui-même de système (aucune colonne 'system'
+            # encore présente à ce stade) reste couvert par le filtre des
+            # comptes génériques ci-dessus.
             systems_clearly_different = False
             if "system" in df_a.columns and "system" in df_b.columns:
                 systems_a = set(df_a["system"].dropna().astype(str).str.strip().str.lower())

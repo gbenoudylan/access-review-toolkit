@@ -767,3 +767,91 @@ def test_legitimate_merge_still_works_with_explicit_same_system():
     assert "manager" in df.columns
     assert df.loc[df["username"] == "u1", "manager"].iloc[0] == "Alice"
     print("OK - test_legitimate_merge_still_works_with_explicit_same_system")
+
+
+def test_generic_accounts_not_falsely_merged_when_sheet_name_is_system():
+    """
+    Extension du bug précédent, trouvée en creusant plus loin : le
+    premier correctif ne couvrait que le cas d'une colonne 'system'
+    déjà explicite. Si c'est le NOM DE LA FEUILLE qui sert de système
+    (très courant, aucune colonne 'system' dans les données), le premier
+    correctif ne s'appliquait pas du tout et le bug restait entier — en
+    plus, les identités des systèmes ('AD', 'SAP') étaient totalement
+    perdues (remplacées par le nom du fichier temporaire). Corrigé à la
+    racine : les comptes génériques sont exclus du calcul de
+    recouvrement qui décide fusion/empilement, peu importe d'où vient
+    finalement la valeur 'system'.
+    """
+    import tempfile, os
+    import pandas as pd
+    from ingestion.ingest import load_file
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    with pd.ExcelWriter(path) as writer:
+        pd.DataFrame({
+            "username": ["admin", "jdupont", "mmartin", "test"], "account_status": ["Active"] * 4,
+        }).to_excel(writer, sheet_name="AD", index=False)
+        pd.DataFrame({
+            "username": ["admin", "test", "kbrou", "asylla"], "account_status": ["Active"] * 4,
+        }).to_excel(writer, sheet_name="SAP", index=False)
+
+    df = load_file(path)
+    os.unlink(path)
+
+    assert len(df) == 8
+    assert set(df["system"].unique()) == {"AD", "SAP"}
+    admin_rows = df[df["username"] == "admin"]
+    assert set(admin_rows["system"]) == {"AD", "SAP"}
+    print("OK - test_generic_accounts_not_falsely_merged_when_sheet_name_is_system")
+
+
+def test_generic_accounts_fix_applies_to_word_documents_too():
+    """La même correction doit s'appliquer à Word (plusieurs tableaux
+    dans un document), puisque tous les formats passent par la même
+    fonction de décision fusion/empilement."""
+    import tempfile, os
+    from docx import Document
+    from ingestion.ingest import load_file
+
+    doc = Document()
+    table1 = doc.add_table(rows=5, cols=2)
+    table1.cell(0, 0).text = "username"; table1.cell(0, 1).text = "account_status"
+    for i, (u, s) in enumerate([("admin", "Active"), ("jdupont", "Active"), ("mmartin", "Active"), ("test", "Active")], start=1):
+        table1.cell(i, 0).text = u; table1.cell(i, 1).text = s
+    table2 = doc.add_table(rows=5, cols=2)
+    table2.cell(0, 0).text = "username"; table2.cell(0, 1).text = "account_status"
+    for i, (u, s) in enumerate([("admin", "Active"), ("test", "Active"), ("kbrou", "Active"), ("asylla", "Active")], start=1):
+        table2.cell(i, 0).text = u; table2.cell(i, 1).text = s
+
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        path = tmp.name
+    doc.save(path)
+
+    df = load_file(path, default_system="Test")
+    os.unlink(path)
+
+    assert len(df) == 8
+    print("OK - test_generic_accounts_fix_applies_to_word_documents_too")
+
+
+def test_generic_accounts_fix_applies_to_zip_archives_too():
+    """La même correction doit s'appliquer à une archive ZIP contenant
+    plusieurs fichiers, un système par fichier nommé."""
+    import tempfile, os, zipfile
+    from ingestion.ingest import load_file
+
+    csv1 = "username,account_status\nadmin,Active\njdupont,Active\nmmartin,Active\ntest,Active\n"
+    csv2 = "username,account_status\nadmin,Active\ntest,Active\nkbrou,Active\nasylla,Active\n"
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        zip_path = tmp.name
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("AD.csv", csv1)
+        zf.writestr("SAP.csv", csv2)
+
+    df = load_file(zip_path)
+    os.unlink(zip_path)
+
+    assert len(df) == 8
+    assert set(df["system"].unique()) == {"AD", "SAP"}
+    print("OK - test_generic_accounts_fix_applies_to_zip_archives_too")
