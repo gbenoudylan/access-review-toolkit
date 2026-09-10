@@ -523,3 +523,247 @@ def test_pdf_report_no_ocr_warning_without_flag():
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     assert "AVERTISSEMENT" not in full_text
     print("OK - test_pdf_report_no_ocr_warning_without_flag")
+
+
+def test_utf16_encoding_with_bom_detected_correctly():
+    """
+    Vrai bug trouvé par balayage systématique : un fichier UTF-16 (avec
+    ou sans BOM) était silencieusement lu comme cp1252/latin-1 (des
+    encodages mono-octet qui n'échouent presque jamais), produisant du
+    texte truffé d'octets nuls sans la moindre erreur — jamais détecté
+    comme UTF-16.
+    """
+    import tempfile
+    from pathlib import Path
+    from ingestion.ingest import _detect_encoding
+
+    content = "username,system\nu1,AD\n".encode("utf-16")
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = Path(tmp.name)
+    encoding = _detect_encoding(path)
+    with open(path, encoding=encoding) as f:
+        text = f.read()
+    assert "\x00" not in text
+    assert "username" in text
+    print("OK - test_utf16_encoding_with_bom_detected_correctly")
+
+
+def test_utf16_encoding_without_bom_detected_correctly():
+    """
+    Cas encore plus piégeux : sans BOM, un octet NUL est du UTF-8 VALIDE
+    (c'est le caractère NUL) — raw.decode("utf-8") réussit donc
+    trivialement sur un fichier UTF-16, avant même d'atteindre la
+    détection dédiée. Testé pour les deux ordres d'octets (LE et BE),
+    la position des octets nuls devant déterminer lequel, pas un essai
+    à l'aveugle.
+    """
+    import tempfile
+    from pathlib import Path
+    from ingestion.ingest import _detect_encoding
+
+    for byte_order in ("utf-16-le", "utf-16-be"):
+        content = "username,system\nu1,AD\n".encode(byte_order)
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+            tmp.write(content)
+            path = Path(tmp.name)
+        encoding = _detect_encoding(path)
+        with open(path, encoding=encoding) as f:
+            text = f.read()
+        assert "\x00" not in text, f"Corrompu pour {byte_order}"
+        assert "username" in text, f"Corrompu pour {byte_order}"
+    print("OK - test_utf16_encoding_without_bom_detected_correctly")
+
+
+def test_utf16_full_pipeline_no_corruption():
+    """Le pipeline d'ingestion complet doit produire des colonnes et
+    valeurs propres pour un fichier UTF-16, pas des noms de colonnes
+    truffés d'octets nuls invisibles."""
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "username,system\nu1,AD\n".encode("utf-16-be")
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+    df = load_file(path, default_system="Test")
+    assert list(df.columns) == ["username", "system"]
+    assert df.loc[0, "username"] == "u1"
+    print("OK - test_utf16_full_pipeline_no_corruption")
+
+
+def test_user_name_two_words_variant_recognized():
+    """
+    Vrai gap trouvé : 'User Name' (avec espace, très courant dans les
+    exports Windows/IAM génériques) n'était pas reconnu comme variante
+    de 'username' — seules les formes avec 'logon'/'sam account' étaient
+    couvertes, la forme la plus simple et la plus fréquente manquait.
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "USER NAME , SYSTEM , ACCOUNT STATUS\nu1,AD,Active\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+    df = load_file(path, default_system="Test")
+    assert "username" in df.columns
+    assert df.loc[0, "username"] == "u1"
+    print("OK - test_user_name_two_words_variant_recognized")
+
+
+def test_pipe_delimiter_recognized_in_csv_files():
+    """
+    Vrai gap trouvé, avec incohérence entre formats : le pipe (|) était
+    déjà reconnu comme séparateur pour les fichiers .txt (_try_delimited)
+    mais pas pour les fichiers .csv (_read_ragged_csv) — le même contenu
+    aurait donc été traité différemment selon la seule extension du
+    fichier, sans raison de fond.
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = b"username|system|account_status\nu1|AD|Active\n"
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+    df = load_file(path, default_system="Test")
+    assert list(df.columns) == ["username", "system", "account_status"]
+    assert df.loc[0, "username"] == "u1"
+    print("OK - test_pipe_delimiter_recognized_in_csv_files")
+
+
+def test_multi_sheet_merge_conflict_detected_and_warned():
+    """
+    Vrai bug trouvé, le plus sérieux de cette session : quand deux
+    feuilles Excel décrivent le MÊME compte avec des valeurs
+    DIFFÉRENTES pour le même champ (ex. 'Active' dans l'une, 'Disabled'
+    dans l'autre), la fusion (combine_first) gardait silencieusement une
+    valeur et perdait l'autre — sans la moindre trace. Pour un outil
+    d'audit IAM, ça pouvait faire passer un compte réellement désactivé
+    pour actif. Un avertissement explicite doit maintenant signaler
+    tout conflit réel, même si une valeur doit toujours être choisie
+    pour continuer.
+    """
+    import tempfile, os, logging
+    import pandas as pd
+    from ingestion.ingest import load_file
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    with pd.ExcelWriter(path) as writer:
+        pd.DataFrame({"username": ["u1"], "system": ["AD"], "account_status": ["Active"]}).to_excel(
+            writer, sheet_name="Feuille1", index=False)
+        pd.DataFrame({"username": ["u1"], "system": ["AD"], "account_status": ["Disabled"]}).to_excel(
+            writer, sheet_name="Feuille2", index=False)
+
+    caplog_records = []
+    logger = logging.getLogger("ingestion")
+    handler = logging.Handler()
+    handler.emit = lambda record: caplog_records.append(record)
+    logger.addHandler(handler)
+    try:
+        df = load_file(path, default_system="Test")
+    finally:
+        logger.removeHandler(handler)
+        os.unlink(path)
+
+    assert len(df) == 1  # une seule ligne malgré le conflit, une valeur a dû être choisie
+    warnings_text = " ".join(r.getMessage() for r in caplog_records if r.levelno >= logging.WARNING)
+    assert "Conflit de données" in warnings_text or "conflit" in warnings_text.lower()
+    print("OK - test_multi_sheet_merge_conflict_detected_and_warned")
+
+
+def test_multi_sheet_merge_no_false_positive_warning():
+    """Une fusion propre (colonnes complémentaires, pas de conflit réel)
+    ne doit déclencher aucun avertissement de conflit."""
+    import tempfile, os, logging
+    import pandas as pd
+    from ingestion.ingest import load_file
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    with pd.ExcelWriter(path) as writer:
+        pd.DataFrame({"username": ["u1"], "system": ["AD"], "account_status": ["Active"]}).to_excel(
+            writer, sheet_name="Identites", index=False)
+        pd.DataFrame({"username": ["u1"], "manager": ["Alice"]}).to_excel(
+            writer, sheet_name="Managers", index=False)
+
+    caplog_records = []
+    logger = logging.getLogger("ingestion")
+    handler = logging.Handler()
+    handler.emit = lambda record: caplog_records.append(record)
+    logger.addHandler(handler)
+    try:
+        df = load_file(path, default_system="Test")
+    finally:
+        logger.removeHandler(handler)
+        os.unlink(path)
+
+    warnings_text = " ".join(r.getMessage() for r in caplog_records if r.levelno >= logging.WARNING)
+    assert "Conflit de données" not in warnings_text
+    assert df.loc[0, "manager"] == "Alice"
+    print("OK - test_multi_sheet_merge_no_false_positive_warning")
+
+
+def test_generic_accounts_across_different_systems_not_falsely_merged():
+    """
+    Vrai bug sérieux trouvé, exposé par le correctif précédent sur les
+    conflits de fusion : deux systèmes RÉELLEMENT différents (AD et SAP)
+    se faisaient fusionner par colonne à tort (perdant silencieusement
+    des comptes) simplement parce qu'ils partagent des noms de comptes
+    génériques ('admin', 'test' — présents indépendamment sur de
+    nombreux systèmes en pratique, pas la même personne). Si les deux
+    tables précisent déjà un système EXPLICITE et que ces systèmes sont
+    clairement différents, c'est empilé plutôt que fusionné, même avec
+    un fort recouvrement de noms.
+    """
+    import tempfile, os
+    import pandas as pd
+    from ingestion.ingest import load_file
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    with pd.ExcelWriter(path) as writer:
+        pd.DataFrame({
+            "username": ["admin", "jdupont", "mmartin", "test"], "system": ["AD"] * 4,
+            "account_status": ["Active"] * 4,
+        }).to_excel(writer, sheet_name="SystemeA", index=False)
+        pd.DataFrame({
+            "username": ["admin", "test", "kbrou", "asylla"], "system": ["SAP"] * 4,
+            "account_status": ["Active"] * 4,
+        }).to_excel(writer, sheet_name="SystemeB", index=False)
+
+    df = load_file(path, default_system="Test")
+    os.unlink(path)
+
+    assert len(df) == 8, f"Attendu 8 comptes distincts, obtenu {len(df)} — perte de données silencieuse"
+    admin_rows = df[df["username"] == "admin"]
+    assert len(admin_rows) == 2
+    assert set(admin_rows["system"]) == {"AD", "SAP"}
+    print("OK - test_generic_accounts_across_different_systems_not_falsely_merged")
+
+
+def test_legitimate_merge_still_works_with_explicit_same_system():
+    """La correction ci-dessus ne doit pas casser une fusion légitime :
+    deux feuilles décrivant le même système explicite doivent toujours
+    fusionner par colonne comme avant."""
+    import tempfile, os
+    import pandas as pd
+    from ingestion.ingest import load_file
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    with pd.ExcelWriter(path) as writer:
+        pd.DataFrame({"username": ["u1", "u2"], "system": ["AD", "AD"], "account_status": ["Active", "Active"]}).to_excel(
+            writer, sheet_name="Feuille1", index=False)
+        pd.DataFrame({"username": ["u1", "u2"], "system": ["AD", "AD"], "manager": ["Alice", "Bob"]}).to_excel(
+            writer, sheet_name="Feuille2", index=False)
+
+    df = load_file(path, default_system="Test")
+    os.unlink(path)
+
+    assert len(df) == 2
+    assert "manager" in df.columns
+    assert df.loc[df["username"] == "u1", "manager"].iloc[0] == "Alice"
+    print("OK - test_legitimate_merge_still_works_with_explicit_same_system")

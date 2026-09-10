@@ -30,7 +30,7 @@ logger = logging.getLogger("access_review")
 DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
 PASSWORD_STALE_THRESHOLD_DAYS = 90  # standard interne MTN : 90 jours pour les comptes standards
 
-ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "true", "1", "open"}
+ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "y", "true", "1", "open"}
 TERMINATED_STATUS_VALUES = {
     "terminated", "termine", "terminé", "parti", "departed", "left",
     "inactive", "inactif", "resigned", "démissionné",
@@ -38,8 +38,8 @@ TERMINATED_STATUS_VALUES = {
     "fired", "dismissed", "licencié", "licencie", "no longer employed",
     "not employed", "separated", "redundant",
 }
-PRIVILEGED_VALUES = {"oui", "yes", "true", "1", "admin", "administrateur"}
-NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais"}
+PRIVILEGED_VALUES = {"oui", "yes", "y", "true", "1", "admin", "administrateur"}
+NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais", "no expiry", "does not expire"}
 
 # Format "Generalized Time" utilisé par LDAP/Active Directory pour les dates
 # (ex. whenChanged, whenCreated) : YYYYMMDDHHMMSS[.f]Z — non reconnu
@@ -52,6 +52,16 @@ _LDAP_GENERALIZED_TIME_RE = re.compile(r"^(\d{14})(\.\d+)?Z?$")
 # date réelle est indéterminable ; pandas devinerait sinon ce nombre
 # comme un MOIS avec un jour arbitraire (voir _days_since).
 _TRUNCATED_DATE_RE = re.compile(r"^\d{1,2}\s+\d{1,2}:\d{2}:\d{2}\s+[+-]\d{4}\s+\d{4}$")
+# Date numérique séparée par des virgules (ex. '12,01,2026') : format rare
+# comme convention de date légitime — plus vraisemblablement un artefact
+# d'un champ CSV mal protégé par des guillemets (une vraie date textuelle
+# 'Avril 27, 2022' coupée par erreur sur sa virgule interne, cf. cas réel
+# rencontré). Vérifié que pandas ne peut PAS être fait confiance pour ce
+# séparateur : il ignore silencieusement dayfirst/yearfirst, peut même
+# perdre un groupe entier sans la moindre erreur (ex. '01,25,2026' lu
+# comme 1er janvier 2026, le 25 disparaissant purement et simplement) —
+# refusé explicitement plutôt que risqué.
+_COMMA_SEPARATED_NUMERIC_DATE_RE = re.compile(r"^\d{1,4}\s*,\s*\d{1,4}\s*,\s*\d{1,4}$")
 
 # Mois en français (complets et abrégés, avec ou sans point) -> anglais.
 # pandas/dateutil ne reconnaissent que les noms de mois en anglais par
@@ -395,6 +405,9 @@ def _days_since(
     if _TRUNCATED_DATE_RE.match(text_value):
         return None
 
+    if _COMMA_SEPARATED_NUMERIC_DATE_RE.match(text_value):
+        return None
+
     ldap_match = _LDAP_GENERALIZED_TIME_RE.match(text_value)
     if ldap_match:
         try:
@@ -461,14 +474,19 @@ def _days_since(
             # informatif dans ce cas précis, sans rapport avec un vrai risque
             # d'erreur — supprimé ici pour ne pas polluer les journaux.
             warnings.filterwarnings("ignore", message=".*dayfirst.*")
+            # Précision sub-microseconde (ex. 9 décimales) sans incidence
+            # sur un calcul d'ancienneté en jours — pandas tronque
+            # silencieusement le surplus et avertit, sans rapport avec un
+            # vrai risque d'erreur pour cet usage.
+            warnings.filterwarnings("ignore", message=".*nanoseconds.*")
             parsed = pd.to_datetime(
                 parse_input, errors="coerce",
                 dayfirst=dayfirst and not year_first,
                 yearfirst=year_first and not year_first_4digit,
             )
-        if pd.isna(parsed):
-            return None
-        parsed_dt = parsed.to_pydatetime().replace(tzinfo=None)
+            if pd.isna(parsed):
+                return None
+            parsed_dt = parsed.to_pydatetime().replace(tzinfo=None)
         if has_no_year and parsed_dt.year < 1900:
             candidate = parsed_dt.replace(year=reference_datetime.year)
             # Comparaison au jour près, pas à l'heure près : un horodatage
@@ -719,11 +737,24 @@ def analyze_access(
     # identifiant employé fiable et systématiquement présent) : si un même
     # nom complet est associé à plusieurs comptes actifs sur un même
     # système, c'est un doublon à signaler.
+    #
+    # Regroupement sur une clé NORMALISÉE (espaces/casse), pas sur le nom
+    # brut : 'Jean Dupont' et 'JEAN DUPONT' (casse différente selon le
+    # système source) ou 'Jean Dupont' et ' Jean Dupont ' (espaces
+    # parasites, fréquents en pratique) désignent la même personne mais
+    # ne correspondraient jamais en comparaison exacte — un vrai doublon
+    # passerait alors inaperçu, à l'opposé de l'objectif du contrôle 8.
+    # Le nom d'affichage original (non modifié) reste utilisé partout
+    # ailleurs dans les rapports.
     if "full_name" in df.columns and "account_status" in df.columns and "system" in df.columns:
         active_mask = df["account_status"].apply(_is_active_account)
+        normalized_name = (
+            df["full_name"].astype(str).str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
+        )
         dup_counts = (
             df[active_mask]
-            .groupby(["full_name", "system"])["username"]
+            .assign(_normalized_name=normalized_name[active_mask])
+            .groupby(["_normalized_name", "system"])["username"]
             .transform("nunique")
         )
         df["is_duplicate_account"] = False

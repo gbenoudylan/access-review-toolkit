@@ -963,3 +963,98 @@ def test_yearfirst_mixed_column_detected():
     result = _detect_yearfirst(pd.Series(["45-01-15", "15-01-45"]))
     assert result[1] == "mixed"
     print("OK - test_yearfirst_mixed_column_detected")
+
+
+def test_comma_separated_date_refused_not_guessed():
+    """
+    Vrai bug trouvé par balayage systématique : pandas ne respecte PAS
+    dayfirst/yearfirst pour un format séparé par des virgules, et peut
+    même perdre un groupe entier sans la moindre erreur ('01,25,2026' lu
+    comme 1er janvier 2026, le 25 disparaissant purement et simplement).
+    Refusé explicitement plutôt que risqué, y compris quand un groupe
+    serait individuellement non ambigu (25 > 12).
+    """
+    from analysis.access_review import _days_since
+    for value in ["12,01,2026", "25,01,2026", "01,25,2026", "2026,01,12"]:
+        assert _days_since(value) is None, f"{value!r} aurait dû être refusé"
+    print("OK - test_comma_separated_date_refused_not_guessed")
+
+
+def test_no_warning_leak_on_excess_precision_timestamp():
+    """
+    Vrai bug trouvé : un timestamp avec une précision sub-microseconde
+    excessive (9 décimales) faisait fuiter un UserWarning pandas non
+    supprimé (le filtre ne couvrait que le pd.to_datetime() lui-même, pas
+    la conversion .to_pydatetime() qui suit, où le warning se produit
+    réellement) — pollue les journaux en usage réel sans rapport avec un
+    vrai risque d'erreur pour un calcul d'ancienneté en jours.
+    """
+    import warnings
+    from analysis.access_review import _days_since
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = _days_since("2026-09-09 12:00:00.123456789")
+    assert result is not None
+    print("OK - test_no_warning_leak_on_excess_precision_timestamp")
+
+
+def test_single_letter_y_recognized_as_active():
+    """
+    Vrai gap trouvé : 'Y' (Oui/Non en une lettre, convention très
+    courante dans les exports issus de bases de données SQL) n'était pas
+    reconnu comme actif, alors que 'yes' l'était déjà. 'A', volontairement
+    ambigu (Active ? Approved ? Available ?), reste à raison non reconnu —
+    ce n'est pas un oubli mais un choix délibéré de ne pas deviner.
+    """
+    from analysis.access_review import _is_active_account
+    assert _is_active_account("Y") == True
+    assert _is_active_account("y") == True
+    assert _is_active_account("A") == False  # ambigu, volontairement non reconnu
+    print("OK - test_single_letter_y_recognized_as_active")
+
+
+def test_single_letter_y_recognized_for_privileged_and_password_status():
+    """
+    Même gap que pour le statut actif, trouvé par cohérence : 'Y'
+    n'était pas reconnu pour is_privileged non plus — corrigé de la même
+    façon. Ajout aussi de synonymes clairs et non ambigus pour le mot de
+    passe permanent ('No expiry', 'Does not expire'), sans ajouter de
+    termes trop vagues comme 'Permanent' seul.
+    """
+    from analysis.access_review import _is_privileged, _has_non_expiring_password
+    assert _is_privileged("Y") == True
+    assert _has_non_expiring_password("No expiry") == True
+    assert _has_non_expiring_password("Does not expire") == True
+    print("OK - test_single_letter_y_recognized_for_privileged_and_password_status")
+
+
+def test_duplicate_detection_normalizes_case_and_whitespace():
+    """
+    Vrai bug trouvé, sérieux : le contrôle 8 (Duplicate Accounts) ratait
+    complètement 'Jean Dupont' vs 'JEAN DUPONT' (casse différente selon
+    le système source) et 'Jean Dupont' vs ' Jean Dupont ' (espaces
+    parasites, très fréquents en pratique) — la comparaison se faisait
+    sur le nom brut, sans normalisation.
+    """
+    case_df = pd.DataFrame({
+        "username": ["jdupont", "jdupont2"], "system": ["AD", "AD"],
+        "full_name": ["Jean Dupont", "JEAN DUPONT"], "account_status": ["Active", "Active"],
+    })
+    result_case = analyze_access(case_df)
+    assert result_case["is_duplicate_account"].tolist() == [True, True]
+
+    whitespace_df = pd.DataFrame({
+        "username": ["jdupont", "jdupont2"], "system": ["AD", "AD"],
+        "full_name": ["Jean Dupont", " Jean Dupont "], "account_status": ["Active", "Active"],
+    })
+    result_ws = analyze_access(whitespace_df)
+    assert result_ws["is_duplicate_account"].tolist() == [True, True]
+
+    # Pas de faux positif pour des personnes réellement différentes
+    different_df = pd.DataFrame({
+        "username": ["jdupont", "mmartin"], "system": ["AD", "AD"],
+        "full_name": ["Jean Dupont", "Marie Martin"], "account_status": ["Active", "Active"],
+    })
+    result_diff = analyze_access(different_df)
+    assert result_diff["is_duplicate_account"].tolist() == [False, False]
+    print("OK - test_duplicate_detection_normalizes_case_and_whitespace")

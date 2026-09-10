@@ -15,6 +15,7 @@ COLUMN_MAPPING = {
         "samaccountname", "uid",  # attributs LDAP/AD (LDIF)
         "sam account name", "logon name", "user logon name",  # variantes espacées (exports AD)
         "userprincipalname",  # variante sans espace (export AD/Azure hybride)
+        "user name",  # variante espacée très courante (ex. exports Windows/IAM génériques)
     ],
     "user_id": [
         # Distinct du nom de connexion : souvent un identifiant employé/

@@ -738,7 +738,7 @@ def test_control_specific_justifying_columns_shown():
     l'action recommandée qui en résulte.
     """
     import pandas as pd
-    from analysis.access_review import analyze_access
+    from analysis.access_review import analyze_access, _days_since
     from reporting.export import generate_pdf_report
     import pdfplumber
 
@@ -759,7 +759,11 @@ def test_control_specific_justifying_columns_shown():
     assert "Dernière" in snippet and "connexion" in snippet
     assert "Jours" in snippet and "sans" in snippet
     assert "Action recommandée" in snippet
-    assert "982" in snippet  # la vraie valeur en jours doit apparaître
+    # Valeur en jours calculée dynamiquement plutôt que codée en dur : un
+    # nombre figé casse silencieusement le test un jour plus tard (repéré
+    # ici même), sans rapport avec un vrai changement de comportement.
+    expected_days = int(_days_since("2024-01-01"))
+    assert str(expected_days) in snippet
     print("OK - test_control_specific_justifying_columns_shown")
 
 

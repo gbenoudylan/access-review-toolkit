@@ -41,9 +41,57 @@ def _detect_encoding(path: Path) -> str:
     fichier sans erreur ; Latin-1 en dernier recours ne lève jamais
     d'erreur (il associe un caractère à chaque octet), donc la fonction
     retourne toujours un encodage utilisable.
+
+    UTF-16 testé explicitement AVANT cp1252/latin-1 : un fichier UTF-16
+    (avec BOM, ex. exports Windows PowerShell) contient énormément
+    d'octets nuls intercalés avec le texte — cp1252/latin-1 "décodent"
+    ces octets nuls sans la moindre erreur (ce sont des encodages
+    mono-octet qui associent un caractère à chaque valeur possible),
+    produisant un texte totalement corrompu de façon silencieuse plutôt
+    qu'une erreur détectable. Sans BOM, une heuristique (proportion
+    d'octets nuls) détecte encore ce cas avant le repli mono-octet.
     """
     raw = path.read_bytes()
-    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+    # Un octet NUL est du UTF-8 valide (c'est simplement le caractère NUL) :
+    # raw.decode("utf-8") "réussit" donc trivialement sur un fichier UTF-16
+    # truffé d'octets nuls, AVANT même d'atteindre la détection UTF-16
+    # ci-dessous — un texte réel ne contient normalement jamais de
+    # caractère NUL littéral, donc une forte proportion d'octets nuls est
+    # vérifiée en priorité, avant de faire confiance à un succès UTF-8.
+    has_utf16_bom = raw[:2] in (b"\xff\xfe", b"\xfe\xff")
+    high_null_ratio = bool(raw) and (raw.count(b"\x00") / len(raw)) > 0.3
+    if not high_null_ratio:
+        for encoding in ("utf-8-sig", "utf-8"):
+            try:
+                raw.decode(encoding)
+                return encoding
+            except UnicodeDecodeError:
+                continue
+    if has_utf16_bom:
+        try:
+            raw.decode("utf-16")
+            return "utf-16"
+        except UnicodeDecodeError:
+            pass
+    # UTF-16 sans BOM : repérable par une forte proportion d'octets nuls
+    # (chaque caractère latin/ASCII encodé sur 2 octets dont un nul) —
+    # un texte réellement mono-octet n'a normalement presque aucun octet
+    # nul en son sein. La POSITION des octets nuls (pairs vs impairs)
+    # indique l'ordre des octets (little vs big-endian) : essayer big
+    # avant little à l'aveugle ferait deviner l'ordre à tort une fois sur
+    # deux, produisant un texte lisible en apparence (des points de code
+    # Unicode valides) mais faux.
+    if high_null_ratio:
+        zeros_even = sum(1 for i in range(0, len(raw), 2) if raw[i] == 0)
+        zeros_odd = sum(1 for i in range(1, len(raw), 2) if raw[i] == 0)
+        ordered = ("utf-16-be", "utf-16-le") if zeros_even >= zeros_odd else ("utf-16-le", "utf-16-be")
+        for encoding in ordered:
+            try:
+                raw.decode(encoding)
+                return encoding
+            except UnicodeDecodeError:
+                continue
+    for encoding in ("cp1252", "latin-1"):
         try:
             raw.decode(encoding)
             return encoding
@@ -305,14 +353,34 @@ def compute_data_quality_report(df: pd.DataFrame) -> dict:
 
 def _read_ragged_csv(path: Path) -> pd.DataFrame:
     import csv
+    import sys
+    # Limite par défaut de Python (128 Ko) trop stricte pour un champ
+    # légitimement long (ex. un commentaire de revue volumineux) —
+    # relevée à une valeur généreuse plutôt que de faire planter
+    # l'ingestion sur un champ simplement un peu long.
+    try:
+        csv.field_size_limit(10_000_000)
+    except OverflowError:
+        csv.field_size_limit(sys.maxsize // 2)
     with open(path, newline="", encoding=_detect_encoding(path)) as f:
         sample = f.read(4096)
         f.seek(0)
         try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            # Pipe inclus, comme pour _try_delimited (fichiers .txt) — un
+            # export réel peut arriver avec l'extension .csv tout en
+            # utilisant un séparateur différent (outils legacy/mainframe).
+            # L'absence du pipe ici créait une incohérence : le même
+            # contenu était reconnu en .txt mais pas en .csv.
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
         except csv.Error:
             dialect = csv.excel
-        rows = list(csv.reader(f, dialect))
+        try:
+            rows = list(csv.reader(f, dialect))
+        except csv.Error as e:
+            raise IngestionError(
+                f"Fichier CSV illisible ({path.name}) : {e}. "
+                f"Un champ dépasse probablement la taille attendue pour ce format."
+            )
     max_cols = max(len(r) for r in rows) if rows else 0
     rows = [r + [None] * (max_cols - len(r)) for r in rows]
     return pd.DataFrame(rows)
@@ -578,7 +646,12 @@ def _read_json(path: Path) -> pd.DataFrame:
     import json
 
     with open(path, encoding=_detect_encoding(path)) as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise IngestionError(
+                f"Fichier JSON invalide ou corrompu ({path.name}) : {e}"
+            )
 
     if isinstance(data, list):
         records = data
@@ -957,11 +1030,37 @@ def _merge_or_stack_named_tables(
             if not keys_b:
                 continue
             overlap = len(keys_a & keys_b) / min(len(keys_a), len(keys_b))
-            if overlap >= 0.5:
+            # Un fort recouvrement de noms d'utilisateur seul est un
+            # signal trompeur : des comptes génériques/partagés ('admin',
+            # 'test', 'service', 'guest'...) sont RÉELLEMENT présents,
+            # indépendamment les uns des autres, sur de nombreux systèmes
+            # distincts en pratique — ce ne sont pas la même personne
+            # pour autant. Si les deux tables précisent DÉJÀ un système
+            # (colonne 'system' déjà renseignée, pas à déduire du nom de
+            # la feuille) et que ces systèmes sont manifestement
+            # DIFFÉRENTS (aucun recouvrement), c'est une preuve bien plus
+            # fiable que ce sont deux populations de comptes distinctes à
+            # empiler, même avec un fort recouvrement de noms.
+            systems_clearly_different = False
+            if "system" in df_a.columns and "system" in df_b.columns:
+                systems_a = set(df_a["system"].dropna().astype(str).str.strip().str.lower())
+                systems_b = set(df_b["system"].dropna().astype(str).str.strip().str.lower())
+                if systems_a and systems_b and not (systems_a & systems_b):
+                    systems_clearly_different = True
+            if overlap >= 0.5 and not systems_clearly_different:
                 union(name_a, name_b)
                 logger.info(
                     f"'{name_a}' et '{name_b}' fusionnées par colonne "
                     f"(recouvrement de comptes : {overlap:.0%})."
+                )
+            elif overlap >= 0.5 and systems_clearly_different:
+                logger.info(
+                    f"'{name_a}' et '{name_b}' EMPILÉES (pas fusionnées) malgré un "
+                    f"recouvrement de noms de {overlap:.0%} : les deux tables précisent "
+                    f"des systèmes différents ({', '.join(sorted(systems_a))} vs "
+                    f"{', '.join(sorted(systems_b))}) — probablement des comptes "
+                    f"génériques (admin, test...) coïncidant par hasard entre systèmes "
+                    f"distincts, pas la même personne."
                 )
 
     groups: dict = {}
@@ -990,6 +1089,32 @@ def _merge_or_stack_named_tables(
                 for dup_col in dup_cols:
                     base_col = str(dup_col)[:-4]
                     if base_col in group_df.columns:
+                        # combine_first() garde silencieusement la valeur de
+                        # base_col dès qu'elle est non-nulle, SANS jamais
+                        # vérifier si dup_col a aussi une valeur non-nulle
+                        # mais DIFFÉRENTE — un vrai conflit entre deux
+                        # feuilles (ex. statut 'Active' dans l'une,
+                        # 'Disabled' dans l'autre pour le MÊME compte)
+                        # serait alors résolu en silence, la valeur perdue
+                        # disparaissant sans aucune trace. Détecté et
+                        # signalé explicitement avant la fusion.
+                        conflict_mask = (
+                            group_df[base_col].notna()
+                            & group_df[dup_col].notna()
+                            & (group_df[base_col].astype(str) != group_df[dup_col].astype(str))
+                        )
+                        if conflict_mask.any():
+                            conflicting_users = group_df.loc[conflict_mask, "username"].astype(str).tolist()
+                            sample = ", ".join(conflicting_users[:10])
+                            more = f" (+{len(conflicting_users) - 10} autre(s))" if len(conflicting_users) > 10 else ""
+                            logger.warning(
+                                f"Conflit de données détecté en fusionnant '{other_name}' dans le bloc "
+                                f"en cours pour la colonne '{base_col}' : {len(conflicting_users)} compte(s) "
+                                f"ont des valeurs DIFFÉRENTES entre les deux sources ({sample}{more}). "
+                                f"La valeur de la première source ('{members[0]}') est "
+                                f"conservée, celle de '{other_name}' est perdue — à vérifier manuellement "
+                                f"si ces comptes/systèmes sont sensibles."
+                            )
                         group_df[base_col] = group_df[base_col].combine_first(group_df[dup_col])
                     else:
                         group_df[base_col] = group_df[dup_col]
@@ -1105,6 +1230,11 @@ def _load_single_file(
         raise IngestionError(
             f"Format de fichier non supporté : {path.suffix}. "
             f"Formats acceptés : {', '.join(SUPPORTED_EXTENSIONS)}, .zip"
+        )
+
+    if raw.empty:
+        raise IngestionError(
+            f"Le fichier '{path.name}' est vide ou ne contient aucune ligne exploitable."
         )
 
     if header_already_named:
