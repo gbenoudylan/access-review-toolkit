@@ -70,6 +70,10 @@ COLUMN_MAPPING = {
         "memberof",  # LDAP : groupes d'appartenance
         "assigned user roles", "user roles", "assigned roles",  # variantes espacées
     ],
+    "description": [
+        "description", "job_description", "job description", "account_description",
+        "account description", "notes", "commentaire", "commentaires",
+    ],
     "account_status": [
         "account_status", "status", "statut", "etat_compte", "compte_status",
         "account_enabled", "statut_compte", "statut compte", "etat du compte",

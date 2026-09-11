@@ -23,7 +23,7 @@ from analysis.sod_detection import detect_sod_conflicts, load_custom_sod_matrix
 from analysis.review_workflow import (
     attach_review_status, review_summary, apply_review_decision, VALID_STATUSES, get_audit_trail,
 )
-from reporting.export import generate_excel_report, generate_pdf_report, generate_word_report, compute_control_coverage
+from reporting.export import generate_excel_report, generate_pdf_report, generate_word_report, compute_control_coverage, default_report_filename
 
 st.set_page_config(page_title="Access Review Toolkit", page_icon="🔐", layout="wide")
 
@@ -485,7 +485,7 @@ def main():
                 buf = BytesIO(tmp_xlsx.read_bytes())
             st.download_button(
                 "Télécharger le rapport Excel", data=buf.getvalue(),
-                file_name="rapport_revue_acces.xlsx",
+                file_name=default_report_filename(filtered, "xlsx"),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
@@ -542,7 +542,7 @@ def main():
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(
                 "Télécharger le rapport PDF", data=buf.getvalue(),
-                file_name="rapport_revue_acces.pdf", mime="application/pdf",
+                file_name=default_report_filename(filtered, "pdf"), mime="application/pdf",
                 use_container_width=True,
             )
     with report_col3:
@@ -566,7 +566,7 @@ def main():
                 buf = BytesIO(tmp_docx.read_bytes())
             st.download_button(
                 "Télécharger le rapport Word", data=buf.getvalue(),
-                file_name="rapport_revue_acces.docx",
+                file_name=default_report_filename(filtered, "docx"),
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
             )

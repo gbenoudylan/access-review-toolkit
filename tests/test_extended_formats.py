@@ -504,7 +504,7 @@ def test_pdf_report_shows_ocr_warning_when_flagged():
     output = generate_pdf_report(result, "output/test_ocr_flag.pdf")
     with pdfplumber.open(output) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    assert "AVERTISSEMENT" in full_text
+    assert "WARNING" in full_text
     assert "OCR" in full_text
     print("OK - test_pdf_report_shows_ocr_warning_when_flagged")
 

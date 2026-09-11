@@ -38,8 +38,8 @@ def test_generate_excel_report(tmp_path):
 
     from openpyxl import load_workbook
     wb = load_workbook(result)
-    assert "Synthèse" in wb.sheetnames
-    assert "Plan de revue" in wb.sheetnames
+    assert "Summary" in wb.sheetnames
+    assert "Review Plan" in wb.sheetnames
     print(f"OK - test_generate_excel_report ({result.stat().st_size} octets)")
 
 
@@ -103,7 +103,7 @@ def test_pdf_report_includes_signoff_names_when_provided():
     assert "Test Preparateur" in full_text
     assert "Test Revu" in full_text
     assert "Test Approuve" in full_text
-    assert "I. OBJECTIF" in full_text
+    assert "I. OBJECTIVE" in full_text
     assert "II. PRINCIPLES OF APPLICATION ACCOUNT CREATION" in full_text
     assert "VALIDATION" in full_text
     print("OK - test_pdf_report_includes_signoff_names_when_provided")
@@ -133,14 +133,14 @@ def test_pdf_report_includes_header_and_controls_reference():
     assert "Test Editor" in full_text
     assert "Test App" in full_text
     assert "Version 2.0" in full_text
-    assert "I. OBJECTIF" in full_text
-    assert "Comptes dormants" in full_text
+    assert "I. OBJECTIVE" in full_text
+    assert "Dormant Accounts" in full_text
     print("OK - test_pdf_report_includes_header_and_controls_reference")
 
 
 def test_template_sections_always_present_regardless_of_flag():
     """
-    Depuis la reproduction fidèle du template (I. OBJECTIF, II. PRINCIPLES...),
+    Depuis la reproduction fidèle du template (I. OBJECTIVE, II. PRINCIPLES...),
     ces sections font partie intégrante du document officiel et ne sont plus
     conditionnées par include_controls_reference — ce paramètre est conservé
     pour compatibilité mais n'a plus d'effet sur ces sections spécifiques.
@@ -155,7 +155,7 @@ def test_template_sections_always_present_regardless_of_flag():
     output = generate_pdf_report(result, "output/test_no_controls.pdf", include_controls_reference=False)
     with pdfplumber.open(output) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    assert "I. OBJECTIF" in full_text
+    assert "I. OBJECTIVE" in full_text
     assert "II. PRINCIPLES OF APPLICATION ACCOUNT CREATION" in full_text
     print("OK - test_template_sections_always_present_regardless_of_flag")
 
@@ -402,9 +402,9 @@ def test_data_quality_section_appears_in_pdf_when_issues_found():
     output = generate_pdf_report(result, "output/test_quality_regression.pdf")
     with pdfplumber.open(output) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    assert "Qualité des données" in full_text
-    assert "Identifiants de compte manquants" in full_text
-    assert "Statuts de compte non reconnus" in full_text
+    assert "Data Quality" in full_text
+    assert "Missing account identifiers" in full_text
+    assert "Unrecognized account statuses" in full_text
     print("OK - test_data_quality_section_appears_in_pdf_when_issues_found")
 
 
@@ -495,7 +495,7 @@ def test_word_report_content_matches_pdf_data():
             full_text += "\n" + " ".join(cell.text for cell in row.cells)
     assert "jdupont" in full_text
     assert "2.Dormant Accounts" in full_text
-    assert "I. OBJECTIF" in full_text
+    assert "I. OBJECTIVE" in full_text
     print("OK - test_word_report_content_matches_pdf_data")
 
 
@@ -605,12 +605,12 @@ def test_control_action_clarification_note_present():
     pdf_output = generate_pdf_report(result, "output/test_clarif_pdf.pdf")
     with pdfplumber.open(pdf_output) as pdf:
         pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    assert "action prioritaire globale" in pdf_text
+    assert "overall priority" in pdf_text
 
     word_output = generate_word_report(result, "output/test_clarif_word.docx")
     doc = Document(str(word_output))
     word_text = "\n".join(p.text for p in doc.paragraphs)
-    assert "action prioritaire globale" in word_text
+    assert "overall priority" in word_text
     print("OK - test_control_action_clarification_note_present")
 
 
@@ -660,8 +660,8 @@ def test_word_report_includes_risk_score_explainability_section():
     output = generate_word_report(result, "output/test_word_risk_detail_regression.docx")
     doc = Document(str(output))
     full_text = "\n".join(p.text for p in doc.paragraphs)
-    assert "Score de risque" in full_text
-    assert "Employé parti" in full_text
+    assert "Risk Score" in full_text
+    assert "Departed employee" in full_text
     print("OK - test_word_report_includes_risk_score_explainability_section")
 
 
@@ -688,7 +688,7 @@ def test_word_report_includes_exceptions_section():
     for table in doc.tables:
         for row in table.rows:
             full_text += "\n" + " ".join(c.text for c in row.cells)
-    assert "Rapport des exceptions" in full_text
+    assert "Exceptions Report" in full_text
     assert "jdupont" in full_text
     print("OK - test_word_report_includes_exceptions_section")
 
@@ -756,9 +756,9 @@ def test_control_specific_justifying_columns_shown():
     # peu long s'enveloppe légitimement sur plusieurs lignes dans le PDF
     # (vérifié visuellement, rendu correct), ce que l'ordre de lecture du
     # texte extrait ne préserve pas toujours fidèlement.
-    assert "Dernière" in snippet and "connexion" in snippet
-    assert "Jours" in snippet and "sans" in snippet
-    assert "Action recommandée" in snippet
+    assert "Last" in snippet and "Login" in snippet
+    assert "Days" in snippet and "Since" in snippet
+    assert "Recommended Action" in snippet
     # Valeur en jours calculée dynamiquement plutôt que codée en dur : un
     # nombre figé casse silencieusement le test un jour plus tard (repéré
     # ici même), sans rapport avec un vrai changement de comportement.
@@ -822,3 +822,93 @@ def test_word_generation_performance_not_quadratic():
     # quadratique si jamais réintroduit (qui donnerait largement plus).
     assert elapsed < 5, f"Génération Word anormalement lente ({elapsed:.1f}s pour {n} comptes) — retour possible au comportement quadratique"
     print(f"OK - test_word_generation_performance_not_quadratic ({elapsed:.2f}s pour {n} comptes)")
+
+
+def test_default_report_filename_uses_system_and_date():
+    """Le nom de fichier calculé doit suivre le format demandé :
+    Rapport_revue_acces_<système>_<JJMMAAAA>.<extension>."""
+    import pandas as pd
+    from datetime import datetime
+    from reporting.export import default_report_filename
+
+    df_single = pd.DataFrame({"system": ["AD", "AD"]})
+    today = datetime.now().strftime("%d%m%Y")
+    assert default_report_filename(df_single, "pdf") == f"Rapport_revue_acces_AD_{today}.pdf"
+
+    df_multi = pd.DataFrame({"system": ["AD", "SAP"]})
+    assert default_report_filename(df_multi, "docx") == f"Rapport_revue_acces_AD-SAP_{today}.docx"
+
+    df_many = pd.DataFrame({"system": ["AD", "SAP", "VPN", "Cloud", "Firewall"]})
+    assert default_report_filename(df_many, "xlsx") == f"Rapport_revue_acces_Multi-systemes_{today}.xlsx"
+
+    df_none = pd.DataFrame({"username": ["u1"]})
+    assert default_report_filename(df_none, "pdf") == f"Rapport_revue_acces_Global_{today}.pdf"
+    print("OK - test_default_report_filename_uses_system_and_date")
+
+
+def test_validation_table_uses_new_role_structure():
+    """Le tableau de validation en en-tête doit utiliser les nouveaux
+    rôles demandés (Control Performer / Manager HUB / HUB senior Manager
+    LISO puis SYSTEM OWNER / OPCOS LISO / SM Information Security
+    OPCOS), plus l'ancienne structure (MANAGER / SENIOR MANAGER / CTIO)."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report, generate_word_report
+    import pdfplumber
+    from docx import Document
+
+    df = pd.DataFrame({"username": ["u1"], "system": ["AD"]})
+    result = analyze_access(df)
+
+    pdf_path = generate_pdf_report(result, "output/test_validation_roles.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    for role in ["Control Performer", "Manager HUB", "HUB senior Manager LISO",
+                 "SYSTEM OWNER", "OPCOS LISO", "SM Information Security OPCOS"]:
+        assert role in pdf_text, f"'{role}' absent du PDF"
+    validation_idx = pdf_text.find("VALIDATION")
+    validation_snippet = pdf_text[validation_idx:validation_idx + 400]
+    assert "CTIO:" not in validation_snippet
+
+    word_path = generate_word_report(result, "output/test_validation_roles.docx")
+    doc = Document(str(word_path))
+    word_text = "\n".join(p.text for p in doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            word_text += "\n" + " ".join(c.text for c in row.cells)
+    for role in ["Control Performer", "Manager HUB", "HUB senior Manager LISO",
+                 "SYSTEM OWNER", "OPCOS LISO", "SM Information Security OPCOS"]:
+        assert role in word_text, f"'{role}' absent du Word"
+    validation_idx_word = word_text.find("VALIDATION")
+    validation_snippet_word = word_text[validation_idx_word:validation_idx_word + 400]
+    assert "CTIO:" not in validation_snippet_word
+    print("OK - test_validation_table_uses_new_role_structure")
+
+
+def test_dump_completeness_includes_description_row():
+    """Le tableau Dump completeness and accuracy doit inclure une ligne
+    'Description' avec OK/NOK selon la présence réelle de la colonne."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report, generate_word_report
+    import pdfplumber
+    from docx import Document
+
+    df_with = pd.DataFrame({"username": ["u1"], "system": ["AD"], "description": ["Standard account"]})
+    result_with = analyze_access(df_with)
+    pdf_path = generate_pdf_report(result_with, "output/test_desc_present.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    idx = pdf_text.find("Field Status")
+    assert "Description OK" in pdf_text[idx:idx + 300]
+
+    df_without = pd.DataFrame({"username": ["u1"], "system": ["AD"]})
+    result_without = analyze_access(df_without)
+    word_path = generate_word_report(result_without, "output/test_desc_absent.docx")
+    doc = Document(str(word_path))
+    word_text = ""
+    for table in doc.tables:
+        for row in table.rows:
+            word_text += " | ".join(c.text for c in row.cells) + "\n"
+    assert "Description | NOK" in word_text
+    print("OK - test_dump_completeness_includes_description_row")

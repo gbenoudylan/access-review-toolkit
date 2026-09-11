@@ -138,6 +138,7 @@ DUMP_COMPLETENESS_COLUMNS = [
     ("User logon (User ID)", ["username", "user_id"]),
     ("User creation DATE", ["account_created_date"]),
     ("User rights or permissions", ["role"]),
+    ("Description", ["description"]),
     ("Password reset date", ["password_last_set"]),
     ("Last login date", ["last_login_date"]),
     ("Account status", ["account_status"]),
