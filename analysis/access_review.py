@@ -699,9 +699,28 @@ def analyze_access(
         lambda d: d is not None and d < 0
     )
 
+    # Fiabilité maximale, même principe que pour 'last_login_date'
+    # (compte jamais connecté = signalé, pas ignoré) : une date de
+    # dernier changement de mot de passe qu'on ne peut PAS déterminer —
+    # marqueur explicite ('No info', 'Never', vide...) OU simplement un
+    # format qu'on n'arrive pas à interpréter avec confiance — n'est PAS
+    # une raison de considérer le compte comme sain par défaut. Rester
+    # silencieux ici reviendrait à traiter "on ne sait pas" comme
+    # "c'est bon", alors que pour un audit de sécurité, l'absence
+    # d'information sur la dernière rotation d'un mot de passe est au
+    # moins aussi préoccupante qu'une rotation ancienne mais connue —
+    # potentiellement plus (jamais suivi, ou volontairement dissimulé).
+    # Ne s'applique QUE quand la colonne existe réellement (sinon le
+    # contrôle entier est désactivé plus haut, cas différent d'une
+    # valeur manquante ligne par ligne au sein d'une colonne présente).
+    df["password_change_unknown"] = (
+        ("password_last_set" in df.columns)
+        & df["days_since_password_change"].isna()
+    )
+
     df["is_password_stale"] = df["days_since_password_change"].apply(
         lambda d: d is not None and d > password_stale_threshold_days
-    )
+    ) | df["password_change_unknown"]
 
     if "password_status" in df.columns:
         df["has_non_expiring_password"] = df["password_status"].apply(_has_non_expiring_password)
@@ -876,7 +895,15 @@ def _compute_risk_score(row) -> tuple[int, list[str]]:
         reasons.append(("Mot de passe n'expirant jamais (privilégié)", 25))
     if row["is_password_stale"] and not row.get("is_service_account", False):
         score += 20
-        reasons.append(("Mot de passe périmé (> seuil retenu)", 20))
+        if row.get("password_change_unknown", False):
+            # Distinction honnête : on ne SAIT PAS que le seuil est
+            # dépassé ici, seulement qu'on ne peut pas le vérifier — même
+            # niveau de risque retenu (l'absence d'info est au moins
+            # aussi préoccupante), mais le libellé ne doit pas prétendre
+            # à une certitude qu'on n'a pas.
+            reasons.append(("Dernier changement de mot de passe inconnu (non vérifiable)", 20))
+        else:
+            reasons.append(("Mot de passe périmé (> seuil retenu)", 20))
     if row["has_no_manager"]:
         score += 15
         reasons.append(("Aucun manager/owner identifié", 15))

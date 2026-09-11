@@ -1058,3 +1058,35 @@ def test_duplicate_detection_normalizes_case_and_whitespace():
     result_diff = analyze_access(different_df)
     assert result_diff["is_duplicate_account"].tolist() == [False, False]
     print("OK - test_duplicate_detection_normalizes_case_and_whitespace")
+
+
+def test_unknown_password_change_treated_as_stale_not_ignored():
+    """
+    Demande explicite de fiabilité maximale, cohérente avec le principe
+    déjà appliqué à 'last_login_date' (compte jamais connecté = signalé,
+    pas ignoré) : une date de dernier changement de mot de passe qu'on
+    ne peut PAS déterminer ('No info', vide, ou simplement un format non
+    interprétable) doit être traitée comme le pire cas plutôt que
+    silencieusement considérée comme "pas de souci". Pour un audit de
+    sécurité, l'absence d'info est au moins aussi préoccupante qu'une
+    rotation ancienne mais connue.
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2", "u3", "u4"], "system": ["AD"] * 4,
+        "password_last_set": ["2020-01-01", "No info", "", None],
+    })
+    result = analyze_access(df)
+    assert result["is_password_stale"].tolist() == [True, True, True, True]
+    assert result["password_change_unknown"].tolist() == [False, True, True, True]
+    print("OK - test_unknown_password_change_treated_as_stale_not_ignored")
+
+
+def test_password_column_entirely_absent_control_stays_disabled():
+    """Si la colonne 'password_last_set' est ENTIÈREMENT absente du
+    fichier, le contrôle reste désactivé (pas de faux positif en masse)
+    — distinct du cas d'une valeur manquante ligne par ligne au sein
+    d'une colonne réellement présente."""
+    df = pd.DataFrame({"username": ["u1"], "system": ["AD"]})
+    result = analyze_access(df)
+    assert result.loc[0, "is_password_stale"] == False
+    print("OK - test_password_column_entirely_absent_control_stays_disabled")

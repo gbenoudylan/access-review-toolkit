@@ -212,6 +212,19 @@ def _prepare_export_df(df: pd.DataFrame) -> pd.DataFrame:
     export_df.columns = [label for _, label in available]
     export_df = _strip_control_characters(export_df)
 
+    # Une valeur manquante dans 'Jours sans changement MDP' finirait sinon
+    # en case vide (.fillna("") générique plus bas) — une ligne signalée
+    # comme mot de passe périmé SANS AUCUNE justification visible dans le
+    # tableau, alors que la raison même du signalement est justement
+    # l'absence de date exploitable. Rendu explicite pour rester honnête
+    # sur ce qu'on sait (une date ancienne connue) vs ce qu'on ne sait
+    # pas (aucune date exploitable) — les deux comptent comme signal de
+    # risque, mais ne doivent pas se ressembler dans le rapport.
+    if "Jours sans changement MDP" in export_df.columns:
+        export_df["Jours sans changement MDP"] = export_df["Jours sans changement MDP"].apply(
+            lambda v: "Inconnu (non vérifiable)" if pd.isna(v) else v
+        )
+
     risk_order = {"Critique": 0, "Élevé": 1, "Moyen": 2, "Faible": 3}
     if "Risque" in export_df.columns:
         export_df["_sort"] = export_df["Risque"].map(risk_order).fillna(99)
