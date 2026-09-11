@@ -454,6 +454,11 @@ def main():
         with header_col1:
             department = st.text_input("Département émetteur", placeholder="ex. Technology Department")
             application_scope = st.text_input("Périmètre / Application", placeholder="ex. Active Directory")
+            extraction_origin = st.text_input(
+                "Origine de l'extraction (nom du fichier)", placeholder="ex. Extraction ServiceNow mensuelle",
+                help="Remplace le nom de système déduit automatiquement dans le nom du fichier "
+                     "téléchargé. Laissé vide, le système est repris automatiquement comme avant.",
+            )
         with header_col2:
             editor = st.text_input("Éditeur du document", placeholder="Nom, Prénom")
             document_version = st.text_input("Version du document", value="1.0")
@@ -485,7 +490,7 @@ def main():
                 buf = BytesIO(tmp_xlsx.read_bytes())
             st.download_button(
                 "Télécharger le rapport Excel", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "xlsx"),
+                file_name=default_report_filename(filtered, "xlsx", extraction_origin=extraction_origin),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
@@ -542,7 +547,7 @@ def main():
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(
                 "Télécharger le rapport PDF", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "pdf"), mime="application/pdf",
+                file_name=default_report_filename(filtered, "pdf", extraction_origin=extraction_origin), mime="application/pdf",
                 use_container_width=True,
             )
     with report_col3:
@@ -566,7 +571,7 @@ def main():
                 buf = BytesIO(tmp_docx.read_bytes())
             st.download_button(
                 "Télécharger le rapport Word", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "docx"),
+                file_name=default_report_filename(filtered, "docx", extraction_origin=extraction_origin),
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
             )

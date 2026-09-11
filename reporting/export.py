@@ -403,33 +403,38 @@ def _current_quarter_label() -> str:
     return f"T{quarter} {now.year}"
 
 
-def default_report_filename(df: pd.DataFrame, extension: str) -> str:
+def default_report_filename(df: pd.DataFrame, extension: str, extraction_origin: str | None = None) -> str:
     """
     Calcule le nom de fichier recommandé pour un rapport généré :
-    'Rapport_revue_acces_<système>_<date DDMMAAAA>.<extension>' — utilisé
+    'Rapport_revue_acces_<origine>_<date DDMMAAAA>.<extension>' — utilisé
     par le dashboard pour le nom de téléchargement, et disponible pour
     tout appelant qui veut ce même nommage plutôt qu'un nom fixe.
 
-    Le système est déduit des valeurs réellement présentes dans la
-    colonne 'system' : un seul système -> son nom ; plusieurs systèmes
-    distincts -> concaténés par un tiret (borné à 3, au-delà "Multi-
-    systemes" pour ne pas produire un nom de fichier interminable) ;
+    `extraction_origin` : libellé libre donné par l'utilisateur pour
+    l'origine de l'extraction (ex. nom de l'outil source, du périmètre,
+    ou tout repère qui lui parle davantage qu'un nom de système ADAP) —
+    prioritaire sur le système quand renseigné. Laissé à None ou vide,
+    le système est déduit comme avant des valeurs réellement présentes
+    dans la colonne 'system' : un seul système -> son nom ; plusieurs
+    systèmes distincts -> concaténés par un tiret (borné à 3, au-delà
+    "Multi-systemes" pour ne pas produire un nom de fichier interminable) ;
     aucune colonne 'system' ou aucune valeur exploitable -> "Global".
     Les caractères non sûrs pour un nom de fichier (espaces, /, etc.)
     sont remplacés par "_".
     """
-    if "system" in df.columns:
+    if extraction_origin and extraction_origin.strip():
+        system_label = extraction_origin.strip()
+    elif "system" in df.columns:
         systems = sorted(df["system"].dropna().astype(str).str.strip().unique())
         systems = [s for s in systems if s]
+        if not systems:
+            system_label = "Global"
+        elif len(systems) <= 3:
+            system_label = "-".join(systems)
+        else:
+            system_label = "Multi-systemes"
     else:
-        systems = []
-
-    if not systems:
         system_label = "Global"
-    elif len(systems) <= 3:
-        system_label = "-".join(systems)
-    else:
-        system_label = "Multi-systemes"
 
     system_label = re.sub(r"[^A-Za-z0-9\-]+", "_", system_label).strip("_") or "Global"
     date_label = datetime.now().strftime("%d%m%Y")
@@ -826,13 +831,16 @@ def _build_control_subsections(
 
         if count is not None:
             elements.append(Paragraph(f"<b>{count}</b> account(s) concerned.", action_style))
+            elements.append(Spacer(1, 0.1 * cm))
+            elements.append(_build_owner_tracking_table(available_width))
             if subset is not None and len(subset):
+                elements.append(Spacer(1, 0.15 * cm))
                 table_cols = CONTROL_TABLE_COLUMNS.get(key)
                 elements.extend(_build_capped_account_table(subset, available_width, columns=table_cols))
         else:
             elements.append(Paragraph(note, note_style))
-        elements.append(Spacer(1, 0.12 * cm))
-        elements.append(_build_owner_tracking_table(available_width))
+            elements.append(Spacer(1, 0.1 * cm))
+            elements.append(_build_owner_tracking_table(available_width))
         elements.append(Spacer(1, 0.25 * cm))
     return elements
 
@@ -1322,6 +1330,8 @@ def generate_word_report(
         if count is not None:
             p = doc.add_paragraph()
             p.add_run(f"{count} account(s) concerned.").bold = True
+            doc.add_paragraph()
+            _docx_add_owner_tracking_table(doc)
             if subset is not None and len(subset):
                 default_cols = ["username", "full_name", "system", "review_action"]
                 cols = [c for c in (CONTROL_TABLE_COLUMNS.get(key) or default_cols) if c in subset.columns]
@@ -1329,13 +1339,14 @@ def generate_word_report(
                     # Pas de plafond ici : ce sont les 18 sections qui sont
                     # effectivement revues, la complétude prime sur la
                     # longueur du document.
+                    doc.add_paragraph()
                     display = subset[cols].fillna("").astype(str).map(_translate_value)
                     detail_rows = [[ALL_COLUMN_LABELS.get(c, c) for c in cols]] + display.values.tolist()
                     _docx_add_table(doc, detail_rows)
         else:
             doc.add_paragraph(note)
-        doc.add_paragraph()
-        _docx_add_owner_tracking_table(doc)
+            doc.add_paragraph()
+            _docx_add_owner_tracking_table(doc)
         doc.add_paragraph()
 
     # ---- V. CONCLUSION ----

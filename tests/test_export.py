@@ -912,3 +912,67 @@ def test_dump_completeness_includes_description_row():
             word_text += " | ".join(c.text for c in row.cells) + "\n"
     assert "Description | NOK" in word_text
     print("OK - test_dump_completeness_includes_description_row")
+
+
+def test_owner_tracking_table_appears_before_account_table():
+    """Demande explicite : le tableau de suivi (Owner/Comment/Due
+    Date/Status) doit apparaître AVANT le tableau nominatif des comptes
+    dans chaque section, pas après — dans le PDF et dans Word."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report, generate_word_report
+    import pdfplumber
+    from docx import Document
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "full_name": ["Jean Dupont"], "system": ["AD"],
+        "account_status": ["Active"], "last_login_date": ["2020-01-01"],
+    })
+    result = analyze_access(df)
+
+    pdf_path = generate_pdf_report(result, "output/test_tracking_order.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    idx = full_text.find("2.Dormant Accounts")
+    snippet = full_text[idx:idx + 400]
+    assert snippet.find("Owner") < snippet.find("jdupont")
+
+    word_path = generate_word_report(result, "output/test_tracking_order.docx")
+    doc = Document(str(word_path))
+    body_elements = list(doc.element.body)
+    tracking_idx = account_idx = None
+    for i, el in enumerate(body_elements):
+        text = el.text if hasattr(el, "text") else ""
+        if el.tag.endswith("}tbl"):
+            from docx.table import Table as _T
+            table = _T(el, doc)
+            header = [c.text for c in table.rows[0].cells]
+            if header == ["Owner", "Comment", "Due Date", "Status"] and tracking_idx is None:
+                tracking_idx = i
+            elif any("jdupont" in c.text for row in table.rows for c in row.cells) and account_idx is None:
+                account_idx = i
+    assert tracking_idx is not None and account_idx is not None
+    assert tracking_idx < account_idx
+    print("OK - test_owner_tracking_table_appears_before_account_table")
+
+
+def test_extraction_origin_overrides_filename_system():
+    """L'origine de l'extraction, quand renseignée, remplace le nom de
+    système déduit automatiquement dans le nom de fichier — laissée
+    vide ou absente, le comportement précédent (système déduit) reste
+    inchangé."""
+    import pandas as pd
+    from datetime import datetime
+    from reporting.export import default_report_filename
+
+    df = pd.DataFrame({"system": ["AD"]})
+    today = datetime.now().strftime("%d%m%Y")
+
+    assert default_report_filename(df, "pdf") == f"Rapport_revue_acces_AD_{today}.pdf"
+    assert (
+        default_report_filename(df, "pdf", extraction_origin="Extraction ServiceNow mensuelle")
+        == f"Rapport_revue_acces_Extraction_ServiceNow_mensuelle_{today}.pdf"
+    )
+    assert default_report_filename(df, "pdf", extraction_origin="   ") == f"Rapport_revue_acces_AD_{today}.pdf"
+    assert default_report_filename(df, "pdf", extraction_origin=None) == f"Rapport_revue_acces_AD_{today}.pdf"
+    print("OK - test_extraction_origin_overrides_filename_system")
