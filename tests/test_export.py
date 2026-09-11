@@ -787,3 +787,38 @@ def test_compute_control_coverage_shared_by_pdf_and_dashboard():
     assert dormant_entry[2] == "⚠️"  # jdupont est dormant -> anomalie détectée
     assert dormant_entry[3] == "1"
     print("OK - test_compute_control_coverage_shared_by_pdf_and_dashboard")
+
+
+def test_word_generation_performance_not_quadratic():
+    """
+    Vrai bug de performance trouvé et corrigé : table.cell(i, j) de
+    python-docx reconstruit TOUTE la structure de fusion de cellules de
+    la table depuis le XML à CHAQUE appel — utilisé dans une double
+    boucle de remplissage, ça rendait la génération quadratique en
+    nombre de lignes (plus de 300 secondes pour 500 comptes, contre
+    ~3 secondes après correction). Remplacé par table.rows[i].cells[j],
+    qui ne scanne que la ligne concernée. Ce test vérifie que la
+    génération reste rapide pour un volume représentatif, pas
+    seulement qu'elle produit un résultat correct.
+    """
+    import time
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+
+    n = 200
+    df = pd.DataFrame({
+        "username": [f"user{i}" for i in range(n)],
+        "full_name": [f"Nom Prenom {i}" for i in range(n)],
+        "system": ["AD"] * n,
+        "account_status": ["Active"] * n,
+    })
+    result = analyze_access(df)
+    t0 = time.time()
+    generate_word_report(result, "output/test_perf_regression.docx")
+    elapsed = time.time() - t0
+    # Large marge de sécurité (5s pour 200 comptes) : le but n'est pas de
+    # chronométrer précisément mais d'attraper un retour au comportement
+    # quadratique si jamais réintroduit (qui donnerait largement plus).
+    assert elapsed < 5, f"Génération Word anormalement lente ({elapsed:.1f}s pour {n} comptes) — retour possible au comportement quadratique"
+    print(f"OK - test_word_generation_performance_not_quadratic ({elapsed:.2f}s pour {n} comptes)")

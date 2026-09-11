@@ -879,9 +879,17 @@ def _docx_add_table(doc, rows: list, col_widths_cm: list[float] | None = None, h
     table = doc.add_table(rows=len(rows), cols=len(rows[0]))
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = "Table Grid"
-    for i, row in enumerate(rows):
+    # table.cell(i, j) reconstruit TOUTE la structure de fusion de cellules
+    # de la table depuis le XML à CHAQUE appel (limitation connue de
+    # python-docx) — utilisé dans une double boucle, ça rend le
+    # remplissage quadratique en nombre de lignes (constaté : ~13s pour
+    # seulement 100 lignes, aurait dépassé 5 minutes pour 500 comptes).
+    # table.rows[i].cells[j] ne scanne que la ligne concernée, pas toute
+    # la table — même résultat, sans le recalcul répété.
+    for i, (table_row, row) in enumerate(zip(table.rows, rows)):
+        cells = table_row.cells
         for j, value in enumerate(row):
-            cell = table.cell(i, j)
+            cell = cells[j]
             if header and i == 0:
                 _docx_set_cell(cell, value, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=9)
                 _docx_shade_cell(cell, "1F2937")
