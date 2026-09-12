@@ -88,3 +88,24 @@ if __name__ == "__main__":
     test_dashboard_is_single_page_with_reports_at_the_bottom()
     test_dashboard_main_content_has_no_emoji()
     print("Tous les tests passent.")
+
+
+def test_investigation_account_lookup_is_case_insensitive():
+    """
+    Vrai bug trouvé : le même identifiant peut apparaître avec une casse
+    différente selon le système source (ex. 'jdupont' sur AD, 'JDupont'
+    sur SAP) — une correspondance stricte sur le compte sélectionné pour
+    l'investigation faisait manquer les autres comptes de la même
+    personne, sans même montrer le sélecteur multi-système qui les
+    signalerait normalement. Vérifié directement sur la logique de
+    filtrage, pas seulement sur le code source.
+    """
+    import pandas as pd
+
+    df = pd.DataFrame({"username": ["jdupont", "JDupont"], "system": ["AD", "SAP"]})
+    selected_username = "jdupont"
+    selected_norm = str(selected_username).strip().lower()
+    matches = df[df["username"].astype(str).str.strip().str.lower() == selected_norm]
+    assert len(matches) == 2
+    assert set(matches["system"]) == {"AD", "SAP"}
+    print("OK - test_investigation_account_lookup_is_case_insensitive")

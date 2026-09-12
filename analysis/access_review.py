@@ -619,12 +619,19 @@ def analyze_access(
     # Le mélanger aux vrais dormants diluerait la priorité réelle. Suivi
     # séparément (is_locked) plutôt qu'ignoré : un compte verrouillé
     # depuis longtemps reste un sujet de nettoyage à part entière.
-    LOCKED_MARKERS = {"locked", "verrouillé", "verrouille", "bloqué", "bloque"}
+    #
+    # Frontière de mot (\b) plutôt qu'une simple sous-chaîne : sans elle,
+    # 'Unlocked' (l'inverse exact !), 'Déverrouillé' ou 'Débloqué'
+    # contiennent respectivement 'locked'/'verrouillé'/'bloqué' comme
+    # sous-chaîne et seraient signalés à tort comme verrouillés — un
+    # faux positif sérieux puisque ces statuts signifient précisément le
+    # contraire.
+    LOCKED_MARKERS_RE = re.compile(
+        r"\b(locked|verrouill[ée]|bloqu[ée])\b", re.IGNORECASE
+    )
     if "account_status" in df.columns:
-        status_lower = df["account_status"].astype(str).str.strip().str.lower()
-        df["is_locked"] = status_lower.apply(
-            lambda s: any(marker in s for marker in LOCKED_MARKERS)
-        )
+        status_lower = df["account_status"].astype(str).str.strip()
+        df["is_locked"] = status_lower.apply(lambda s: bool(LOCKED_MARKERS_RE.search(s)))
         is_active_status = df["account_status"].apply(_is_active_account)
         df["is_dormant"] = df["is_dormant"] & is_active_status
         df["is_never_used"] = df["is_never_used"] & is_active_status

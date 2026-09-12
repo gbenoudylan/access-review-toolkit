@@ -19,6 +19,8 @@ import logging
 
 import pandas as pd
 
+from analysis.hr_crossref import _normalize_name_bag
+
 logger = logging.getLogger("sod")
 
 # Matrice de conflits : chaque paire de rôles listée ne doit jamais être
@@ -104,10 +106,20 @@ def detect_sod_conflicts(
         return df
 
     # Regroupe tous les rôles détenus par chaque utilisateur (un utilisateur
-    # peut apparaître sur plusieurs lignes, une par système/rôle)
+    # peut apparaître sur plusieurs lignes, une par système/rôle).
+    # Clé NORMALISÉE (espaces/casse) : la même personne peut apparaître avec
+    # une casse différente selon le système source (ex. 'jdupont' sur AD,
+    # 'JDupont' sur SAP) — sans cette normalisation, un conflit SoD réparti
+    # sur plusieurs systèmes (ex. créateur de paiement sur l'un, validateur
+    # sur l'autre) serait scindé en deux identités distinctes et jamais
+    # détecté, alors que c'est exactement le genre de conflit que ce
+    # contrôle doit attraper.
+    def _norm_user(u):
+        return str(u).strip().lower()
+
     roles_per_user: dict[str, set[str]] = {}
     for _, row in df.iterrows():
-        user = row["username"]
+        user = _norm_user(row["username"])
         raw_roles = str(row["role"]) if pd.notna(row["role"]) else ""
         for r in raw_roles.replace(";", ",").split(","):
             r_norm = _normalize(r)
@@ -124,8 +136,60 @@ def detect_sod_conflicts(
                 conflict_by_user[user] = f"{role_a} + {role_b}"
                 break  # un conflit détecté suffit à flaguer l'utilisateur
 
-    df["sod_conflict"] = df["username"].map(lambda u: u in conflict_by_user)
-    df["sod_conflict_detail"] = df["username"].map(lambda u: conflict_by_user.get(u, ""))
+    df["sod_conflict"] = df["username"].map(lambda u: _norm_user(u) in conflict_by_user)
+    df["sod_conflict_detail"] = df["username"].map(lambda u: conflict_by_user.get(_norm_user(u), ""))
+
+    # Second passage, par NOM COMPLET : un identifiant technique diffère
+    # très souvent d'un système à l'autre (chaque système génère son
+    # propre identifiant de connexion — 'jdupont' sur AD, 'jean.dupont'
+    # sur SAP, un matricule ailleurs) — la simple normalisation de casse
+    # ci-dessus ne suffit alors pas à relier les deux comptes de la même
+    # personne, et un conflit réparti sur ces systèmes resterait invisible.
+    # Le nom complet reste souvent la seule donnée commune aux deux
+    # systèmes. Volontairement séparé du passage par identifiant : deux
+    # personnes DIFFÉRENTES peuvent porter le même nom (homonymes), donc
+    # ce repli est un signal de MOINDRE confiance, marqué comme tel dans
+    # le détail plutôt que mélangé aux conflits confirmés par identifiant.
+    if "full_name" in df.columns:
+        roles_per_name: dict[tuple, set[str]] = {}
+        for _, row in df.iterrows():
+            name_key = _normalize_name_bag(row.get("full_name"))
+            if not name_key:
+                continue
+            raw_roles = str(row["role"]) if pd.notna(row["role"]) else ""
+            for r in raw_roles.replace(";", ",").split(","):
+                r_norm = _normalize(r)
+                if r_norm:
+                    roles_per_name.setdefault(name_key, set()).add(r_norm)
+
+        conflict_by_name: dict[tuple, str] = {}
+        for name_key, roles in roles_per_name.items():
+            for role_a, role_b in conflicts:
+                role_a_norm, role_b_norm = _normalize(role_a), _normalize(role_b)
+                has_a = any(role_a_norm in r for r in roles)
+                has_b = any(role_b_norm in r for r in roles)
+                if has_a and has_b:
+                    conflict_by_name[name_key] = f"{role_a} + {role_b}"
+                    break
+
+        if conflict_by_name:
+            name_keys = df["full_name"].apply(_normalize_name_bag)
+            already_flagged = df["sod_conflict"]
+            name_conflict_mask = name_keys.isin(conflict_by_name) & ~already_flagged
+            if name_conflict_mask.any():
+                logger.warning(
+                    f"{int(name_conflict_mask.sum())} compte(s) signalé(s) en conflit SoD "
+                    "uniquement par rapprochement de NOM (identifiant technique différent "
+                    "d'un système à l'autre) — confiance moindre qu'un conflit confirmé par "
+                    "identifiant : à vérifier qu'il ne s'agit pas de deux personnes "
+                    "homonymes distinctes."
+                )
+            df.loc[name_conflict_mask, "sod_conflict"] = True
+            df.loc[name_conflict_mask, "sod_conflict_detail"] = name_keys[name_conflict_mask].map(
+                lambda k: f"{conflict_by_name[k]} (rapproché par nom, PAS par identifiant "
+                          f"— à vérifier : pourrait être deux personnes homonymes distinctes "
+                          f"plutôt qu'un vrai conflit)"
+            )
 
     n_conflicts = len(conflict_by_user)
     if n_conflicts:

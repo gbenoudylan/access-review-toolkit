@@ -946,8 +946,23 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
         # Comparaison nominative : créés / supprimés / réactivés / profils modifiés
         if "username" in df.columns and "username" in previous_df.columns:
             key_col = "username"
-            current_keys = set(df[key_col].dropna())
-            previous_keys = set(previous_df[key_col].dropna())
+            # Comparaison sur une clé NORMALISÉE (espaces/casse), pas sur le nom
+            # brut : deux cycles de revue peuvent provenir d'exports légèrement
+            # différents (ex. 'jdupont' vs 'JDupont' si l'outil d'export a
+            # changé entre deux mois) — sans cette normalisation, le MÊME
+            # compte serait signalé à tort comme supprimé puis recréé, un faux
+            # signal trompeur pour un rapport d'audit. Le nom d'affichage
+            # original (première valeur rencontrée) reste utilisé partout
+            # ailleurs.
+            def _norm_key(v):
+                return str(v).strip().lower()
+
+            current_series = df[key_col].dropna()
+            previous_series = previous_df[key_col].dropna()
+            current_display = {_norm_key(v): v for v in reversed(current_series.tolist())}
+            previous_display = {_norm_key(v): v for v in reversed(previous_series.tolist())}
+            current_keys = set(current_display)
+            previous_keys = set(previous_display)
             created = current_keys - previous_keys
             deleted = previous_keys - current_keys
             common = current_keys & previous_keys
@@ -956,11 +971,12 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
             profile_modified_accounts = []
             escalated_accounts = []
             if common:
-                curr_idx = df.set_index(key_col)
-                prev_idx = previous_df.set_index(key_col)
-                for uname in common:
-                    curr_row = curr_idx.loc[uname]
-                    prev_row = prev_idx.loc[uname]
+                curr_idx = df.set_index(df[key_col].map(_norm_key))
+                prev_idx = previous_df.set_index(previous_df[key_col].map(_norm_key))
+                for norm_uname in common:
+                    curr_row = curr_idx.loc[norm_uname]
+                    prev_row = prev_idx.loc[norm_uname]
+                    uname = current_display[norm_uname]
                     if isinstance(curr_row, pd.DataFrame):
                         curr_row = curr_row.iloc[0]
                     if isinstance(prev_row, pd.DataFrame):
@@ -984,11 +1000,13 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
                         escalated_accounts.append(str(uname))
 
             reactivated, profile_modified = len(reactivated_accounts), len(profile_modified_accounts)
+            created_display = sorted(current_display[k] for k in created)
+            deleted_display = sorted(previous_display[k] for k in deleted)
             stats.update({
                 "created": len(created), "deleted": len(deleted),
                 "reactivated": reactivated, "profile_modified": profile_modified,
                 "privilege_escalation": len(escalated_accounts),
-                "created_accounts": sorted(created), "deleted_accounts": sorted(deleted),
+                "created_accounts": created_display, "deleted_accounts": deleted_display,
                 "reactivated_accounts": reactivated_accounts,
                 "profile_modified_accounts": profile_modified_accounts,
                 "privilege_escalation_accounts": escalated_accounts,

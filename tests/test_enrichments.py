@@ -179,3 +179,75 @@ if __name__ == "__main__":
     test_workflow_summary_counts()
 
     print("\nTous les tests sont passés.")
+
+
+def test_sod_conflict_detected_across_systems_with_different_case():
+    """
+    Vrai bug trouvé : la même personne apparaissant avec une casse
+    différente selon le système source (ex. 'jdupont' sur AD, 'JDupont'
+    sur SAP — deux systèmes maintenus séparément) faisait scinder ses
+    rôles en deux identités distinctes, ratant un conflit SoD réparti
+    sur plusieurs systèmes (ex. créateur de paiement sur l'un,
+    validateur sur l'autre) — exactement le genre de conflit que ce
+    contrôle doit attraper.
+    """
+    import pandas as pd
+    from analysis.sod_detection import detect_sod_conflicts
+
+    df = pd.DataFrame({
+        "username": ["jdupont", "JDupont"], "system": ["AD", "SAP"],
+        "role": ["Créer Paiement", "Valider Paiement"],
+    })
+    result = detect_sod_conflicts(df)
+    assert result["sod_conflict"].tolist() == [True, True]
+
+    # Deux personnes réellement différentes ne doivent pas être fusionnées
+    different_df = pd.DataFrame({
+        "username": ["jdupont", "mmartin"], "system": ["AD", "SAP"],
+        "role": ["Créer Paiement", "Valider Paiement"],
+    })
+    result_diff = detect_sod_conflicts(different_df)
+    assert result_diff["sod_conflict"].tolist() == [False, False]
+    print("OK - test_sod_conflict_detected_across_systems_with_different_case")
+
+
+def test_sod_conflict_detected_across_systems_with_different_identifiers():
+    """
+    Trouvé en répondant à une question de fiabilité : un identifiant
+    technique diffère très souvent d'un système à l'autre (pas juste
+    une casse différente — 'jdupont' sur AD vs 'jean.dupont' sur SAP),
+    ce que la normalisation de casse seule ne peut pas relier. Le nom
+    complet reste souvent la seule donnée commune : utilisé en repli,
+    avec un marquage explicite de confiance moindre (homonymes possibles)
+    plutôt que mélangé aux conflits confirmés par identifiant.
+    """
+    import pandas as pd
+    from analysis.sod_detection import detect_sod_conflicts
+
+    df = pd.DataFrame({
+        "username": ["jdupont", "jean.dupont"], "system": ["AD", "SAP"],
+        "full_name": ["Jean Dupont", "Jean Dupont"],
+        "role": ["Créer Paiement", "Valider Paiement"],
+    })
+    result = detect_sod_conflicts(df)
+    assert result["sod_conflict"].tolist() == [True, True]
+    assert "homonymes" in result.loc[0, "sod_conflict_detail"]
+    print("OK - test_sod_conflict_detected_across_systems_with_different_identifiers")
+
+
+def test_sod_name_fallback_does_not_override_username_based_confidence_label():
+    """Quand le conflit est déjà confirmé par identifiant (même
+    personne, casse différente), le détail ne doit pas être remplacé
+    par le libellé de moindre confiance du repli par nom."""
+    import pandas as pd
+    from analysis.sod_detection import detect_sod_conflicts
+
+    df = pd.DataFrame({
+        "username": ["jdupont", "JDupont"], "system": ["AD", "SAP"],
+        "full_name": ["Jean Dupont", "Jean Dupont"],
+        "role": ["Créer Paiement", "Valider Paiement"],
+    })
+    result = detect_sod_conflicts(df)
+    assert result["sod_conflict"].tolist() == [True, True]
+    assert "homonymes" not in result.loc[0, "sod_conflict_detail"]
+    print("OK - test_sod_name_fallback_does_not_override_username_based_confidence_label")

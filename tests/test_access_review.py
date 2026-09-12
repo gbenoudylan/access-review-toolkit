@@ -1090,3 +1090,21 @@ def test_password_column_entirely_absent_control_stays_disabled():
     result = analyze_access(df)
     assert result.loc[0, "is_password_stale"] == False
     print("OK - test_password_column_entirely_absent_control_stays_disabled")
+
+
+def test_locked_detection_not_fooled_by_negation():
+    """
+    Vrai bug trouvé : 'Unlocked' (l'inverse exact !), 'Déverrouillé' et
+    'Débloqué' contiennent respectivement 'locked'/'verrouillé'/'bloqué'
+    comme sous-chaîne et étaient signalés à tort comme verrouillés — la
+    détection se faisait sur une simple sous-chaîne, sans frontière de
+    mot. Corrigé avec \\b, qui exclut correctement ces négations tout en
+    gardant la détection des vraies formes verrouillées.
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2", "u3", "u4", "u5"], "system": ["AD"] * 5,
+        "account_status": ["Unlocked", "Déverrouillé", "Débloqué", "Locked", "Verrouillé"],
+    })
+    result = analyze_access(df)
+    assert result["is_locked"].tolist() == [False, False, False, True, True]
+    print("OK - test_locked_detection_not_fooled_by_negation")

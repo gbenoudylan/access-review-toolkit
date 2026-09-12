@@ -994,3 +994,40 @@ def test_controls_reference_table_sn_column_is_narrow():
     word_source = inspect.getsource(export.generate_word_report)
     assert "[0.7, 4, 12.3]" in word_source
     print("OK - test_controls_reference_table_sn_column_is_narrow")
+
+
+def test_review_comparison_normalizes_case_for_created_deleted():
+    """
+    Vrai bug trouvé : la comparaison créés/supprimés entre deux cycles de
+    revue (contrôles 10/13) se faisait sur le nom de compte brut, sans
+    normalisation — 'jdupont' (revue précédente) et 'JDupont' (revue
+    actuelle, casse différente si l'export a changé entre deux mois)
+    étaient traités comme deux comptes DIFFÉRENTS : un faux "supprimé"
+    et un faux "créé" pour le MÊME compte, un signal trompeur pour un
+    rapport d'audit.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import _build_review_comparison_section
+    from reportlab.lib.styles import getSampleStyleSheet
+
+    styles = getSampleStyleSheet()
+    previous = pd.DataFrame({
+        "username": ["jdupont", "old_user"], "system": ["AD"] * 2,
+        "account_status": ["Active", "Active"],
+    })
+    current = pd.DataFrame({
+        "username": ["JDupont", "new_user"], "system": ["AD"] * 2,
+        "account_status": ["Active", "Active"],
+    })
+    prev_result = analyze_access(previous)
+    curr_result = analyze_access(current)
+    _, stats = _build_review_comparison_section(
+        curr_result, prev_result, styles["Heading2"], styles["Normal"], 400
+    )
+    # Le seul vrai changement (new_user créé, old_user supprimé) doit
+    # être détecté ; jdupont/JDupont ne doit PAS apparaître comme
+    # changement.
+    assert stats["created"] == 1 and stats["created_accounts"] == ["new_user"]
+    assert stats["deleted"] == 1 and stats["deleted_accounts"] == ["old_user"]
+    print("OK - test_review_comparison_normalizes_case_for_created_deleted")

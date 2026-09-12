@@ -37,8 +37,9 @@ def test_old_single_dict_format_migrated_transparently():
     compte, sans historique) doit être migré silencieusement vers une
     liste, sans perdre la décision déjà enregistrée."""
     store_path = tempfile.mktemp(suffix=".json")
+    from analysis.review_workflow import _account_key
     with open(store_path, "w") as f:
-        json.dump({"user1::AD": {"status": "En attente", "validated_by": "", "comment": "", "date": "2026-01-01 10:00"}}, f)
+        json.dump({_account_key("user1", "AD"): {"status": "En attente", "validated_by": "", "comment": "", "date": "2026-01-01 10:00"}}, f)
 
     apply_review_decision("user1", "AD", "Révoqué", "reviewer01", "Test", store_path)
     history = get_audit_trail("user1", "AD", store_path)
@@ -124,3 +125,21 @@ def test_account_investigation_data_flow_no_crash():
 
     os.remove(store_path)
     print("OK - test_account_investigation_data_flow_no_crash")
+
+
+def test_account_key_case_insensitive():
+    """
+    Vrai bug trouvé : une décision de revue enregistrée pour 'jdupont'
+    disparaissait complètement si le compte réapparaissait sous une
+    casse différente au cycle de revue suivant (ex. export légèrement
+    différent) — un reviewer verrait à tort 'En attente' pour un compte
+    déjà validé, l'audit trail semblant vide alors qu'une décision
+    existe réellement.
+    """
+    store_path = tempfile.mktemp(suffix=".json")
+    apply_review_decision("jdupont", "AD", "Validé - accès légitime", "reviewer1", "OK", store_path=store_path)
+    trail = get_audit_trail("JDupont", "AD", store_path=store_path)
+    assert len(trail) == 1
+    assert trail[0]["status"] == "Validé - accès légitime"
+    os.remove(store_path)
+    print("OK - test_account_key_case_insensitive")

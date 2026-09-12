@@ -31,8 +31,14 @@ VALID_STATUSES = ["En attente", "Validé - accès légitime", "Révoqué"]
 
 
 def _account_key(username: str, system: str) -> str:
-    """Clé unique par compte : un même username peut avoir plusieurs comptes système."""
-    return f"{username}::{system}"
+    """Clé unique par compte : un même username peut avoir plusieurs
+    comptes système. Normalisée (espaces/casse) : sans quoi une décision
+    enregistrée pour 'jdupont' disparaîtrait silencieusement de l'audit
+    trail si le compte réapparaît sous une casse différente au cycle de
+    revue suivant (ex. export légèrement différent) — un reviewer
+    verrait à tort 'En attente' pour un compte déjà validé, et l'audit
+    trail semblerait vide alors qu'une décision existe réellement."""
+    return f"{str(username).strip().lower()}::{str(system).strip().lower()}"
 
 
 def _load_store(store_path: Path | str) -> dict:

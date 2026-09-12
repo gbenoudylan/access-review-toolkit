@@ -303,7 +303,14 @@ def main():
             st.info("Aucun compte exploitable dans ce fichier.")
         else:
             selected_username = st.selectbox("Compte à investiguer", options=usernames_available)
-            matches = df[df["username"] == selected_username]
+            # Comparaison insensible à la casse/espaces : le même identifiant
+            # peut apparaître avec une casse différente selon le système
+            # source (ex. 'jdupont' sur AD, 'JDupont' sur SAP) — une
+            # correspondance stricte ferait manquer à l'investigateur les
+            # autres comptes de la même personne, sans même lui montrer le
+            # sélecteur multi-système qui les signalerait normalement.
+            _selected_norm = str(selected_username).strip().lower()
+            matches = df[df["username"].astype(str).str.strip().str.lower() == _selected_norm]
             if "system" in df.columns and matches["system"].nunique() > 1:
                 selected_system = st.selectbox(
                     "Ce compte existe sur plusieurs systèmes — lequel ?",
