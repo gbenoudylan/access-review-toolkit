@@ -8,6 +8,7 @@ Lancement :
 from __future__ import annotations
 import sys
 import tempfile
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from ingestion.ingest import load_file, IngestionError, compute_data_quality_rep
 from analysis.access_review import analyze_access, summarize
 from analysis.hr_crossref import cross_reference_with_hr
 from analysis.sod_detection import detect_sod_conflicts, load_custom_sod_matrix
+from analysis.trend_tracking import record_cycle_snapshot, load_trend_history
 from analysis.review_workflow import (
     attach_review_status, review_summary, apply_review_decision, VALID_STATUSES, get_audit_trail,
 )
@@ -29,6 +31,7 @@ st.set_page_config(page_title="Access Review Toolkit", page_icon="🔐", layout=
 
 RISK_ORDER = ["Critique", "Élevé", "Moyen", "Faible"]
 DECISIONS_STORE_PATH = Path(__file__).parent.parent / "data" / "review_decisions.json"
+TREND_STORE_PATH = Path(__file__).parent.parent / "data" / "trend_history.json"
 
 
 @st.cache_data(show_spinner=False)
@@ -433,6 +436,86 @@ def main():
         else:
             st.info("Aucun changement à enregistrer.")
 
+
+    st.divider()
+
+    st.subheader("Tendance dans le temps")
+    st.caption(
+        "Historise les indicateurs clés de ce cycle pour suivre l'évolution d'une "
+        "revue à l'autre — pas seulement l'état du jour. Enregistrement volontaire : "
+        "charger le même fichier plusieurs fois pour tester des seuils n'ajoute rien "
+        "à l'historique tant que tu ne cliques pas sur le bouton."
+    )
+
+    trend_period = st.text_input(
+        "Période de ce cycle (pour l'historique)", value="",
+        placeholder="ex. T1 2026, Mars 2026...", key="trend_period_input",
+    )
+    if st.button("Enregistrer ce cycle dans l'historique de tendance"):
+        snapshot = record_cycle_snapshot(
+            df, trend_period or datetime.now().strftime("%Y-%m-%d"),
+            store_path=TREND_STORE_PATH, recorded_by=validated_by,
+        )
+        st.success(
+            f"Cycle enregistré ({snapshot['date']}, périmètre : "
+            f"{', '.join(snapshot['systems']) or 'non renseigné'})."
+        )
+        st.cache_data.clear()
+
+    trend_history_all = load_trend_history(store_path=TREND_STORE_PATH)
+    if trend_history_all.empty:
+        st.info("Aucun cycle encore enregistré dans l'historique de tendance.")
+    else:
+        available_systems = sorted(
+            {s.strip() for row in trend_history_all["systems"] for s in row.split(",") if s.strip() and s.strip() != "Non renseigné"}
+        )
+        scope_choice = st.selectbox(
+            "Périmètre à afficher",
+            options=["Tous systèmes (totaux globaux)"] + available_systems,
+            help="Comparer un système précis reste valable même si d'autres systèmes "
+                 "ont été ajoutés ou retirés du périmètre entre deux cycles — les "
+                 "totaux globaux, eux, mélangent tout le périmètre de chaque cycle.",
+        )
+        trend_history = (
+            load_trend_history(store_path=TREND_STORE_PATH)
+            if scope_choice == "Tous systèmes (totaux globaux)"
+            else load_trend_history(store_path=TREND_STORE_PATH, system=scope_choice)
+        )
+        if len(trend_history) < 2:
+            st.info("Au moins 2 cycles enregistrés sont nécessaires pour tracer une tendance.")
+        else:
+            metric_options = {
+                "is_dormant": "Comptes dormants", "is_never_used": "Jamais utilisés",
+                "is_password_stale": "Mots de passe périmés", "is_duplicate_account": "Doublons",
+                "is_locked": "Verrouillés", "is_terminated_but_active": "Partis, accès actif",
+                "sod_conflict": "Conflits SoD", "total_accounts": "Total comptes",
+            }
+            available_metrics = {k: v for k, v in metric_options.items() if k in trend_history.columns}
+            selected_metrics = st.multiselect(
+                "Indicateurs à afficher", options=list(available_metrics.keys()),
+                default=[m for m in ("is_dormant", "total_accounts") if m in available_metrics],
+                format_func=lambda k: available_metrics[k],
+            )
+            if selected_metrics:
+                chart_data = trend_history.set_index("period_label")[selected_metrics]
+                chart_data.columns = [available_metrics[c] for c in chart_data.columns]
+                st.line_chart(chart_data)
+
+            if scope_choice == "Tous systèmes (totaux globaux)":
+                scopes_seen = trend_history["systems"].tolist()
+                scope_changes = [
+                    trend_history.loc[i, "period_label"]
+                    for i in range(1, len(scopes_seen)) if scopes_seen[i] != scopes_seen[i - 1]
+                ]
+                if scope_changes:
+                    st.caption(
+                        f"Périmètre changé avant : {', '.join(scope_changes)} — une variation "
+                        f"autour de ces cycles peut venir d'un système ajouté/retiré, pas "
+                        f"forcément d'une vraie évolution."
+                    )
+
+            with st.expander("Historique détaillé"):
+                st.dataframe(trend_history, width="stretch", hide_index=True)
 
     st.divider()
 
