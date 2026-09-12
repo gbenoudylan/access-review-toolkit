@@ -976,3 +976,21 @@ def test_extraction_origin_overrides_filename_system():
     assert default_report_filename(df, "pdf", extraction_origin="   ") == f"Rapport_revue_acces_AD_{today}.pdf"
     assert default_report_filename(df, "pdf", extraction_origin=None) == f"Rapport_revue_acces_AD_{today}.pdf"
     print("OK - test_extraction_origin_overrides_filename_system")
+
+
+def test_controls_reference_table_sn_column_is_narrow():
+    """La colonne SN du tableau de référence des 18 contrôles (section
+    I. OBJECTIVE) doit rester étroite (juste assez pour un numéro à 1-2
+    chiffres), pas la même largeur proportionnelle que les colonnes de
+    contenu — retour utilisateur explicite après comparaison visuelle.
+    Vérifié directement sur le code source plutôt que sur le rendu
+    visuel, pour une garde de non-régression simple et rapide."""
+    import inspect
+    from reporting import export
+
+    pdf_source = inspect.getsource(export.generate_pdf_report)
+    assert "(0.03, 0.20, 0.77)" in pdf_source
+
+    word_source = inspect.getsource(export.generate_word_report)
+    assert "[0.7, 4, 12.3]" in word_source
+    print("OK - test_controls_reference_table_sn_column_is_narrow")

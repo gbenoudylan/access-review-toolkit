@@ -584,7 +584,10 @@ def _build_exceptions_section(df: pd.DataFrame, section_style, exception_style, 
 
 def _build_dump_completeness_table(df: pd.DataFrame, available_width: float) -> Table:
     """Tableau du contrôle 1, avec les libellés de colonnes exacts du
-    template ('User logon (User ID)', 'User creation DATE', etc.)."""
+    template ('User logon (User ID)', 'User creation DATE', etc.).
+    Statut OK/NOK affiché en badge coloré (fond vert/rouge, texte blanc)
+    pour un repérage visuel immédiat, cohérent avec le style déjà utilisé
+    pour le niveau de risque ailleurs dans le rapport."""
     rows = [["Field", "Status"]]
     for label, candidates in DUMP_COMPLETENESS_COLUMNS:
         present = any(c in df.columns and df[c].notna().any() for c in candidates)
@@ -599,11 +602,13 @@ def _build_dump_completeness_table(df: pd.DataFrame, available_width: float) -> 
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("ALIGN", (1, 1), (1, -1), "CENTER"),
     ]
     for i, (label, candidates) in enumerate(DUMP_COMPLETENESS_COLUMNS, 1):
         present = any(c in df.columns and df[c].notna().any() for c in candidates)
-        color = colors.HexColor("#0E6E57") if present else colors.HexColor("#A13D2E")
-        style_commands.append(("TEXTCOLOR", (1, i), (1, i), color))
+        bg_color = colors.HexColor("#1E8E5A") if present else colors.HexColor("#C4372B")
+        style_commands.append(("BACKGROUND", (1, i), (1, i), bg_color))
+        style_commands.append(("TEXTCOLOR", (1, i), (1, i), colors.white))
         style_commands.append(("FONTNAME", (1, i), (1, i), DEFAULT_FONT_BOLD))
     table.setStyle(TableStyle(style_commands))
     return table
@@ -739,7 +744,8 @@ def _build_owner_tracking_table(available_width: float) -> Table:
     sections sans exception, y compris quand aucun compte n'est
     concerné : le propriétaire doit pouvoir attester explicitement
     "revu, rien à signaler" avec sa propre date, pas seulement les
-    sections qui ont des comptes à traiter.
+    sections qui ont des comptes à traiter. Ligne de saisie volontairement
+    haute : ce tableau peut être imprimé et rempli à la main.
     """
     header_style = ParagraphStyle(
         "OwnerHeader", fontSize=8, leading=10, fontName=DEFAULT_FONT_BOLD, textColor=colors.white,
@@ -747,17 +753,56 @@ def _build_owner_tracking_table(available_width: float) -> Table:
     rows = [[Paragraph(h, header_style) for h in ("Owner", "Comment", "Due Date", "Status")]]
     rows.append(["", "", "", ""])
     col_widths = [available_width * w for w in (0.18, 0.44, 0.16, 0.22)]
-    table = Table(rows, colWidths=col_widths, rowHeights=[16, 26])
+    table = Table(rows, colWidths=col_widths, rowHeights=[16, 42])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4B5563")),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("VALIGN", (0, 0), (0, 0), "MIDDLE"),
+        ("VALIGN", (0, 1), (-1, 1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, 0), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+        ("TOPPADDING", (0, 1), (-1, 1), 6),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
     ]))
     return table
+
+
+def _build_signoff_block(roles: list[str], filled_values: list[str | None], available_width: float) -> Table:
+    """
+    Bloc de signature à 3 colonnes (un rôle par colonne), pensé pour être
+    imprimé et signé à la main : nom déjà connu affiché si fourni, sinon
+    case vide (jamais de texte "[TO BE COMPLETED]" qui gênerait l'écriture
+    manuscrite) ; ligne signature bien plus haute qu'un simple libellé,
+    avec juste une légère mention "Signature & Date" en petit gris pour
+    indiquer l'usage sans encombrer l'espace d'écriture.
+    """
+    caption_style = ParagraphStyle(
+        "SignoffCaption", fontSize=7, leading=8, fontName=DEFAULT_FONT,
+        textColor=colors.HexColor("#9CA3AF"), alignment=1,
+    )
+    header_row = [f"{r}:" for r in roles]
+    name_row = [v if v else "" for v in filled_values]
+    signature_row = [Paragraph("Signature &amp; Date", caption_style) for _ in roles]
+    table = Table(
+        [header_row, name_row, signature_row],
+        colWidths=[available_width / 3] * 3,
+        rowHeights=[22, 34, 60],
+    )
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, 1), 9),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, 1), "MIDDLE"),
+        ("VALIGN", (0, 2), (-1, 2), "BOTTOM"),
+        ("BOTTOMPADDING", (0, 2), (-1, 2), 4),
+        ("TOPPADDING", (0, 0), (-1, 1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, 1), 6),
+    ]))
+    return table
+
 
 
 def _build_control_subsections(
@@ -1048,11 +1093,37 @@ def _docx_add_table(doc, rows: list, col_widths_cm: list[float] | None = None, h
                 cell.width = Cm(col_widths_cm[j])
 
 
+def _docx_add_dump_completeness_table(doc, dump_rows: list) -> None:
+    """Équivalent Word de _build_dump_completeness_table (PDF) : même
+    tableau Field/Status, avec le statut affiché en badge coloré
+    (fond vert pour OK, rouge pour NOK, texte blanc) plutôt qu'en texte
+    brut — cohérent avec le rendu PDF."""
+    table = doc.add_table(rows=len(dump_rows), cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = "Table Grid"
+    for i, (table_row, row) in enumerate(zip(table.rows, dump_rows)):
+        cells = table_row.cells
+        for j, value in enumerate(row):
+            cell = cells[j]
+            if i == 0:
+                _docx_set_cell(cell, value, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=9)
+                _docx_shade_cell(cell, "1F2937")
+            elif j == 1:
+                _docx_set_cell(cell, value, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=8.5)
+                _docx_shade_cell(cell, "1E8E5A" if value == "OK" else "C4372B")
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            else:
+                _docx_set_cell(cell, value, size=8.5)
+
+
 def _docx_add_owner_tracking_table(doc) -> None:
     """Équivalent Word de _build_owner_tracking_table (PDF) : petit
     tableau vide Owner / Comment / Due Date / Status, ajouté après
     CHAQUE section de contrôle pour que le propriétaire puisse
-    commenter et dater la remédiation directement dans le document."""
+    commenter et dater la remédiation directement dans le document.
+    Ligne de saisie volontairement haute : peut être imprimé et rempli
+    à la main."""
+    from docx.enum.table import WD_ROW_HEIGHT_RULE
     table = doc.add_table(rows=2, cols=4)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = "Table Grid"
@@ -1066,6 +1137,36 @@ def _docx_add_owner_tracking_table(doc) -> None:
                 _docx_shade_cell(cells[j], "4B5563")
             else:
                 _docx_set_cell(cells[j], value, size=8.5)
+        if i == 1:
+            table_row.height = Cm(1.1)
+            table_row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+
+
+def _docx_add_signoff_block(doc, roles: list[str], filled_values: list[str | None]) -> None:
+    """
+    Équivalent Word de _build_signoff_block (PDF) : bloc de signature à
+    3 colonnes, pensé pour être imprimé et signé à la main — nom déjà
+    connu affiché si fourni, sinon case vide (jamais de texte
+    "[TO BE COMPLETED]" qui gênerait l'écriture manuscrite), et une
+    ligne signature nettement plus haute qu'un simple libellé.
+    """
+    from docx.enum.table import WD_ROW_HEIGHT_RULE
+    table = doc.add_table(rows=3, cols=3)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = "Table Grid"
+    header_row, name_row, signature_row = table.rows
+    for j, role in enumerate(roles):
+        _docx_set_cell(header_row.cells[j], f"{role}:", bold=True, size=9)
+        _docx_set_cell(name_row.cells[j], filled_values[j] or "", size=9)
+        _docx_set_cell(signature_row.cells[j], "Signature & Date", size=7)
+        for run in signature_row.cells[j].paragraphs[0].runs:
+            run.font.color.rgb = RGBColor(0x9C, 0xA3, 0xAF)
+    name_row.height = Cm(1.0)
+    name_row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+    signature_row.height = Cm(1.8)
+    signature_row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+    for cell in signature_row.cells:
+        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 
 def generate_word_report(
@@ -1147,18 +1248,15 @@ def generate_word_report(
     doc.add_paragraph()
 
     doc.add_heading("VALIDATION", level=2)
-    placeholder = "[TO BE COMPLETED]"
-    _docx_add_table(doc, [
-        ["Control Performer:", "Manager HUB:", "HUB senior Manager LISO:"],
-        [prepared_by or placeholder, reviewed_by or placeholder, approved_by or placeholder],
-        ["[SIGNATURE - DATE]", "[SIGNATURE - DATE]", "[SIGNATURE - DATE]"],
-    ], header=False)
+    _docx_add_signoff_block(
+        doc, ["Control Performer", "Manager HUB", "HUB senior Manager LISO"],
+        [prepared_by, reviewed_by, approved_by],
+    )
     doc.add_paragraph()
-    _docx_add_table(doc, [
-        ["SYSTEM OWNER:", "OPCOS LISO:", "SM Information Security OPCOS:"],
-        [placeholder, placeholder, placeholder],
-        ["[SIGNATURE - DATE]", "[SIGNATURE - DATE]", "[SIGNATURE - DATE]"],
-    ], header=False)
+    _docx_add_signoff_block(
+        doc, ["SYSTEM OWNER", "OPCOS LISO", "SM Information Security OPCOS"],
+        [None, None, None],
+    )
     doc.add_paragraph()
 
     # ---- I. OBJECTIVE ----
@@ -1170,7 +1268,7 @@ def generate_word_report(
     controls_rows = [["SN", "Control", "Control Description/Expectations"]]
     for sn, name, desc in TEMPLATE_CONTROLS:
         controls_rows.append([str(sn), name, desc.replace("\n", " ")])
-    _docx_add_table(doc, controls_rows, col_widths_cm=[1, 4, 12])
+    _docx_add_table(doc, controls_rows, col_widths_cm=[0.7, 4, 12.3])
     doc.add_paragraph()
 
     # ---- II. PRINCIPLES ----
@@ -1282,7 +1380,7 @@ def generate_word_report(
     for label, candidates in DUMP_COMPLETENESS_COLUMNS:
         present = any(c in df.columns and df[c].notna().any() for c in candidates)
         dump_rows.append([label, "OK" if present else "NOK"])
-    _docx_add_table(doc, dump_rows)
+    _docx_add_dump_completeness_table(doc, dump_rows)
     doc.add_paragraph()
     _docx_add_owner_tracking_table(doc)
     doc.add_paragraph()
@@ -1475,13 +1573,27 @@ def generate_word_report(
     doc.add_paragraph()
 
     doc.add_heading("Validation", level=2)
-    placeholder = "[TO BE COMPLETED]"
-    _docx_add_table(doc, [
-        ["Role", "Name", "Date"],
-        ["Prepared by", prepared_by or placeholder, datetime.now().strftime("%d/%m/%Y")],
-        ["Reviewed by", reviewed_by or placeholder, ""],
-        ["Approved by", approved_by or placeholder, ""],
-    ])
+    from docx.enum.table import WD_ROW_HEIGHT_RULE
+    validation_table = doc.add_table(rows=4, cols=3)
+    validation_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    validation_table.style = "Table Grid"
+    validation_rows = [
+        ["Role", "Name / Signature", "Date"],
+        ["Prepared by", prepared_by or "", datetime.now().strftime("%d/%m/%Y")],
+        ["Reviewed by", reviewed_by or "", ""],
+        ["Approved by", approved_by or "", ""],
+    ]
+    for i, (table_row, values) in enumerate(zip(validation_table.rows, validation_rows)):
+        cells = table_row.cells
+        for j, value in enumerate(values):
+            if i == 0:
+                _docx_set_cell(cells[j], value, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=9)
+                _docx_shade_cell(cells[j], "1F2937")
+            else:
+                _docx_set_cell(cells[j], value, size=9)
+        if i > 0:
+            table_row.height = Cm(1.3)
+            table_row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
 
     doc.save(str(output_path))
     logger.info(f"Rapport Word généré : {output_path}")
@@ -1654,40 +1766,18 @@ def generate_pdf_report(
 
     # ---- VALIDATION ----
     elements.append(Paragraph("VALIDATION", section_style))
-    placeholder = "[TO BE COMPLETED]"
-    val_data = [
-        ["Control Performer:", "Manager HUB:", "HUB senior Manager LISO:"],
-        [prepared_by or placeholder, reviewed_by or placeholder, approved_by or placeholder],
-        ["[SIGNATURE - DATE]", "[SIGNATURE - DATE]", "[SIGNATURE - DATE]"],
-    ]
-    val_table = Table(val_data, colWidths=[available_width / 3] * 3)
-    val_table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
-        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
-        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-    ]))
-    elements.append(val_table)
-    elements.append(Spacer(1, 0.2 * cm))
-    owner_data = [
-        ["SYSTEM OWNER:", "OPCOS LISO:", "SM Information Security OPCOS:"],
-        [placeholder, placeholder, placeholder],
-        ["[SIGNATURE - DATE]", "[SIGNATURE - DATE]", "[SIGNATURE - DATE]"],
-    ]
-    owner_table = Table(owner_data, colWidths=[available_width / 3] * 3)
-    owner_table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
-        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
-        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-    ]))
-    elements.append(owner_table)
+    elements.append(_build_signoff_block(
+        ["Control Performer", "Manager HUB", "HUB senior Manager LISO"],
+        [prepared_by, reviewed_by, approved_by],
+        available_width,
+    ))
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.append(_build_signoff_block(
+        ["SYSTEM OWNER", "OPCOS LISO", "SM Information Security OPCOS"],
+        [None, None, None],
+        available_width,
+    ))
+    elements.append(Spacer(1, 0.6 * cm))
     elements.append(Spacer(1, 0.6 * cm))
 
     # ---- I. OBJECTIVE ----
@@ -1708,7 +1798,7 @@ def generate_pdf_report(
         ])
     controls_table = Table(
         controls_data,
-        colWidths=[available_width * w for w in (0.05, 0.20, 0.75)],
+        colWidths=[available_width * w for w in (0.03, 0.20, 0.77)],
         repeatRows=1,
     )
     controls_table.setStyle(TableStyle([
@@ -1956,14 +2046,16 @@ def generate_pdf_report(
 
     # ---- Sign-off (validation) ----
     elements.append(Paragraph("Validation", section_style))
-    placeholder = "[TO BE COMPLETED]"
     signoff_data = [
-        ["Role", "Name", "Date"],
-        ["Prepared by", prepared_by or placeholder, datetime.now().strftime("%d/%m/%Y")],
-        ["Reviewed by", reviewed_by or placeholder, ""],
-        ["Approved by", approved_by or placeholder, ""],
+        ["Role", "Name / Signature", "Date"],
+        ["Prepared by", prepared_by or "", datetime.now().strftime("%d/%m/%Y")],
+        ["Reviewed by", reviewed_by or "", ""],
+        ["Approved by", approved_by or "", ""],
     ]
-    signoff_table = Table(signoff_data, colWidths=[5 * cm, 8 * cm, 4 * cm])
+    signoff_table = Table(
+        signoff_data, colWidths=[5 * cm, 8 * cm, 4 * cm],
+        rowHeights=[24, 38, 38, 38],
+    )
     signoff_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -1971,6 +2063,7 @@ def generate_pdf_report(
         ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
