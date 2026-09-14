@@ -194,6 +194,7 @@ _VALUE_TRANSLATIONS = {
     "Renommer selon la convention": "Rename according to naming convention",
     "Révoquer immédiatement": "Revoke immediately",
     "Vérifier (compte de test présumé)": "Verify (presumed test account)",
+    "Vérifier (compte générique/orphelin présumé)": "Verify (presumed generic/orphaned account)",
     "Vérifier (date de dernière connexion non exploitable)": "Verify (last login date not usable)",
     "Vérifier avec le propriétaire technique (compte de service)": "Verify with technical owner (service account)",
     "Vérifier avec le propriétaire technique (mot de passe, compte de service)": "Verify with technical owner (password, service account)",
@@ -237,6 +238,7 @@ RISK_COLORS_HEX_EN = {_translate_value(k): v for k, v in RISK_COLORS_HEX.items()
 CONTROL_TABLE_COLUMNS = {
     "is_dormant": ["username", "full_name", "system", "account_status", "last_login_date", "days_since_last_login", "review_action"],
     "is_test_account": ["username", "full_name", "system", "account_status", "review_action"],
+    "is_orphaned_account": ["username", "full_name", "system", "account_status", "review_action"],
     "_active_count": ["username", "full_name", "system", "account_status", "last_login_date", "review_action"],
     "is_never_used": ["username", "full_name", "system", "account_created_date", "last_login_date", "review_action"],
     "is_service_account": ["username", "full_name", "system", "account_status", "last_login_date", "review_action"],
@@ -646,7 +648,14 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
                 count = int(df["account_status"].apply(_is_active_account).sum())
             status = "OK"
             count_display = str(count) if count is not None else "—"
-        elif key in ("_created", "_reactivated", "_deleted", "_profile_modified"):
+        elif key == "_created":
+            if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+                count = int(df["is_recently_created"].sum())
+                status, count_display = ("⚠️" if count > 0 else "OK"), str(count)
+            else:
+                value = comparison_stats.get("created")
+                status, count_display = ("N/A", "—") if value is None else (("⚠️" if value > 0 else "OK"), str(value))
+        elif key in ("_reactivated", "_deleted", "_profile_modified"):
             value = comparison_stats.get(key.lstrip("_"))
             if value is None:
                 status, count_display = "N/A", "—"
@@ -690,6 +699,44 @@ def _build_control_summary_table(df: pd.DataFrame, comparison_stats: dict, avail
         style_commands.append(("TEXTCOLOR", (2, i), (2, i), color))
         style_commands.append(("FONTNAME", (2, i), (2, i), DEFAULT_FONT_BOLD))
     table.setStyle(TableStyle(style_commands))
+    return table
+
+
+def _build_comparison_detail_table(detail: list[dict], field_label: str, available_width: float):
+    """
+    Tableau de comparaison avant/après pour les contrôles 'Profile
+    Modified' et 'Reactivated accounts' : Account / System / ancienne
+    valeur + sa date d'extraction / nouvelle valeur + sa date
+    d'extraction — uniquement les comptes dont la valeur a réellement
+    changé (le detail ne contient déjà que ceux-là). `field_label` est
+    'Profile' ou 'Status' selon le contrôle.
+    """
+    header_style = ParagraphStyle(
+        "CompareHeader", fontSize=8, leading=9.5, fontName=DEFAULT_FONT_BOLD, textColor=colors.white,
+    )
+    cell_style = ParagraphStyle("CompareCell", fontSize=8, leading=9.5, fontName=DEFAULT_FONT)
+    headers = ["Account", "System", f"Previous {field_label}", "Extraction Date",
+               f"New {field_label}", "Extraction Date"]
+    old_key = "old_status" if field_label == "Status" else "old_role"
+    new_key = "new_status" if field_label == "Status" else "new_role"
+    rows = [[Paragraph(h, header_style) for h in headers]]
+    for d in detail:
+        rows.append([
+            d["username"], d["system"],
+            Paragraph(d[old_key] or "—", cell_style), d.get("old_date") or "—",
+            Paragraph(d[new_key] or "—", cell_style), d.get("new_date") or "—",
+        ])
+    weights = [0.14, 0.12, 0.24, 0.14, 0.24, 0.14]  # somme = 1.0
+    table = Table(rows, colWidths=[available_width * w for w in weights], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
     return table
 
 
@@ -846,6 +893,7 @@ def _build_control_subsections(
         count = None
         note = None
         subset = None
+        comparison_detail = None
         if key is None:
             note = "N/A — requires company-specific configuration, not derivable from the ingested data alone."
         elif key == "_active_count":
@@ -867,16 +915,36 @@ def _build_control_subsections(
                 names = comparison_stats.get("deleted_accounts") or []
                 if names and previous_df is not None and "username" in previous_df.columns:
                     subset = previous_df[previous_df["username"].astype(str).isin(names)]
-        elif key in ("_created", "_reactivated", "_profile_modified"):
-            stat_key = key.lstrip("_")
-            value = comparison_stats.get(stat_key)
+        elif key == "_created":
+            if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+                subset = df[df["is_recently_created"] == True]  # noqa: E712
+                count = len(subset)
+            else:
+                value = comparison_stats.get("created")
+                if value is None:
+                    note = (
+                        "N/A — no 'account_created_date' column, and no previous review "
+                        "provided to establish the comparison either."
+                    )
+                else:
+                    count = value
+                    names = comparison_stats.get("created_accounts") or []
+                    if names and "username" in df.columns:
+                        subset = df[df["username"].astype(str).isin(names)]
+        elif key == "_reactivated":
+            value = comparison_stats.get("reactivated")
             if value is None:
                 note = "N/A — no previous review provided to establish the comparison."
             else:
                 count = value
-                names = comparison_stats.get(f"{stat_key}_accounts") or []
-                if names and "username" in df.columns:
-                    subset = df[df["username"].astype(str).isin(names)]
+                comparison_detail = comparison_stats.get("reactivated_detail") or []
+        elif key == "_profile_modified":
+            value = comparison_stats.get("profile_modified")
+            if value is None:
+                note = "N/A — no previous review provided to establish the comparison."
+            else:
+                count = value
+                comparison_detail = comparison_stats.get("profile_modified_detail") or []
         elif key in df.columns:
             subset = df[df[key] == True]  # noqa: E712 (comparaison explicite voulue sur une colonne booléenne)
             count = len(subset)
@@ -887,7 +955,11 @@ def _build_control_subsections(
             elements.append(Paragraph(f"<b>{count}</b> account(s) concerned.", action_style))
             elements.append(Spacer(1, 0.1 * cm))
             elements.append(_build_owner_tracking_table(available_width))
-            if subset is not None and len(subset):
+            if comparison_detail:
+                elements.append(Spacer(1, 0.15 * cm))
+                field_label = "Status" if key == "_reactivated" else "Profile"
+                elements.append(_build_comparison_detail_table(comparison_detail, field_label, available_width))
+            elif subset is not None and len(subset):
                 elements.append(Spacer(1, 0.15 * cm))
                 table_cols = CONTROL_TABLE_COLUMNS.get(key)
                 elements.extend(_build_capped_account_table(subset, available_width, columns=table_cols))
@@ -899,11 +971,20 @@ def _build_control_subsections(
     return elements
 
 
-def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_style, note_style, available_width):
+def _build_review_comparison_section(
+    df: pd.DataFrame, previous_df, section_style, note_style, available_width,
+    current_extraction_date: str = "", previous_extraction_date: str = "",
+):
     """
     Section 'a. Summary of the review' : répartition des comptes par
     statut, comparée au cycle précédent si `previous_df` est fourni —
     calculée à partir des données réelles, pas déclarative.
+
+    `current_extraction_date` / `previous_extraction_date` : dates
+    d'extraction des deux fichiers comparés (texte libre, ex.
+    '2026-09-12'), reportées dans le détail des comptes créés/supprimés/
+    réactivés/profils modifiés pour que le tableau de comparaison précise
+    QUAND chaque valeur a été observée, pas seulement CE QUI a changé.
 
     Retourne (elements, stats) où `stats` est un dict {created, deleted,
     reactivated, profile_modified} réutilisé par la section IV pour
@@ -915,6 +996,7 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
         "created_accounts": None, "deleted_accounts": None,
         "reactivated_accounts": None, "profile_modified_accounts": None,
         "privilege_escalation_accounts": None,
+        "profile_modified_detail": None, "reactivated_detail": None,
     }
     elements = [Paragraph("a. Summary of the review", section_style)]
     if "account_status" not in df.columns:
@@ -979,6 +1061,13 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
             reactivated_accounts = []
             profile_modified_accounts = []
             escalated_accounts = []
+            # Détail nominatif (pas seulement le nom) : ancien profil/statut
+            # ET nouveau, chacun avec sa propre date d'extraction — pour
+            # produire le tableau de comparaison demandé (User / System /
+            # ancien profil + date / nouveau profil + date), pas juste un
+            # compte sans contexte de CE qui a changé.
+            profile_modified_detail = []
+            reactivated_detail = []
             if common:
                 curr_idx = df.set_index(df[key_col].map(_norm_key))
                 prev_idx = previous_df.set_index(previous_df[key_col].map(_norm_key))
@@ -995,9 +1084,22 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
                         is_active_now = _is_active_account(curr_row.get("account_status"))
                         if was_inactive and is_active_now:
                             reactivated_accounts.append(str(uname))
+                            reactivated_detail.append({
+                                "username": str(uname), "system": str(curr_row.get("system", "")),
+                                "old_status": str(prev_row.get("account_status", "")),
+                                "old_date": previous_extraction_date or "",
+                                "new_status": str(curr_row.get("account_status", "")),
+                                "new_date": current_extraction_date or "",
+                            })
                     if "role" in df.columns:
-                        if str(prev_row.get("role")) != str(curr_row.get("role")):
+                        old_role, new_role = str(prev_row.get("role")), str(curr_row.get("role"))
+                        if old_role != new_role:
                             profile_modified_accounts.append(str(uname))
+                            profile_modified_detail.append({
+                                "username": str(uname), "system": str(curr_row.get("system", "")),
+                                "old_role": old_role, "old_date": previous_extraction_date or "",
+                                "new_role": new_role, "new_date": current_extraction_date or "",
+                            })
                     # Escalade de privilège : signal plus fort qu'un simple
                     # "profil modifié" générique — un compte qui devient
                     # privilégié entre deux revues mérite d'être identifié
@@ -1019,6 +1121,8 @@ def _build_review_comparison_section(df: pd.DataFrame, previous_df, section_styl
                 "reactivated_accounts": reactivated_accounts,
                 "profile_modified_accounts": profile_modified_accounts,
                 "privilege_escalation_accounts": escalated_accounts,
+                "profile_modified_detail": profile_modified_detail,
+                "reactivated_detail": reactivated_detail,
             })
             diff_rows = [
                 ["Indicator", "Count"],
@@ -1120,6 +1224,23 @@ def _docx_add_table(doc, rows: list, col_widths_cm: list[float] | None = None, h
                 cell.width = Cm(col_widths_cm[j])
 
 
+def _docx_add_comparison_detail_table(doc, detail: list[dict], field_label: str) -> None:
+    """Équivalent Word de _build_comparison_detail_table (PDF) : tableau
+    avant/après avec les deux dates d'extraction, pour les contrôles
+    'Profile Modified' et 'Reactivated accounts'."""
+    headers = ["Account", "System", f"Previous {field_label}", "Extraction Date",
+               f"New {field_label}", "Extraction Date"]
+    old_key = "old_status" if field_label == "Status" else "old_role"
+    new_key = "new_status" if field_label == "Status" else "new_role"
+    rows = [headers]
+    for d in detail:
+        rows.append([
+            d["username"], d["system"], d[old_key] or "—", d.get("old_date") or "—",
+            d[new_key] or "—", d.get("new_date") or "—",
+        ])
+    _docx_add_table(doc, rows, col_widths_cm=[2.3, 2, 4, 3, 4, 3])
+
+
 def _docx_add_dump_completeness_table(doc, dump_rows: list) -> None:
     """Équivalent Word de _build_dump_completeness_table (PDF) : même
     tableau Field/Status, avec le statut affiché en badge coloré
@@ -1210,6 +1331,8 @@ def generate_word_report(
     document_version: str = "1.0",
     previous_df: pd.DataFrame | None = None,
     logo_path: str | Path | None = None,
+    current_extraction_date: str | None = None,
+    previous_extraction_date: str | None = None,
 ) -> Path:
     """
     Génère le même rapport que generate_pdf_report, au format Word plutôt
@@ -1228,6 +1351,21 @@ def generate_word_report(
     if previous_df is not None:
         previous_df = _strip_control_characters(previous_df)
     doc = Document()
+
+    # Métadonnées du document : python-docx laisse par défaut une date
+    # figée (2013, celle du modèle interne) et un auteur vide — un
+    # document avec des métadonnées manifestement incohérentes (créé et
+    # modifié "en 2013" alors qu'il vient d'être généré) est un signal de
+    # non-fiabilité pour tout système qui les affiche (SharePoint,
+    # historique de versions...), même sans qu'on puisse garantir que
+    # c'est la cause exacte d'un blocage d'édition observé.
+    now = datetime.now()
+    doc.core_properties.author = editor or "Access Review Toolkit"
+    doc.core_properties.last_modified_by = editor or "Access Review Toolkit"
+    doc.core_properties.created = now
+    doc.core_properties.modified = now
+    doc.core_properties.title = "Application Accounts Review"
+    doc.core_properties.subject = application_scope or ""
 
     # Marges resserrées pour laisser de la place aux tableaux larges
     for section in doc.sections:
@@ -1326,7 +1464,11 @@ def generate_word_report(
     # source de données, pas de logique dupliquée. Les éléments ReportLab
     # retournés sont ignorés ici, seul le dict `stats` (pur) est utilisé.
     _dummy_style = ParagraphStyle("Dummy")
-    _, comparison_stats = _build_review_comparison_section(df, previous_df, _dummy_style, _dummy_style, 100)
+    _, comparison_stats = _build_review_comparison_section(
+        df, previous_df, _dummy_style, _dummy_style, 100,
+        current_extraction_date=current_extraction_date or "",
+        previous_extraction_date=previous_extraction_date or "",
+    )
 
     doc.add_heading("a. Summary of the review", level=2)
     if "account_status" in df.columns:
@@ -1389,7 +1531,14 @@ def generate_word_report(
         elif key == "_active_count":
             status = "OK"
             count_display = str(int(df["account_status"].apply(_is_active_account).sum())) if "account_status" in df.columns else "—"
-        elif key in ("_created", "_deleted", "_reactivated", "_profile_modified"):
+        elif key == "_created":
+            if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+                count = int(df["is_recently_created"].sum())
+                status, count_display = ("⚠" if count > 0 else "OK"), str(count)
+            else:
+                value = comparison_stats.get("created")
+                status, count_display = ("N/A", "—") if value is None else (("⚠" if value > 0 else "OK"), str(value))
+        elif key in ("_deleted", "_reactivated", "_profile_modified"):
             value = comparison_stats.get(key.lstrip("_"))
             status, count_display = ("N/A", "—") if value is None else (("⚠" if value > 0 else "OK"), str(value))
         elif key in df.columns:
@@ -1416,7 +1565,7 @@ def generate_word_report(
         doc.add_heading(f"{number}.{ctrl_title}", level=2)
         if guidance:
             doc.add_paragraph(guidance)
-        count, note, subset = None, None, None
+        count, note, subset, comparison_detail = None, None, None, None
         if key is None:
             note = "N/A — requires company-specific configuration, not derivable from the ingested data alone."
         elif key == "_active_count":
@@ -1436,16 +1585,36 @@ def generate_word_report(
                 names = comparison_stats.get("deleted_accounts") or []
                 if names and previous_df is not None and "username" in previous_df.columns:
                     subset = previous_df[previous_df["username"].astype(str).isin(names)]
-        elif key in ("_created", "_reactivated", "_profile_modified"):
-            stat_key = key.lstrip("_")
-            value = comparison_stats.get(stat_key)
+        elif key == "_created":
+            if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+                subset = df[df["is_recently_created"] == True]  # noqa: E712
+                count = len(subset)
+            else:
+                value = comparison_stats.get("created")
+                if value is None:
+                    note = (
+                        "N/A — no 'account_created_date' column, and no previous review "
+                        "provided to establish the comparison either."
+                    )
+                else:
+                    count = value
+                    names = comparison_stats.get("created_accounts") or []
+                    if names and "username" in df.columns:
+                        subset = df[df["username"].astype(str).isin(names)]
+        elif key == "_reactivated":
+            value = comparison_stats.get("reactivated")
             if value is None:
                 note = "N/A — no previous review provided to establish the comparison."
             else:
                 count = value
-                names = comparison_stats.get(f"{stat_key}_accounts") or []
-                if names and "username" in df.columns:
-                    subset = df[df["username"].astype(str).isin(names)]
+                comparison_detail = comparison_stats.get("reactivated_detail") or []
+        elif key == "_profile_modified":
+            value = comparison_stats.get("profile_modified")
+            if value is None:
+                note = "N/A — no previous review provided to establish the comparison."
+            else:
+                count = value
+                comparison_detail = comparison_stats.get("profile_modified_detail") or []
         elif key in df.columns:
             subset = df[df[key] == True]  # noqa: E712
             count = len(subset)
@@ -1457,7 +1626,11 @@ def generate_word_report(
             p.add_run(f"{count} account(s) concerned.").bold = True
             doc.add_paragraph()
             _docx_add_owner_tracking_table(doc)
-            if subset is not None and len(subset):
+            if comparison_detail:
+                doc.add_paragraph()
+                field_label = "Status" if key == "_reactivated" else "Profile"
+                _docx_add_comparison_detail_table(doc, comparison_detail, field_label)
+            elif subset is not None and len(subset):
                 default_cols = ["username", "full_name", "system", "review_action"]
                 cols = [c for c in (CONTROL_TABLE_COLUMNS.get(key) or default_cols) if c in subset.columns]
                 if cols:
@@ -1497,6 +1670,15 @@ def generate_word_report(
 
     # ---- Operational Annex ----
     doc.add_heading("Operational Annex — Actionable Cycle Detail", level=1)
+
+    doc.add_heading("F. First List user access review Report", level=2)
+    doc.add_paragraph(
+        "Supporting evidence for control 19 (First line user access review report and "
+        "accuracy): attach or reference here the approved monthly user access review "
+        "report(s) used as evidence that the application owner's first-line review took "
+        "place, was complete, accurate, and properly supported."
+    )
+    doc.add_paragraph()
 
     quality_report = compute_data_quality_report(df)
     doc.add_heading(f"Data Quality — estimated reliability {quality_report['reliability_pct']}%", level=2)
@@ -1642,6 +1824,8 @@ def generate_pdf_report(
     include_controls_reference: bool = True,
     previous_df: pd.DataFrame | None = None,
     logo_path: str | Path | None = None,
+    current_extraction_date: str | None = None,
+    previous_extraction_date: str | None = None,
 ) -> Path:
     """
     Génère un rapport PDF de revue d'accès structuré et réutilisable d'un
@@ -1895,6 +2079,8 @@ def generate_pdf_report(
     # ---- III.a Summary of the review (comparaison avec la revue précédente) ----
     comparison_elements, comparison_stats = _build_review_comparison_section(
         df, previous_df, section_style, note_style, available_width,
+        current_extraction_date=current_extraction_date or "",
+        previous_extraction_date=previous_extraction_date or "",
     )
     elements.extend(comparison_elements)
     elements.append(Spacer(1, 0.4 * cm))
@@ -1954,6 +2140,16 @@ def generate_pdf_report(
     # concret des exceptions — pas une section du document original.
     # ==================================================================
     elements.append(Paragraph("Operational Annex — Actionable Cycle Detail", section_style))
+
+    elements.append(Paragraph("F. First List user access review Report", system_style))
+    elements.append(Paragraph(
+        "Supporting evidence for control 19 (First line user access review report and "
+        "accuracy): attach or reference here the approved monthly user access review "
+        "report(s) used as evidence that the application owner's first-line review took "
+        "place, was complete, accurate, and properly supported.",
+        note_style,
+    ))
+    elements.append(Spacer(1, 0.3 * cm))
 
     # ---- Qualité des données (contrôle préalable, informatif) ----
     quality_report = compute_data_quality_report(df)

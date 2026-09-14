@@ -31,6 +31,8 @@ import unicodedata
 
 import pandas as pd
 
+from analysis.access_review import _is_active_account
+
 logger = logging.getLogger("hr_crossref")
 
 # Colonnes attendues côté RH — un référentiel de mapping dédié, plus léger
@@ -208,7 +210,162 @@ def cross_reference_with_hr(iam_df: pd.DataFrame, hr_df_raw_path: str = None, hr
     return iam_df
 
 
-if __name__ == "__main__":
+def _find_column(columns, candidates: list[str]) -> str | None:
+    """Trouve la première colonne dont le nom normalisé (espaces/casse/
+    accents) correspond à l'un des candidats — tolérant aux variations
+    d'écriture réelles ('Nom & Prénoms' / 'Nom et Prénoms' / 'Noms &
+    Prénoms'...)."""
+    def _norm(s):
+        s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode("ascii")
+        return re.sub(r"[^a-z]+", " ", s.lower()).strip()
+
+    normalized_candidates = [_norm(c) for c in candidates]
+    for col in columns:
+        if _norm(col) in normalized_candidates:
+            return col
+    return None
+
+
+# Colonnes vues en pratique sur la feuille "Affectation/Mutation" d'un
+# fichier RH de mouvements de personnel (départs, promotions, embauches,
+# mutations — un classeur, plusieurs feuilles, chacune pour un type de
+# mouvement) : la RH y suit les personnes par NOM, jamais par identifiant
+# technique partagé avec l'IAM.
+_TRANSFER_NAME_COLUMNS = [
+    "nom & prénoms", "nom et prénoms", "noms & prénoms", "nom prénoms",
+    "nom & prenoms", "nom et prenoms", "nom complet", "full name",
+]
+_TRANSFER_OLD_DEPT_COLUMNS = ["ancienne direction", "ancien departement", "old department", "ancien service"]
+_TRANSFER_NEW_DEPT_COLUMNS = ["nouvelle direction", "nouveau departement", "new department", "nouveau service"]
+_TRANSFER_SHEET_NAME_HINTS = ["affectation", "mutation", "transfert", "transfer"]
+
+
+def load_transferred_employees(file_path, sheet_name: str | None = None) -> pd.DataFrame:
+    """
+    Charge la liste des employés transférés/mutés depuis un fichier RH de
+    mouvements de personnel — typiquement un classeur à plusieurs
+    feuilles (une par type de mouvement : départs, embauches,
+    promotions, mutations), dont seule la feuille de mutation nous
+    intéresse ici. La RH n'y fournit que des noms, jamais d'identifiant
+    technique partagé avec l'IAM — voir flag_transferred_but_still_active
+    pour le rapprochement par nom qui en découle.
+
+    `sheet_name` : nom exact de la feuille à utiliser. Si omis, la
+    première feuille dont le nom contient 'affectation'/'mutation'/
+    'transfert' est utilisée — évite d'exiger que l'appelant connaisse
+    par avance l'intitulé exact (qui varie d'une entreprise à l'autre,
+    ex. 'Affectation/Mutation 2026').
+
+    Retourne un DataFrame avec les colonnes 'full_name' (toujours),
+    'old_department' et 'new_department' (si les colonnes correspondantes
+    ont été trouvées dans la feuille).
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    if sheet_name is None:
+        matches = [
+            s for s in wb.sheetnames
+            if any(hint in s.lower() for hint in _TRANSFER_SHEET_NAME_HINTS)
+        ]
+        if not matches:
+            raise ValueError(
+                f"Aucune feuille de mutation/affectation trouvée automatiquement parmi "
+                f"{wb.sheetnames} — précise le nom exact de la feuille avec sheet_name."
+            )
+        sheet_name = matches[0]
+    elif sheet_name not in wb.sheetnames:
+        raise ValueError(f"Feuille '{sheet_name}' introuvable. Feuilles disponibles : {wb.sheetnames}")
+
+    ws = wb[sheet_name]
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return pd.DataFrame(columns=["full_name"])
+
+    # Ligne d'en-tête : la première ligne non vide, comme pour l'ingestion
+    # générale — un fichier RH réel commence rarement directement par les
+    # données, sans qu'on puisse pour autant supposer que c'est toujours
+    # la toute première ligne du classeur.
+    header_row_idx = next((i for i, r in enumerate(rows) if any(c is not None for c in r)), None)
+    if header_row_idx is None:
+        return pd.DataFrame(columns=["full_name"])
+    headers = [str(c).strip() if c is not None else "" for c in rows[header_row_idx]]
+    data_rows = rows[header_row_idx + 1:]
+    raw_df = pd.DataFrame(data_rows, columns=headers)
+
+    name_col = _find_column(raw_df.columns, _TRANSFER_NAME_COLUMNS)
+    if name_col is None:
+        raise ValueError(
+            f"Aucune colonne de nom reconnue sur la feuille '{sheet_name}' parmi "
+            f"{list(raw_df.columns)} — attendu une colonne type 'Nom & Prénoms'."
+        )
+
+    result = pd.DataFrame({"full_name": raw_df[name_col].astype(str).str.strip()})
+    result = result[result["full_name"].str.len() > 0]
+
+    old_col = _find_column(raw_df.columns, _TRANSFER_OLD_DEPT_COLUMNS)
+    new_col = _find_column(raw_df.columns, _TRANSFER_NEW_DEPT_COLUMNS)
+    if old_col:
+        result["old_department"] = raw_df.loc[result.index, old_col]
+    if new_col:
+        result["new_department"] = raw_df.loc[result.index, new_col]
+
+    return result.reset_index(drop=True)
+
+
+def flag_transferred_but_still_active(iam_df: pd.DataFrame, transferred_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rapproche par NOM (même logique que le repli de cross_reference_with_hr
+    — sac de mots normalisé, indépendant de l'ordre 'Prénom Nom' vs 'Nom
+    Prénom') la liste des employés transférés/mutés avec les comptes IAM,
+    et ajoute 'is_transferred_but_active' : True pour un compte dont le
+    titulaire a été transféré ET dont le compte est encore actif —
+    exactement l'anomalie que le contrôle 18 (Terminated Users and
+    Transferred users) doit faire ressortir pour la partie "transferred".
+
+    Un homonyme entre deux employés distincts n'est PAS résolu au hasard :
+    voir la même logique de détection d'ambiguïté que
+    cross_reference_with_hr, avec le même principe (mieux vaut un faux
+    positif signalé "à vérifier" qu'un vrai cas raté silencieusement).
+    """
+    iam_df = iam_df.copy()
+    if "full_name" not in iam_df.columns or transferred_df.empty:
+        iam_df["is_transferred_but_active"] = False
+        return iam_df
+
+    transferred_df = transferred_df.copy()
+    transferred_df["_name_key"] = transferred_df["full_name"].apply(_normalize_name_bag)
+    name_counts = transferred_df["_name_key"].value_counts()
+    ambiguous_keys = set(name_counts[name_counts > 1].index)
+    if ambiguous_keys:
+        logger.warning(
+            f"{len(ambiguous_keys)} nom(s) partagé(s) par plusieurs personnes transférées "
+            "dans le fichier RH — les comptes IAM correspondants sont signalés comme "
+            "'transféré (nom ambigu)' plutôt que rapprochés au hasard."
+        )
+    transferred_keys = set(transferred_df["_name_key"]) - ambiguous_keys
+
+    iam_name_keys = iam_df["full_name"].apply(_normalize_name_bag)
+    is_match = iam_name_keys.isin(transferred_keys)
+    is_ambiguous_match = iam_name_keys.isin(ambiguous_keys)
+    is_active = (
+        iam_df["account_status"].apply(_is_active_account)
+        if "account_status" in iam_df.columns
+        else pd.Series(True, index=iam_df.index)  # statut inconnu : signalé par prudence
+    )
+
+    iam_df["is_transferred_but_active"] = (is_match | is_ambiguous_match) & is_active
+    iam_df["transferred_name_ambiguous"] = is_ambiguous_match & is_active
+
+    n_flagged = int(iam_df["is_transferred_but_active"].sum())
+    if n_flagged:
+        logger.info(
+            f"{n_flagged} compte(s) actif(s) appartenant à une personne transférée/mutée "
+            "identifiée par nom dans le fichier RH — accès à revoir suite à la mutation."
+        )
+    return iam_df
+
+
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent))

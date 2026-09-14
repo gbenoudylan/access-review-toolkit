@@ -118,7 +118,7 @@ def test_pdf_report_includes_header_and_controls_reference():
     from reporting.template_sections import TEMPLATE_CONTROLS
     import pdfplumber
 
-    assert len(TEMPLATE_CONTROLS) == 18
+    assert len(TEMPLATE_CONTROLS) == 19
 
     df = pd.DataFrame({"username": ["jdupont"], "system": ["Active Directory"]})
     result = analyze_access(df)
@@ -319,13 +319,18 @@ def test_logo_missing_file_does_not_crash():
 
 
 def test_logo_inserted_when_valid_path_given():
-    """Un fichier logo valide doit produire un PDF plus volumineux
-    (image effectivement incluse) qu'un rapport identique sans logo."""
+    """Un fichier logo valide doit produire un PDF contenant réellement
+    une image intégrée — vérifié directement (image XObject présente),
+    pas par une comparaison de taille de fichier globale, trop fragile
+    face à toute variation de compression sans rapport avec le logo
+    lui-même (ex. ajout d'un contrôle supplémentaire ailleurs dans le
+    document, qui déplace la pagination sans rien changer au logo)."""
     import pandas as pd
     import tempfile
     from PIL import Image
     from analysis.access_review import analyze_access
     from reporting.export import generate_pdf_report
+    import pdfplumber
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         logo_path = tmp.name
@@ -334,7 +339,12 @@ def test_logo_inserted_when_valid_path_given():
     df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
     without = generate_pdf_report(df, "output/test_logo_compare_without.pdf")
     with_logo = generate_pdf_report(df, "output/test_logo_compare_with.pdf", logo_path=logo_path)
-    assert Path(with_logo).stat().st_size > Path(without).stat().st_size
+
+    with pdfplumber.open(without) as pdf:
+        images_without = len(pdf.pages[0].images)
+    with pdfplumber.open(with_logo) as pdf:
+        images_with = len(pdf.pages[0].images)
+    assert images_with > images_without, "Le logo ne semble pas avoir été intégré au PDF"
     print("OK - test_logo_inserted_when_valid_path_given")
 
 
@@ -782,7 +792,7 @@ def test_compute_control_coverage_shared_by_pdf_and_dashboard():
     })
     result = analyze_access(df)
     coverage = compute_control_coverage(result, {})
-    assert len(coverage) == 18
+    assert len(coverage) == 19
     dormant_entry = next(c for c in coverage if c[1] == "Dormant Accounts")
     assert dormant_entry[2] == "⚠️"  # jdupont est dormant -> anomalie détectée
     assert dormant_entry[3] == "1"
@@ -1031,3 +1041,160 @@ def test_review_comparison_normalizes_case_for_created_deleted():
     assert stats["created"] == 1 and stats["created_accounts"] == ["new_user"]
     assert stats["deleted"] == 1 and stats["deleted_accounts"] == ["old_user"]
     print("OK - test_review_comparison_normalizes_case_for_created_deleted")
+
+
+def test_accounts_created_uses_direct_date_when_available_no_previous_review_needed():
+    """
+    Demande explicite : le contrôle 'Accounts created' doit d'abord
+    utiliser account_created_date directement (comptes créés dans les 90
+    jours depuis la date d'extraction), sans nécessiter de revue
+    précédente — la comparaison avec une revue précédente ne sert que de
+    repli quand cette colonne est absente. Confirmé cohérent avec le
+    texte officiel du template ('check the creation date... if the
+    system does not provide creation, perform the comparison...').
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    df = pd.DataFrame({
+        "username": ["u1", "u2"], "system": ["AD"] * 2,
+        "account_created_date": ["2026-08-15", "2020-01-01"],
+    })
+    result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-12"))
+    output = generate_pdf_report(result, "output/test_created_direct.pdf")
+    with pdfplumber.open(output) as pdf:
+        text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    idx = text.find("10.Accounts created")
+    snippet = text[idx:idx + 700]
+    assert "1 account(s) concerned" in snippet
+    assert "u1" in snippet
+    assert "u2" not in snippet
+    print("OK - test_accounts_created_uses_direct_date_when_available_no_previous_review_needed")
+
+
+def test_accounts_created_falls_back_to_comparison_without_creation_date():
+    """Sans 'account_created_date', le contrôle doit se replier sur la
+    comparaison avec une revue précédente (comportement déjà existant),
+    pas afficher N/A à tort si une revue précédente est fournie."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    previous = pd.DataFrame({"username": ["u1"], "system": ["AD"], "account_status": ["Active"]})
+    current = pd.DataFrame({"username": ["u1", "u2"], "system": ["AD"] * 2, "account_status": ["Active"] * 2})
+    prev_result = analyze_access(previous)
+    curr_result = analyze_access(current)
+    output = generate_pdf_report(curr_result, "output/test_created_fallback.pdf", previous_df=prev_result)
+    with pdfplumber.open(output) as pdf:
+        text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    idx = text.find("10.Accounts created")
+    snippet = text[idx:idx + 700]
+    assert "1 account(s) concerned" in snippet
+    assert "u2" in snippet
+    print("OK - test_accounts_created_falls_back_to_comparison_without_creation_date")
+
+
+def test_profile_modified_and_reactivated_show_before_after_comparison_table():
+    """
+    Demande explicite : Profile Modified et Reactivated accounts
+    doivent afficher un tableau Account/System/ancienne valeur+date/
+    nouvelle valeur+date, pas juste un compte sans contexte de CE qui a
+    changé.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report, generate_word_report
+    import pdfplumber
+    from docx import Document
+
+    previous = pd.DataFrame({
+        "username": ["jdupont", "mmartin"], "system": ["AD"] * 2,
+        "account_status": ["Active", "Disabled"], "role": ["Standard User", "Standard User"],
+    })
+    current = pd.DataFrame({
+        "username": ["jdupont", "mmartin"], "system": ["AD"] * 2,
+        "account_status": ["Active", "Active"], "role": ["Administrator", "Standard User"],
+    })
+    prev_result = analyze_access(previous)
+    curr_result = analyze_access(current)
+
+    pdf_path = generate_pdf_report(
+        curr_result, "output/test_pm_pdf.pdf", previous_df=prev_result,
+        current_extraction_date="2026-09-12", previous_extraction_date="2026-06-01",
+    )
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    pm_idx = text.find("11.Profile Modified")
+    pm_snippet = text[pm_idx:pm_idx + 400]
+    assert "Standard User" in pm_snippet and "Administrator" in pm_snippet
+    assert "2026-06-01" in pm_snippet and "2026-09-12" in pm_snippet
+
+    react_idx = text.find("12.Reactivated accounts")
+    react_snippet = text[react_idx:react_idx + 400]
+    assert "Disabled" in react_snippet and "Active" in react_snippet
+    assert "2026-06-01" in react_snippet and "2026-09-12" in react_snippet
+
+    word_path = generate_word_report(
+        curr_result, "output/test_pm_word.docx", previous_df=prev_result,
+        current_extraction_date="2026-09-12", previous_extraction_date="2026-06-01",
+    )
+    doc = Document(str(word_path))
+    found_profile_table = False
+    for table in doc.tables:
+        header = [c.text for c in table.rows[0].cells]
+        if "Previous Profile" in header:
+            found_profile_table = True
+            row = [c.text for c in table.rows[1].cells]
+            assert row == ["jdupont", "AD", "Standard User", "2026-06-01", "Administrator", "2026-09-12"]
+    assert found_profile_table
+    print("OK - test_profile_modified_and_reactivated_show_before_after_comparison_table")
+
+
+def test_control_19_present_and_annex_f_referenced():
+    """Nouvelle section 19 (First line user access review report and
+    accuracy) et référence Annexe F, demandées explicitement, doivent
+    apparaître dans le PDF et dans Word."""
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report, generate_word_report
+    import pdfplumber
+    from docx import Document
+
+    df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
+    pdf_path = generate_pdf_report(df, "output/test_control19.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        pdf_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    assert "19.First line user access review report and accuracy" in pdf_text
+    assert "F. First List user access review Report" in pdf_text
+
+    word_path = generate_word_report(df, "output/test_control19.docx")
+    doc = Document(str(word_path))
+    word_text = "\n".join(p.text for p in doc.paragraphs)
+    assert any("First line user access review report and accuracy" in p.text for p in doc.paragraphs)
+    assert any("First List user access review Report" in p.text for p in doc.paragraphs)
+    print("OK - test_control_19_present_and_annex_f_referenced")
+
+
+def test_word_document_has_real_metadata_not_2013_placeholder():
+    """
+    Trouvé en investiguant le souci d'édition SharePoint : python-docx
+    laisse par défaut une date de création/modification figée sur 2013
+    (celle de son modèle interne) et un auteur vide — un signal de
+    non-fiabilité pour tout système affichant ces métadonnées, corrigé
+    avec la vraie date de génération et l'éditeur renseigné.
+    """
+    import pandas as pd
+    from datetime import datetime
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+    from docx import Document
+
+    df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
+    output = generate_word_report(df, "output/test_metadata.docx", editor="Dylan Gbenou")
+    doc = Document(str(output))
+    assert doc.core_properties.author == "Dylan Gbenou"
+    assert doc.core_properties.created.year == datetime.now().year
+    print("OK - test_word_document_has_real_metadata_not_2013_placeholder")

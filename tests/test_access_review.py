@@ -42,7 +42,7 @@ def test_dormant_account_detected():
 def test_recent_login_not_dormant():
     """Un compte connecté récemment ne doit pas être flagué dormant."""
     df = pd.DataFrame({
-        "username": ["active_user"],
+        "username": ["jkouassi"],
         "system": ["SAP"],
         "last_login_date": [pd.Timestamp.now().strftime("%Y-%m-%d")],
     })
@@ -1155,3 +1155,34 @@ def test_unparseable_but_present_login_date_treated_as_worst_case():
     # u3 : jamais connecté (marqueur explicite) -> is_never_used, PAS ce nouveau drapeau
     assert result.loc[2, "last_login_date_unparseable"] == False
     print("OK - test_unparseable_but_present_login_date_treated_as_worst_case")
+
+
+def test_orphaned_account_generic_name_detection():
+    """
+    Contrôle 3 (Orphaned Accounts) : détection par nom générique
+    (admin, support, service, sales...), méthode et liste reprises
+    fidèlement d'une formule Excel (ESTNUM(CHERCHE(...))) déjà en usage
+    en production — recherche de sous-chaîne, sans frontière de mot,
+    insensible à la casse. Restreint aux comptes actifs (définition du
+    contrôle : "Accounts with active status...").
+    """
+    df = pd.DataFrame({
+        "username": ["admin_finance", "jdupont", "svc_backup", "sales_team", "guest01"],
+        "system": ["AD"] * 5, "account_status": ["Active"] * 5,
+    })
+    result = analyze_access(df)
+    assert result["is_orphaned_account"].tolist() == [True, False, True, True, True]
+    assert result.loc[0, "review_action"] == "Vérifier (compte générique/orphelin présumé)"
+    print("OK - test_orphaned_account_generic_name_detection")
+
+
+def test_orphaned_account_requires_active_status_when_known():
+    """La définition du contrôle précise 'Accounts with ACTIVE status' —
+    un compte générique mais désactivé ne doit pas être signalé comme
+    orphelin actif."""
+    df = pd.DataFrame({
+        "username": ["admin_old"], "system": ["AD"], "account_status": ["Disabled"],
+    })
+    result = analyze_access(df)
+    assert result.loc[0, "is_orphaned_account"] == False
+    print("OK - test_orphaned_account_requires_active_status_when_known")

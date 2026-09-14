@@ -29,6 +29,7 @@ logger = logging.getLogger("access_review")
 
 DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
 PASSWORD_STALE_THRESHOLD_DAYS = 90  # standard interne MTN : 90 jours pour les comptes standards
+RECENTLY_CREATED_THRESHOLD_DAYS = 90  # fenêtre du contrôle 10 "Accounts created"
 
 ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "y", "true", "1", "open"}
 TERMINATED_STATUS_VALUES = {
@@ -144,6 +145,30 @@ _TEST_ACCOUNT_RE = re.compile(
     r"test(ing)?|(^|[_\-\.])(uat|qa|dummy|demo|sandbox)(ing)?([_\-\.]|\d|$)",
     re.IGNORECASE,
 )
+
+# Comptes génériques (contrôle 3, "Orphaned Accounts") : un compte dont le
+# nom ne permet pas d'identifier une personne précise (admin, support,
+# service...) est le cas type d'un compte "orphelin" au sens du contrôle
+# ("no information that would allow the holder to be positively
+# identified"). Liste et méthode (recherche de sous-chaîne, sans
+# frontière de mot, insensible à la casse) reprises telles quelles d'une
+# formule Excel (ESTNUM(CHERCHE(...))) déjà utilisée en production —
+# fidèlement reproduites plutôt que réinterprétées, pour donner
+# exactement le même résultat que le processus existant.
+_GENERIC_ACCOUNT_MARKERS = [
+    "user", "admin", "guest", "support", "service", "root", "info",
+    "system", "manager", "backup", "operator", "developer", "superuser",
+    "anonymous", "account", "public", "maintenance", "sales",
+]
+_ORPHANED_ACCOUNT_RE = re.compile(
+    "|".join(re.escape(m) for m in _GENERIC_ACCOUNT_MARKERS), re.IGNORECASE
+)
+
+
+def _is_orphaned_account_name(username) -> bool:
+    if username is None:
+        return False
+    return bool(_ORPHANED_ACCOUNT_RE.search(str(username).strip()))
 
 
 def _is_test_account_name(username) -> bool:
@@ -518,6 +543,7 @@ def analyze_access(
     dormant_threshold_days: int = DORMANT_THRESHOLD_DAYS,
     password_stale_threshold_days: int = PASSWORD_STALE_THRESHOLD_DAYS,
     never_used_threshold_days: int = 30,
+    recently_created_threshold_days: int = RECENTLY_CREATED_THRESHOLD_DAYS,
     reference_datetime: datetime | None = None,
 ) -> pd.DataFrame:
     """
@@ -651,6 +677,21 @@ def analyze_access(
         # laisser passer un vraiment jamais utilisé).
         df["is_never_used"] = never_logged_in
 
+    # Contrôle 10 "Accounts created" : calculé DIRECTEMENT depuis la date
+    # de création quand elle est disponible — un compte créé dans les 90
+    # derniers jours (depuis la date d'extraction, pas nécessairement
+    # aujourd'hui) n'a besoin d'aucune revue précédente pour être identifié.
+    # Sans 'account_created_date', ce drapeau reste à False (repli sur la
+    # comparaison avec une revue précédente, gérée séparément par
+    # reporting/export.py — les deux méthodes ne sont pas redondantes,
+    # chacune couvre un cas où l'autre est impossible).
+    if "account_created_date" in df.columns:
+        df["is_recently_created"] = df["days_since_creation"].apply(
+            lambda d: d is not None and 0 <= d <= recently_created_threshold_days
+        )
+    else:
+        df["is_recently_created"] = False
+
     # Un compte verrouillé (locked) n'est pas un compte "dormant" au sens
     # du contrôle standard ("Accounts that are in ACTIVE status but were
     # last logged in more than 90 days ago") : il est déjà bloqué, sans
@@ -783,9 +824,24 @@ def analyze_access(
         # Contrôle 4 (Test Accounts) : indice par convention de nommage
         # uniquement — jamais traité comme une certitude (voir _TEST_ACCOUNT_RE).
         df["is_test_account"] = df["username"].apply(_is_test_account_name)
+        # Contrôle 3 (Orphaned Accounts) : "Accounts with active status,
+        # but no information that would allow the holder to be positively
+        # identified" — un nom de compte générique (admin, support,
+        # service...) en est le cas type. Restreint aux comptes ACTIFS
+        # (la définition du contrôle le précise explicitement) quand le
+        # statut est disponible ; sans lui, retient quand même le signal
+        # nominatif plutôt que de le perdre (mieux vaut signaler un
+        # compte finalement inactif que d'en laisser passer un vraiment
+        # orphelin).
+        is_generic_name = df["username"].apply(_is_orphaned_account_name)
+        if "account_status" in df.columns:
+            df["is_orphaned_account"] = is_generic_name & df["account_status"].apply(_is_active_account)
+        else:
+            df["is_orphaned_account"] = is_generic_name
     else:
         df["is_service_account"] = False
         df["is_test_account"] = False
+        df["is_orphaned_account"] = False
 
     # Contrôle 9 (Naming convention) : vérifiable seulement si un nom
     # complet (ou prénom/nom séparés) est disponible pour comparer à la
@@ -920,6 +976,13 @@ def _determine_action(row) -> str:
         # automatique, juste une vérification — beaucoup de vrais comptes
         # légitimes peuvent contenir ces motifs par coïncidence.
         return "Vérifier (compte de test présumé)"
+    if row.get("is_orphaned_account", False):
+        # Contrôle 3 : même prudence que pour le compte de test — un nom
+        # générique est un indice, pas une certitude (un vrai compte
+        # métier peut légitimement contenir un de ces mots). Le
+        # référentiel demande un renommage "quand possible", pas une
+        # désactivation directe.
+        return "Vérifier (compte générique/orphelin présumé)"
     if row.get("is_non_compliant_naming", False):
         return "Renommer selon la convention"
     return "Aucune action"

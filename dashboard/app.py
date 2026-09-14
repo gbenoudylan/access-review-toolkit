@@ -6,6 +6,7 @@ Lancement :
 """
 
 from __future__ import annotations
+import logging
 import sys
 import tempfile
 from datetime import datetime
@@ -19,7 +20,7 @@ import streamlit as st
 
 from ingestion.ingest import load_file, IngestionError, compute_data_quality_report
 from analysis.access_review import analyze_access, summarize
-from analysis.hr_crossref import cross_reference_with_hr
+from analysis.hr_crossref import cross_reference_with_hr, load_transferred_employees, flag_transferred_but_still_active
 from analysis.sod_detection import detect_sod_conflicts, load_custom_sod_matrix
 from analysis.trend_tracking import record_cycle_snapshot, load_trend_history
 from analysis.review_workflow import (
@@ -43,6 +44,9 @@ def run_pipeline(
     password_stale_threshold_days: int = 90,
     never_used_threshold_days: int = 30,
     sod_conflicts: list = None,
+    extraction_date: str = None,
+    transfer_file_bytes: bytes = None, transfer_filename: str = None,
+    transfer_sheet_name: str = None,
 ) -> pd.DataFrame:
     suffix = Path(filename).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -57,13 +61,41 @@ def run_pipeline(
             hr_tmp_path = hr_tmp.name
         df = cross_reference_with_hr(df, hr_df_raw_path=hr_tmp_path)
 
+    # Date d'extraction comme référence pour tous les calculs d'ancienneté :
+    # une revue peut porter sur un fichier extrait il y a plusieurs semaines,
+    # pas nécessairement aujourd'hui — sans ce paramètre, un compte inactif
+    # depuis l'extraction serait sous-évalué (comparé à "aujourd'hui" plutôt
+    # qu'à la vraie date de la photo des données).
+    reference_dt = datetime.strptime(extraction_date, "%Y-%m-%d") if extraction_date else None
+
     df = analyze_access(
         df,
         dormant_threshold_days=dormant_threshold_days,
         password_stale_threshold_days=password_stale_threshold_days,
         never_used_threshold_days=never_used_threshold_days,
+        reference_datetime=reference_dt,
     )
     df = detect_sod_conflicts(df, conflicts=sod_conflicts)
+
+    if transfer_file_bytes is not None:
+        transfer_suffix = Path(transfer_filename).suffix
+        with tempfile.NamedTemporaryFile(suffix=transfer_suffix, delete=False) as transfer_tmp:
+            transfer_tmp.write(transfer_file_bytes)
+            transfer_tmp_path = transfer_tmp.name
+        try:
+            transferred = load_transferred_employees(transfer_tmp_path, sheet_name=transfer_sheet_name or None)
+            df = flag_transferred_but_still_active(df, transferred)
+            # Contrôle 18 ("Terminated Users AND Transferred users") : les
+            # deux anomalies (parti mais actif / transféré mais actif)
+            # relèvent du même contrôle dans le référentiel officiel —
+            # combinées ici pour que le rapport les fasse ressortir
+            # ensemble, sans dupliquer la logique de rendu du contrôle.
+            df["is_terminated_but_active"] = (
+                df.get("is_terminated_but_active", False) | df["is_transferred_but_active"]
+            )
+        except (ValueError, KeyError) as e:
+            logging.getLogger("dashboard").warning(f"Fichier de mutations ignoré : {e}")
+
     return df
 
 
@@ -92,6 +124,14 @@ def main():
                  "Renseigne un nom ici s'il manque — sinon, le nom du "
                  "fichier sera utilisé par défaut.",
         )
+        extraction_date = st.date_input(
+            "Date d'extraction de ce fichier", value=datetime.now().date(),
+            help="Si ce fichier n'a pas été extrait aujourd'hui (revue d'une "
+                 "extraction plus ancienne), indique la vraie date ici — tous "
+                 "les calculs d'ancienneté (dormance, mot de passe, comptes "
+                 "créés récemment...) sont faits depuis CETTE date, pas "
+                 "depuis aujourd'hui.",
+        )
         use_sample = False
         if uploaded_file is None:
             use_sample = st.checkbox("Utiliser un fichier d'exemple", value=True)
@@ -106,6 +146,27 @@ def main():
                  "exports LDAP/AD qui ne contiennent pas nativement cette "
                  "information. La source RH fait autorité sur le statut employé.",
         )
+
+        st.divider()
+        st.subheader("🔄 Comptes transférés/mutés (optionnel)")
+        transfer_uploaded_file = st.file_uploader(
+            "Fichier RH de mouvements (feuille Affectation/Mutation)",
+            type=["xlsx", "xls"],
+            help="Classeur RH multi-feuilles où seule la feuille de "
+                 "mutation/affectation est utilisée (colonnes attendues : "
+                 "'Nom & Prénoms', 'Ancienne Direction', 'Nouvelle "
+                 "Direction'). La RH n'y fournit que des noms — les comptes "
+                 "correspondants sont reconnus par nom dans les systèmes, "
+                 "et ceux encore actifs sont signalés (contrôle 18).",
+        )
+        transfer_sheet_name = None
+        if transfer_uploaded_file is not None:
+            transfer_sheet_name = st.text_input(
+                "Nom exact de la feuille (si non détecté automatiquement)",
+                placeholder="ex. Affectation-Mutation 2026",
+                help="Laisser vide : la première feuille dont le nom contient "
+                     "'affectation', 'mutation' ou 'transfert' est utilisée.",
+            )
 
         st.divider()
         st.subheader("⚙️ Seuils des contrôles")
@@ -146,6 +207,8 @@ def main():
             with st.spinner("Traitement du fichier..."):
                 hr_bytes = hr_uploaded_file.getvalue() if hr_uploaded_file else None
                 hr_name = hr_uploaded_file.name if hr_uploaded_file else None
+                transfer_bytes = transfer_uploaded_file.getvalue() if transfer_uploaded_file else None
+                transfer_name = transfer_uploaded_file.name if transfer_uploaded_file else None
                 df = run_pipeline(
                     uploaded_file.getvalue(), uploaded_file.name, hr_bytes, hr_name,
                     default_system=default_system,
@@ -153,6 +216,9 @@ def main():
                     password_stale_threshold_days=password_stale_threshold_days,
                     never_used_threshold_days=never_used_threshold_days,
                     sod_conflicts=sod_conflicts,
+                    extraction_date=extraction_date.strftime('%Y-%m-%d'),
+                    transfer_file_bytes=transfer_bytes, transfer_filename=transfer_name,
+                    transfer_sheet_name=transfer_sheet_name or None,
                 )
         elif use_sample:
             sample_path = Path(__file__).parent.parent / "data" / "export_test_A.csv"
@@ -163,6 +229,7 @@ def main():
                     password_stale_threshold_days=password_stale_threshold_days,
                     never_used_threshold_days=never_used_threshold_days,
                     sod_conflicts=sod_conflicts,
+                    extraction_date=extraction_date.strftime('%Y-%m-%d'),
                 )
     except IngestionError as e:
         error = f"Erreur d'ingestion : {e}"
@@ -538,6 +605,12 @@ def main():
                  "automatiquement les comptes créés, supprimés, réactivés et les profils "
                  "modifiés entre les deux cycles.",
         )
+        previous_extraction_date = st.date_input(
+            "Date d'extraction de cette revue précédente", value=None,
+            help="Utilisée dans les tableaux de comparaison (Profile Modified, Reactivated "
+                 "accounts) pour dater précisément l'ancienne valeur, à côté de la nouvelle.",
+            key="previous_extraction_date_input",
+        )
 
     with st.expander("En-tête du document officiel — optionnel"):
         header_col1, header_col2 = st.columns(2)
@@ -633,6 +706,10 @@ def main():
                     previous_df=previous_df,
                     logo_path=logo_path,
                     dormant_threshold_days=dormant_threshold_days,
+                    current_extraction_date=extraction_date.strftime("%Y-%m-%d"),
+                    previous_extraction_date=(
+                        previous_extraction_date.strftime("%Y-%m-%d") if previous_extraction_date else None
+                    ),
                 )
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(
@@ -657,6 +734,10 @@ def main():
                     previous_df=previous_df,
                     logo_path=logo_path,
                     dormant_threshold_days=dormant_threshold_days,
+                    current_extraction_date=extraction_date.strftime("%Y-%m-%d"),
+                    previous_extraction_date=(
+                        previous_extraction_date.strftime("%Y-%m-%d") if previous_extraction_date else None
+                    ),
                 )
                 buf = BytesIO(tmp_docx.read_bytes())
             st.download_button(

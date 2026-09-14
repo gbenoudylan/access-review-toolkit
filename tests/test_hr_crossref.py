@@ -142,3 +142,73 @@ def test_hr_crossref_prefers_username_over_name_when_both_available():
     result = cross_reference_with_hr(iam_df, hr_df_raw_path=path)
     assert result.loc[0, "employee_status"] == "Actif"
     print("OK - test_hr_crossref_prefers_username_over_name_when_both_available")
+
+
+def test_load_transferred_employees_auto_detects_sheet_and_columns():
+    """
+    Demande explicite : reconnaître les comptes de personnes transférées
+    à partir d'un fichier RH qui ne fournit que des noms, sur une
+    feuille dédiée aux mutations/affectations au sein d'un classeur
+    multi-feuilles — la feuille et les colonnes (variantes 'Nom &
+    Prénoms', 'Ancienne Direction'...) doivent être détectées
+    automatiquement.
+    """
+    import openpyxl
+    import tempfile
+    from analysis.hr_crossref import load_transferred_employees
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Affectation-Mutation 2026"
+    ws.append(["Nom & Prénoms", "Mois & Date", "Ancienne Direction", "nouvelle Direction"])
+    ws.append(["Jean Dupont", "Mars 2026", "IT Security", "Finance"])
+    ws.append(["Marie Martin", "Juin 2026", "Sales", "HR"])
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    wb.save(path)
+
+    result = load_transferred_employees(path)
+    assert list(result["full_name"]) == ["Jean Dupont", "Marie Martin"]
+    assert list(result["old_department"]) == ["IT Security", "Sales"]
+    assert list(result["new_department"]) == ["Finance", "HR"]
+    print("OK - test_load_transferred_employees_auto_detects_sheet_and_columns")
+
+
+def test_flag_transferred_but_still_active_only_flags_active_matches():
+    """Seuls les comptes ACTIFS de personnes transférées doivent être
+    signalés — un compte déjà désactivé après transfert n'est pas
+    l'anomalie que ce contrôle cherche à faire ressortir."""
+    import pandas as pd
+    from analysis.hr_crossref import flag_transferred_but_still_active
+
+    transferred = pd.DataFrame({
+        "full_name": ["Jean Dupont", "Marie Martin"],
+        "old_department": ["IT Security", "Sales"], "new_department": ["Finance", "HR"],
+    })
+    iam_df = pd.DataFrame({
+        "username": ["jdupont", "mmartin", "kbrou"],
+        "full_name": ["Jean Dupont", "Marie Martin", "Koffi Brou"],
+        "system": ["AD"] * 3, "account_status": ["Active", "Disabled", "Active"],
+    })
+    result = flag_transferred_but_still_active(iam_df, transferred)
+    assert result["is_transferred_but_active"].tolist() == [True, False, False]
+    print("OK - test_flag_transferred_but_still_active_only_flags_active_matches")
+
+
+def test_flag_transferred_ignores_word_order_and_flags_homonyms():
+    """Même logique de rapprochement que le repli par nom de
+    cross_reference_with_hr : indépendant de l'ordre des mots, et les
+    homonymes entre personnes transférées distinctes sont signalés
+    comme ambigus plutôt que résolus au hasard."""
+    import pandas as pd
+    from analysis.hr_crossref import flag_transferred_but_still_active
+
+    transferred = pd.DataFrame({"full_name": ["Dupont Jean", "Jean Dupont"]})  # homonymes (ordre différent en plus)
+    iam_df = pd.DataFrame({
+        "username": ["jdupont"], "full_name": ["Jean Dupont"],
+        "system": ["AD"], "account_status": ["Active"],
+    })
+    result = flag_transferred_but_still_active(iam_df, transferred)
+    assert result.loc[0, "is_transferred_but_active"] == True
+    assert result.loc[0, "transferred_name_ambiguous"] == True
+    print("OK - test_flag_transferred_ignores_word_order_and_flags_homonyms")

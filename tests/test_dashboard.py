@@ -49,6 +49,7 @@ def test_dashboard_is_single_page_with_reports_at_the_bottom():
     sidebar_subheaders = {
         "🔗 Croisement RH (optionnel)", "⚙️ Seuils des contrôles",
         "🔐 Matrice SoD personnalisée (optionnel)",
+        "🔄 Comptes transférés/mutés (optionnel)",
     }
     main_subheaders = [s.value for s in at.subheader if s.value not in sidebar_subheaders]
     assert main_subheaders[-1] == "Rapports formatés"
@@ -75,7 +76,7 @@ def test_dashboard_main_content_has_no_emoji():
     for line in source.splitlines():
         if emoji_pattern.search(line) and not any(a in line for a in allowed_snippets):
             # La barre latérale a ses propres emojis, hors du périmètre de cette contrainte.
-            if "st.header(" in line or "🔗" in line or "⚙️" in line or "🔐" in line:
+            if "st.header(" in line or "🔗" in line or "⚙️" in line or "🔐" in line or "🔄" in line:
                 continue
             offending_lines.append(line)
     assert not offending_lines, f"Emoji(s) trouvé(s) hors barre latérale : {offending_lines}"

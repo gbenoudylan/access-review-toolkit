@@ -84,6 +84,10 @@ TEMPLATE_CONTROLS = [
      "User(MTNER or third party ) who left MTN or User who changed the position have they access "
      "revoked /Verify that accounts belonging to terminated employees, contractors, or third "
      "parties have been disabled as defined by the User Access Management Procedure."),
+    (19, "First line user access review report and accuracy",
+     "Verify that the application owner performs monthly user access reviews using the "
+     "approved template and confirm that the review report is complete, accurate, and "
+     "supported by sufficient evidence."),
 ]
 
 OBJECTIVE_INTRO = (
@@ -147,7 +151,7 @@ DUMP_COMPLETENESS_COLUMNS = [
 # (numéro, titre exact, consigne exacte ou None, clé de donnée ou None)
 CONTROL_SUBSECTIONS = [
     (2, "Dormant Accounts", "Guidance : Check the last login that exceed 90 days", "is_dormant"),
-    (3, "Orphaned Accounts", None, None),
+    (3, "Orphaned Accounts", None, "is_orphaned_account"),
     (4, "Test Accounts", None, "is_test_account"),
     (5, "Active Accounts", None, "_active_count"),
     (6, "Inactive Accounts", None, "is_never_used"),
@@ -172,6 +176,11 @@ CONTROL_SUBSECTIONS = [
      "position from HR and get the list of relevant contractor that have access to the "
      "systems , compare that list of active user in the application.",
      "is_terminated_but_active"),
+    (19, "First line user access review report and accuracy",
+     "Guidance : Verify that the application owner performs monthly user access reviews "
+     "using the approved template and confirm that the review report is complete, "
+     "accurate, and supported by sufficient evidence.",
+     None),
 ]
 
 CONCLUSION_HEADING = "V. CONCLUSION"
