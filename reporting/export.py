@@ -90,82 +90,6 @@ RISK_COLORS_HEX = {
 # secteur (revue trimestrielle des accès), jamais copiée d'un document
 # précis : ces recommandations sont volontairement génériques pour rester
 # valables quelle que soit l'entreprise ou le système concerné.
-# Annexes de référence (preuves à l'appui, pas calculées depuis les
-# données ingérées) — attachées/référencées manuellement par le
-# reviewer, listées ici pour rappel structuré plutôt que dispersées.
-# Lettrage demandé tel quel (E volontairement absent).
-ANNEXES_REFERENCE = [
-    ("A", "User access form of created accounts",
-     "Attach or reference the approved access request form(s) for each account "
-     "identified in control 10 (Accounts created)."),
-    ("B", "Justification of Reactivated accounts",
-     "Attach or reference the business justification for each account identified "
-     "in control 12 (Reactivated accounts)."),
-    ("C", "Rationale for Profile Change",
-     "Attach or reference the approval/rationale for each profile change "
-     "identified in control 11 (Profile Modified)."),
-    ("D", "List Of Users Used for the review",
-     "Attach or reference the full list of user accounts covered by this review "
-     "cycle, as extracted from the source system(s)."),
-    ("F", "First List user access review Report",
-     "Attach or reference the approved monthly user access review report(s) used "
-     "as evidence for control 19 (First line user access review report and "
-     "accuracy)."),
-]
-
-ACTION_NARRATIVE = {
-    "Vérifier (date de dernière connexion non exploitable)": (
-        "The last login date for these accounts is present but not usable as-is "
-        "(truncated format, missing weekday and month — the day and year are known, "
-        "the month is not). Recommended action: verify the source date before any "
-        "decision — the account is neither confirmed dormant nor cleared, its real "
-        "login recency remains genuinely unknown."
-    ),
-    "Révoquer immédiatement": (
-        "These accounts remain active while the associated person has left "
-        "the company. Recommended action: immediate access revocation."
-    ),
-    "Désactiver (privilégié dormant)": (
-        "These accounts hold elevated privileges and have recorded no login "
-        "since the retained dormancy threshold. Recommended action: "
-        "disable — the level of access involved warrants heightened "
-        "vigilance."
-    ),
-    "Forcer l'expiration du mot de passe (privilégié)": (
-        "These privileged accounts have a password configured to never "
-        "expire. Recommended action: apply a standard expiration policy, "
-        "and document any justified exception (service account with "
-        "dedicated monitoring)."
-    ),
-    "Désactiver (dormant)": (
-        "These accounts have recorded no login since the retained "
-        "dormancy threshold. Recommended action: verify with the business "
-        "owner, then disable if the usage is no longer justified."
-    ),
-    "Exiger un changement de mot de passe": (
-        "The password for these accounts has not been renewed since the "
-        "retained threshold. Recommended action: force a change at next "
-        "login."
-    ),
-    "Identifier un owner": (
-        "No manager or business owner is identified for these accounts. "
-        "Recommended action: designate an owner responsible for validating "
-        "the legitimacy of the access."
-    ),
-    "Vérifier avec le propriétaire technique (compte de service)": (
-        "These service accounts have recorded no activity since the "
-        "retained dormancy threshold. Recommended action: verify with the "
-        "technical owner whether they are still used by an automated "
-        "process before any decision — a direct disable could break a "
-        "process still in use."
-    ),
-    "Fusionner les doublons (ne garder qu'un compte actif)": (
-        "Several active accounts appear to belong to the same person on "
-        "the same system. Recommended action: confirm the duplicate with "
-        "the account holder, then disable all but one active account."
-    ),
-}
-
 DISPLAY_COLUMNS = [
     ("username", "Account"),
     ("user_id", "Employee ID"),
@@ -515,105 +439,6 @@ def _compute_column_widths(columns: list[str], available_width: float) -> list[f
     weights = [COLUMN_WIDTH_WEIGHTS.get(col, 1.0) for col in columns]
     total_weight = sum(weights)
     return [available_width * w / total_weight for w in weights]
-
-
-def _risk_styled_table(export_df: pd.DataFrame, available_width: float) -> Table:
-    """Construit une table stylée (en-tête sombre, lignes alternées, cellule
-    Risque colorée), avec des largeurs de colonnes proportionnelles à la
-    largeur réelle de la page plutôt qu'au seul contenu, et un retour à la
-    ligne automatique — sur les en-têtes ET sur les colonnes de texte long
-    (sans quoi un libellé de colonne trop long déborde silencieusement sur
-    la colonne voisine plutôt que de simplement passer à la ligne)."""
-    cell_style = ParagraphStyle("Cell", fontSize=7.5, leading=9, fontName=DEFAULT_FONT)
-    header_style = ParagraphStyle(
-        "CellHeader", fontSize=7.5, leading=9, fontName=DEFAULT_FONT_BOLD, textColor=colors.white,
-    )
-    columns = list(export_df.columns)
-    col_widths = _compute_column_widths(columns, available_width)
-
-    header_row = [Paragraph(str(col), header_style) for col in columns]
-    data_rows = []
-    # .astype(str) ne convertit pas les valeurs manquantes (NaN) en texte —
-    # elles restent des float et font planter Paragraph() plus bas, qui
-    # exige une vraie chaîne. On les remplace explicitement avant conversion.
-    for record in export_df.fillna("").astype(str).values.tolist():
-        row = []
-        for col_name, value in zip(columns, record):
-            if col_name in WRAP_COLUMNS:
-                row.append(Paragraph(value, cell_style))
-            else:
-                row.append(value)
-        data_rows.append(row)
-
-    table = Table([header_row] + data_rows, repeatRows=1, colWidths=col_widths)
-
-    style_commands = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
-        ("FONTNAME", (0, 1), (-1, -1), DEFAULT_FONT),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9F9F9")]),
-    ]
-    if "Risk" in export_df.columns:
-        risk_col_idx = columns.index("Risk")
-        for row_idx, risk_value in enumerate(export_df["Risk"], 1):
-            hex_color = RISK_COLORS_HEX_EN.get(risk_value)
-            if hex_color:
-                style_commands.append((
-                    "BACKGROUND", (risk_col_idx, row_idx), (risk_col_idx, row_idx),
-                    colors.HexColor(f"#{hex_color}"),
-                ))
-                style_commands.append((
-                    "TEXTCOLOR", (risk_col_idx, row_idx), (risk_col_idx, row_idx), colors.white,
-                ))
-    table.setStyle(TableStyle(style_commands))
-    return table
-
-
-def _build_exceptions_section(df: pd.DataFrame, section_style, exception_style, action_style) -> list:
-    """
-    Construit la section narrative "Rapport des exceptions" : les comptes
-    signalés sont regroupés par (système, action recommandée), puis
-    numérotés "Exception N : ... Action : ...", au format d'un rapport
-    d'audit classique — plutôt que le tableau brut de la section suivante.
-    """
-    elements = [Paragraph("Exceptions Report", section_style)]
-
-    if "system" not in df.columns or "review_action" not in df.columns:
-        elements.append(Paragraph(
-            "Insufficient fields to generate the exceptions report "
-            "(system and recommended action required).",
-            action_style,
-        ))
-        return elements
-
-    flagged = df[df["review_action"] != "Aucune action"]
-    if flagged.empty:
-        elements.append(Paragraph("No exceptions to report for this cycle.", action_style))
-        return elements
-
-    counter = 1
-    for system_name, system_group in flagged.groupby("system"):
-        for action, action_group in system_group.groupby("review_action"):
-            count = len(action_group)
-            elements.append(Paragraph(
-                f"<b>Exception {counter} — {system_name}:</b> {count} account(s) "
-                f"with status \u201c{_translate_value(action)}\u201d.",
-                exception_style,
-            ))
-            narrative = ACTION_NARRATIVE.get(
-                action, "See the corresponding control subsection above for account-level detail."
-            )
-            elements.append(Paragraph(narrative, action_style))
-            counter += 1
-
-    return elements
-
 
 
 def _build_dump_completeness_table(df: pd.DataFrame, available_width: float) -> Table:
@@ -1739,91 +1564,58 @@ def generate_word_report(
     _docx_add_table(doc, exec_rows)
     doc.add_paragraph()
 
-    doc.add_heading("Priority Actions", level=2)
-    if "risk_level" in df.columns:
-        priority_df = df[df["risk_level"].isin(["Critique", "Élevé"])]
-        cols = [c for c, _ in DISPLAY_COLUMNS if c in priority_df.columns]
-        labels = dict(DISPLAY_COLUMNS)
-        if len(priority_df) and cols:
-            display = priority_df[cols].fillna("").astype(str).map(_translate_value)
-            rows = [[labels[c] for c in cols]] + display.values.tolist()
-            _docx_add_table(doc, rows)
-        else:
-            doc.add_paragraph("No account at Critical or High risk on this cycle.")
-    doc.add_paragraph()
-
-    if "risk_score" in df.columns and "risk_score_reasons" in df.columns and len(df):
-        top_scored = df[df["risk_score"] > 0].sort_values("risk_score", ascending=False).head(10)
-        if len(top_scored):
-            doc.add_heading("Risk Score — Calculation Detail (10 Most Exposed Accounts)", level=2)
-            doc.add_paragraph(
-                "Additive score 0-100, capped, calculated from the signals detected for each "
-                "account — to understand WHY an account reaches a given score, not just "
-                "display it."
-            )
-            for _, row in top_scored.iterrows():
-                uname = row.get("username", "?")
-                p = doc.add_paragraph()
-                p.add_run(f"{uname} — Score: {int(row['risk_score'])}/100").bold = True
-                reasons_text = " · ".join(f"{_translate_value(label)} (+{pts})" for label, pts in row["risk_score_reasons"])
-                doc.add_paragraph(reasons_text)
-    doc.add_paragraph()
-
-    # ---- Rapport des exceptions (narratif, format audit classique) ----
-    doc.add_heading("Exceptions Report", level=2)
-    if "system" not in df.columns or "review_action" not in df.columns:
-        doc.add_paragraph(
-            "Insufficient fields to generate the exceptions report "
-            "(system and recommended action required)."
-        )
-    else:
-        flagged = df[df["review_action"] != "Aucune action"]
-        if flagged.empty:
-            doc.add_paragraph("No exceptions to report for this cycle.")
-        else:
-            counter = 1
-            for system_name, system_group in flagged.groupby("system"):
-                for action, action_group in system_group.groupby("review_action"):
-                    count = len(action_group)
-                    p = doc.add_paragraph()
-                    p.add_run(f"Exception {counter} — {system_name}: ").bold = True
-                    p.add_run(f"{count} account(s) with status \u201c{_translate_value(action)}\u201d.")
-                    narrative = ACTION_NARRATIVE.get(
-                        action, "See the corresponding control subsection above for account-level detail."
-                    )
-                    doc.add_paragraph(narrative)
-                    counter += 1
-    doc.add_paragraph()
-
     doc.add_heading("Annexes", level=2)
-    annex_rows = [["Annex", "Title", "Description"]]
-    for letter, title, description in ANNEXES_REFERENCE:
-        annex_rows.append([letter, title, description])
-    _docx_add_table(doc, annex_rows, col_widths_cm=[1.3, 4.5, 10.2])
+
+    # ---- A. Comptes créés (réutilise la même logique que le contrôle 10) ----
+    doc.add_heading("A. User access form of created accounts", level=3)
+    if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+        created_subset = df[df["is_recently_created"] == True]  # noqa: E712
+    else:
+        created_names = comparison_stats.get("created_accounts") or []
+        created_subset = df[df["username"].astype(str).isin(created_names)] if created_names and "username" in df.columns else df.iloc[0:0]
+    if len(created_subset):
+        cols = [c for c in ("username", "full_name", "system", "account_created_date", "account_status") if c in created_subset.columns]
+        display = created_subset[cols].fillna("").astype(str).map(_translate_value)
+        _docx_add_table(doc, [[ALL_COLUMN_LABELS.get(c, c) for c in cols]] + display.values.tolist())
+    else:
+        doc.add_paragraph("No account created within the review window for this cycle.")
     doc.add_paragraph()
 
-    doc.add_heading("Validation", level=2)
-    from docx.enum.table import WD_ROW_HEIGHT_RULE
-    validation_table = doc.add_table(rows=4, cols=3)
-    validation_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    validation_table.style = "Table Grid"
-    validation_rows = [
-        ["Role", "Name / Signature", "Date"],
-        ["Prepared by", prepared_by or "", datetime.now().strftime("%d/%m/%Y")],
-        ["Reviewed by", reviewed_by or "", ""],
-        ["Approved by", approved_by or "", ""],
-    ]
-    for i, (table_row, values) in enumerate(zip(validation_table.rows, validation_rows)):
-        cells = table_row.cells
-        for j, value in enumerate(values):
-            if i == 0:
-                _docx_set_cell(cells[j], value, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=9)
-                _docx_shade_cell(cells[j], "1F2937")
-            else:
-                _docx_set_cell(cells[j], value, size=9)
-        if i > 0:
-            table_row.height = Cm(1.3)
-            table_row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+    # ---- B. Comptes réactivés (réutilise le détail avant/après du contrôle 12) ----
+    doc.add_heading("B. Justification of Reactivated accounts", level=3)
+    reactivated_detail = comparison_stats.get("reactivated_detail") or []
+    if reactivated_detail:
+        _docx_add_comparison_detail_table(doc, reactivated_detail, "Status")
+    else:
+        doc.add_paragraph("No account reactivated since the previous review for this cycle.")
+    doc.add_paragraph()
+
+    # ---- C. Profils modifiés (réutilise le détail avant/après du contrôle 11) ----
+    doc.add_heading("C. Rationale for Profile Change", level=3)
+    profile_modified_detail = comparison_stats.get("profile_modified_detail") or []
+    if profile_modified_detail:
+        _docx_add_comparison_detail_table(doc, profile_modified_detail, "Profile")
+    else:
+        doc.add_paragraph("No profile change detected since the previous review for this cycle.")
+    doc.add_paragraph()
+
+    # ---- D. Liste complète des comptes couverts par la revue ----
+    doc.add_heading("D. List Of Users Used for the review", level=3)
+    d_cols = [c for c in ("username", "full_name", "system", "account_status") if c in df.columns]
+    if d_cols and len(df):
+        d_display = df[d_cols].fillna("").astype(str).map(_translate_value)
+        _docx_add_table(doc, [[ALL_COLUMN_LABELS.get(c, c) for c in d_cols]] + d_display.values.tolist())
+    else:
+        doc.add_paragraph("No account data available for this cycle.")
+    doc.add_paragraph()
+
+    # ---- F. Rapport de première ligne — document externe, pas dans nos données ----
+    doc.add_heading("F. First List user access review Report", level=3)
+    doc.add_paragraph(
+        "Not derivable from the ingested access data — attach or reference here the "
+        "approved monthly user access review report used as evidence for control 19 "
+        "(First line user access review report and accuracy)."
+    )
 
     doc.save(str(output_path))
     logger.info(f"Rapport Word généré : {output_path}")
@@ -2241,93 +2033,57 @@ def generate_pdf_report(
 
     export_df_full = _prepare_export_df(df)
 
-    # ---- Actions prioritaires (Critique + Élevé, tous systèmes confondus) ----
-    if "Risk" in export_df_full.columns:
-        priority_df = export_df_full[export_df_full["Risk"].isin(["Critical", "High"])]
-        elements.append(Paragraph(
-            f"Priority Actions ({len(priority_df)} account(s) to address first)",
-            section_style,
-        ))
-        if len(priority_df):
-            elements.append(_risk_styled_table(priority_df, available_width))
-        else:
-            elements.append(Paragraph("No account at Critical or High risk on this cycle.", styles["Normal"]))
-
-    # ---- Score de risque explicable : détail du calcul pour les comptes
-    # les plus exposés — traçabilité d'audit ("pourquoi ce score ?"),
-    # plutôt qu'une étiquette de risque sans justification. ----
-    if "risk_score" in df.columns and "risk_score_reasons" in df.columns and len(df):
-        top_scored = df[df["risk_score"] > 0].sort_values("risk_score", ascending=False).head(10)
-        if len(top_scored):
-            elements.append(Paragraph("Risk Score — Calculation Detail (10 Most Exposed Accounts)", section_style))
-            elements.append(Paragraph(
-                "Additive score 0-100, capped, calculated from the signals detected for each "
-                "account — to understand WHY an account reaches a given score, not just "
-                "display it.",
-                note_style,
-            ))
-            for _, row in top_scored.iterrows():
-                uname = row.get("username", "?")
-                reasons_text = " · ".join(f"{_translate_value(label)} (+{pts})" for label, pts in row["risk_score_reasons"])
-                elements.append(Paragraph(
-                    f"<b>{uname}</b> — Score: {row['risk_score']}/100", action_style,
-                ))
-                elements.append(Paragraph(reasons_text, note_style))
-            elements.append(Spacer(1, 0.3 * cm))
-
-    # ---- Rapport des exceptions (narratif, format audit classique) ----
-    elements.extend(_build_exceptions_section(df, section_style, exception_style, action_style))
-
-    # ---- Annexes (preuves à l'appui, à joindre manuellement) ----
     elements.append(Paragraph("Annexes", section_style))
-    annex_rows = [["Annex", "Title", "Description"]]
-    for letter, title, description in ANNEXES_REFERENCE:
-        annex_rows.append([letter, title, description])
-    annex_table = Table(
-        annex_rows, colWidths=[available_width * w for w in (0.07, 0.28, 0.65)], repeatRows=1,
-    )
-    annex_cell_style = ParagraphStyle("AnnexCell", fontSize=8.5, leading=10.5, fontName=DEFAULT_FONT)
-    for r in range(1, len(annex_rows)):
-        annex_rows[r][1] = Paragraph(annex_rows[r][1], annex_cell_style)
-        annex_rows[r][2] = Paragraph(annex_rows[r][2], annex_cell_style)
-    annex_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
-        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
-    elements.append(annex_table)
-    elements.append(Spacer(1, 0.4 * cm))
 
-    # ---- Sign-off (validation) ----
-    elements.append(Paragraph("Validation", section_style))
-    signoff_data = [
-        ["Role", "Name / Signature", "Date"],
-        ["Prepared by", prepared_by or "", datetime.now().strftime("%d/%m/%Y")],
-        ["Reviewed by", reviewed_by or "", ""],
-        ["Approved by", approved_by or "", ""],
-    ]
-    signoff_table = Table(
-        signoff_data, colWidths=[5 * cm, 8 * cm, 4 * cm],
-        rowHeights=[24, 38, 38, 38],
-    )
-    signoff_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
-        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
-    elements.append(signoff_table)
+    # ---- A. Comptes créés (réutilise la même logique que le contrôle 10) ----
+    elements.append(Paragraph("A. User access form of created accounts", system_style))
+    if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+        created_subset = df[df["is_recently_created"] == True]  # noqa: E712
+    else:
+        created_names = comparison_stats.get("created_accounts") or []
+        created_subset = df[df["username"].astype(str).isin(created_names)] if created_names and "username" in df.columns else df.iloc[0:0]
+    if len(created_subset):
+        a_cols = [c for c in ("username", "full_name", "system", "account_created_date", "account_status") if c in created_subset.columns]
+        elements.extend(_build_capped_account_table(created_subset, available_width, columns=a_cols))
+    else:
+        elements.append(Paragraph("No account created within the review window for this cycle.", note_style))
+    elements.append(Spacer(1, 0.3 * cm))
+
+    # ---- B. Comptes réactivés (réutilise le détail avant/après du contrôle 12) ----
+    elements.append(Paragraph("B. Justification of Reactivated accounts", system_style))
+    reactivated_detail = comparison_stats.get("reactivated_detail") or []
+    if reactivated_detail:
+        elements.append(_build_comparison_detail_table(reactivated_detail, "Status", available_width))
+    else:
+        elements.append(Paragraph("No account reactivated since the previous review for this cycle.", note_style))
+    elements.append(Spacer(1, 0.3 * cm))
+
+    # ---- C. Profils modifiés (réutilise le détail avant/après du contrôle 11) ----
+    elements.append(Paragraph("C. Rationale for Profile Change", system_style))
+    profile_modified_detail = comparison_stats.get("profile_modified_detail") or []
+    if profile_modified_detail:
+        elements.append(_build_comparison_detail_table(profile_modified_detail, "Profile", available_width))
+    else:
+        elements.append(Paragraph("No profile change detected since the previous review for this cycle.", note_style))
+    elements.append(Spacer(1, 0.3 * cm))
+
+    # ---- D. Liste complète des comptes couverts par la revue ----
+    elements.append(Paragraph("D. List Of Users Used for the review", system_style))
+    d_cols = [c for c in ("username", "full_name", "system", "account_status") if c in df.columns]
+    if d_cols and len(df):
+        elements.extend(_build_capped_account_table(df, available_width, columns=d_cols))
+    else:
+        elements.append(Paragraph("No account data available for this cycle.", note_style))
+    elements.append(Spacer(1, 0.3 * cm))
+
+    # ---- F. Rapport de première ligne — document externe, pas dans nos données ----
+    elements.append(Paragraph("F. First List user access review Report", system_style))
+    elements.append(Paragraph(
+        "Not derivable from the ingested access data — attach or reference here the "
+        "approved monthly user access review report used as evidence for control 19 "
+        "(First line user access review report and accuracy).",
+        note_style,
+    ))
 
     doc.build(elements)
     logger.info(f"Rapport PDF généré ({period_label}) : {output_path}")

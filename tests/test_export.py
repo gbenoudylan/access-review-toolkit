@@ -650,59 +650,6 @@ def test_word_report_shows_escalated_account_names_not_just_count():
     print("OK - test_word_report_shows_escalated_account_names_not_just_count")
 
 
-def test_word_report_includes_risk_score_explainability_section():
-    """
-    Régression réelle : la section 'Score de risque — détail du calcul'
-    (top 10 comptes les plus exposés avec raisons) existait seulement
-    dans le PDF, absente de Word — incohérence entre les deux formats.
-    """
-    import pandas as pd
-    from analysis.access_review import analyze_access
-    from reporting.export import generate_word_report
-    from docx import Document
-
-    df = pd.DataFrame({
-        "username": ["jdupont"], "system": ["AD"], "account_status": ["Active"],
-        "employee_status": ["Terminated"], "is_privileged": ["Yes"],
-        "last_login_date": ["2024-01-01"],
-    })
-    result = analyze_access(df)
-    output = generate_word_report(result, "output/test_word_risk_detail_regression.docx")
-    doc = Document(str(output))
-    full_text = "\n".join(p.text for p in doc.paragraphs)
-    assert "Risk Score" in full_text
-    assert "Departed employee" in full_text
-    print("OK - test_word_report_includes_risk_score_explainability_section")
-
-
-def test_word_report_includes_exceptions_section():
-    """
-    'Rapport des exceptions' doit exister dans Word, comme dans PDF —
-    régression trouvée par comparaison systématique entre les deux
-    formats. 'Détail par système' a depuis été retiré (redondant avec
-    les 18 sections de contrôle désormais complètes et sans plafond).
-    """
-    import pandas as pd
-    from analysis.access_review import analyze_access
-    from reporting.export import generate_word_report
-    from docx import Document
-
-    df = pd.DataFrame({
-        "username": ["jdupont"], "full_name": ["Jean Dupont"], "system": ["AD"],
-        "account_status": ["Active"], "employee_status": ["Terminated"],
-    })
-    result = analyze_access(df)
-    output = generate_word_report(result, "output/test_word_exceptions_detail.docx")
-    doc = Document(str(output))
-    full_text = "\n".join(p.text for p in doc.paragraphs)
-    for table in doc.tables:
-        for row in table.rows:
-            full_text += "\n" + " ".join(c.text for c in row.cells)
-    assert "Exceptions Report" in full_text
-    assert "jdupont" in full_text
-    print("OK - test_word_report_includes_exceptions_section")
-
-
 def test_deleted_accounts_found_in_previous_df_not_current():
     """
     Vrai bug trouvé : un compte supprimé n'existe par définition plus
@@ -1153,13 +1100,14 @@ def test_profile_modified_and_reactivated_show_before_after_comparison_table():
     print("OK - test_profile_modified_and_reactivated_show_before_after_comparison_table")
 
 
-def test_control_19_present_and_annexes_block_referenced():
+def test_control_19_present_and_annexes_filled_as_sections():
     """
     Nouvelle section 19 (First line user access review report and
-    accuracy) et bloc Annexes (A à D, F — demandé explicitement,
-    consolidé en un seul tableau propre entre Priority Actions et
-    Validation plutôt que dispersé) doivent apparaître dans le PDF et
-    dans Word.
+    accuracy) et annexes (A à D, F) demandées explicitement, en
+    sections distinctes remplies avec les données déjà calculées
+    (pas un tableau de simples descriptions, pas de Priority Actions/
+    Risk Score/Exceptions Report/Validation de fin — retirés sur
+    demande explicite).
     """
     import pandas as pd
     from analysis.access_review import analyze_access
@@ -1167,34 +1115,63 @@ def test_control_19_present_and_annexes_block_referenced():
     import pdfplumber
     from docx import Document
 
-    df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
-    pdf_path = generate_pdf_report(df, "output/test_control19.pdf")
+    previous = pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"],
+        "account_status": ["Active"], "role": ["Standard User"],
+    })
+    current = pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"],
+        "account_status": ["Active"], "role": ["Administrator"],
+    })
+    prev_result = analyze_access(previous)
+    curr_result = analyze_access(current)
+
+    pdf_path = generate_pdf_report(
+        curr_result, "output/test_control19.pdf", previous_df=prev_result,
+        current_extraction_date="2026-09-14", previous_extraction_date="2026-06-01",
+    )
     with pdfplumber.open(pdf_path) as pdf:
         pdf_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
     assert "19.First line user access review report and accuracy" in pdf_text
-    annex_idx = pdf_text.find("Annexes")
-    annex_snippet = pdf_text[annex_idx:annex_idx + 1000]
-    for letter, title in [
-        ("A", "User access form of created accounts"),
-        ("B", "Justification of Reactivated accounts"),
-        ("C", "Rationale for Profile Change"),
-        ("D", "List Of Users Used for the review"),
-        ("F", "First List user access review Report"),
-    ]:
-        assert title in annex_snippet, f"Annexe {letter} absente"
-    # L'ordre demandé (retour tout de Priority Actions à Validation) :
-    # Annexes doit apparaître APRÈS Priority Actions et AVANT Validation.
-    assert pdf_text.find("Priority Actions") < annex_idx < pdf_text.find("Validation")
 
-    word_path = generate_word_report(df, "output/test_control19.docx")
+    # Les 4 sections retirées explicitement ne doivent plus apparaître du tout.
+    assert "Priority Actions" not in pdf_text
+    assert "Risk Score — Calculation Detail" not in pdf_text
+    assert "Exceptions Report" not in pdf_text
+    # La VALIDATION d'en-tête (majuscules, 6 rôles) reste ; seule la
+    # validation de FIN de document (minuscule, Role/Name/Date) est retirée.
+    assert "Control Performer" in pdf_text  # en-tête toujours là
+
+    annex_idx = pdf_text.find("Annexes")
+    assert annex_idx != -1
+    annex_text = pdf_text[annex_idx:]
+    assert "A. User access form of created accounts" in annex_text
+    assert "B. Justification of Reactivated accounts" in annex_text
+    assert "C. Rationale for Profile Change" in annex_text
+    assert "D. List Of Users Used for the review" in annex_text
+    assert "F. First List user access review Report" in annex_text
+    # C (Profile Change) doit être rempli avec le vrai avant/après, pas
+    # juste un intitulé vide.
+    assert "Standard User" in annex_text and "Administrator" in annex_text
+    assert "2026-06-01" in annex_text and "2026-09-14" in annex_text
+
+    word_path = generate_word_report(
+        curr_result, "output/test_control19.docx", previous_df=prev_result,
+        current_extraction_date="2026-09-14", previous_extraction_date="2026-06-01",
+    )
     doc = Document(str(word_path))
     word_text = "\n".join(p.text for p in doc.paragraphs)
-    assert any("First line user access review report and accuracy" in p.text for p in doc.paragraphs)
-    found_annex_table = any(
-        [c.text for c in t.rows[0].cells] == ["Annex", "Title", "Description"] for t in doc.tables
+    assert "Priority Actions" not in word_text
+    assert "Risk Score" not in word_text
+    assert "Exceptions Report" not in word_text
+    assert any(p.text == "A. User access form of created accounts" for p in doc.paragraphs)
+    assert any(p.text == "F. First List user access review Report" for p in doc.paragraphs)
+    found_profile_annex = any(
+        [c.text for c in t.rows[0].cells] == ["Account", "System", "Previous Profile", "Extraction Date", "New Profile", "Extraction Date"]
+        for t in doc.tables
     )
-    assert found_annex_table
-    print("OK - test_control_19_present_and_annexes_block_referenced")
+    assert found_profile_annex
+    print("OK - test_control_19_present_and_annexes_filled_as_sections")
 
 
 def test_word_document_has_real_metadata_not_2013_placeholder():
