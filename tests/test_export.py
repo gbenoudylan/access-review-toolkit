@@ -1153,10 +1153,14 @@ def test_profile_modified_and_reactivated_show_before_after_comparison_table():
     print("OK - test_profile_modified_and_reactivated_show_before_after_comparison_table")
 
 
-def test_control_19_present_and_annex_f_referenced():
-    """Nouvelle section 19 (First line user access review report and
-    accuracy) et référence Annexe F, demandées explicitement, doivent
-    apparaître dans le PDF et dans Word."""
+def test_control_19_present_and_annexes_block_referenced():
+    """
+    Nouvelle section 19 (First line user access review report and
+    accuracy) et bloc Annexes (A à D, F — demandé explicitement,
+    consolidé en un seul tableau propre entre Priority Actions et
+    Validation plutôt que dispersé) doivent apparaître dans le PDF et
+    dans Word.
+    """
     import pandas as pd
     from analysis.access_review import analyze_access
     from reporting.export import generate_pdf_report, generate_word_report
@@ -1168,14 +1172,29 @@ def test_control_19_present_and_annex_f_referenced():
     with pdfplumber.open(pdf_path) as pdf:
         pdf_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
     assert "19.First line user access review report and accuracy" in pdf_text
-    assert "F. First List user access review Report" in pdf_text
+    annex_idx = pdf_text.find("Annexes")
+    annex_snippet = pdf_text[annex_idx:annex_idx + 1000]
+    for letter, title in [
+        ("A", "User access form of created accounts"),
+        ("B", "Justification of Reactivated accounts"),
+        ("C", "Rationale for Profile Change"),
+        ("D", "List Of Users Used for the review"),
+        ("F", "First List user access review Report"),
+    ]:
+        assert title in annex_snippet, f"Annexe {letter} absente"
+    # L'ordre demandé (retour tout de Priority Actions à Validation) :
+    # Annexes doit apparaître APRÈS Priority Actions et AVANT Validation.
+    assert pdf_text.find("Priority Actions") < annex_idx < pdf_text.find("Validation")
 
     word_path = generate_word_report(df, "output/test_control19.docx")
     doc = Document(str(word_path))
     word_text = "\n".join(p.text for p in doc.paragraphs)
     assert any("First line user access review report and accuracy" in p.text for p in doc.paragraphs)
-    assert any("First List user access review Report" in p.text for p in doc.paragraphs)
-    print("OK - test_control_19_present_and_annex_f_referenced")
+    found_annex_table = any(
+        [c.text for c in t.rows[0].cells] == ["Annex", "Title", "Description"] for t in doc.tables
+    )
+    assert found_annex_table
+    print("OK - test_control_19_present_and_annexes_block_referenced")
 
 
 def test_word_document_has_real_metadata_not_2013_placeholder():

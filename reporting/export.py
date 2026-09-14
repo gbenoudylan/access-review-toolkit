@@ -90,6 +90,29 @@ RISK_COLORS_HEX = {
 # secteur (revue trimestrielle des accès), jamais copiée d'un document
 # précis : ces recommandations sont volontairement génériques pour rester
 # valables quelle que soit l'entreprise ou le système concerné.
+# Annexes de référence (preuves à l'appui, pas calculées depuis les
+# données ingérées) — attachées/référencées manuellement par le
+# reviewer, listées ici pour rappel structuré plutôt que dispersées.
+# Lettrage demandé tel quel (E volontairement absent).
+ANNEXES_REFERENCE = [
+    ("A", "User access form of created accounts",
+     "Attach or reference the approved access request form(s) for each account "
+     "identified in control 10 (Accounts created)."),
+    ("B", "Justification of Reactivated accounts",
+     "Attach or reference the business justification for each account identified "
+     "in control 12 (Reactivated accounts)."),
+    ("C", "Rationale for Profile Change",
+     "Attach or reference the approval/rationale for each profile change "
+     "identified in control 11 (Profile Modified)."),
+    ("D", "List Of Users Used for the review",
+     "Attach or reference the full list of user accounts covered by this review "
+     "cycle, as extracted from the source system(s)."),
+    ("F", "First List user access review Report",
+     "Attach or reference the approved monthly user access review report(s) used "
+     "as evidence for control 19 (First line user access review report and "
+     "accuracy)."),
+]
+
 ACTION_NARRATIVE = {
     "Vérifier (date de dernière connexion non exploitable)": (
         "The last login date for these accounts is present but not usable as-is "
@@ -1671,15 +1694,6 @@ def generate_word_report(
     # ---- Operational Annex ----
     doc.add_heading("Operational Annex — Actionable Cycle Detail", level=1)
 
-    doc.add_heading("F. First List user access review Report", level=2)
-    doc.add_paragraph(
-        "Supporting evidence for control 19 (First line user access review report and "
-        "accuracy): attach or reference here the approved monthly user access review "
-        "report(s) used as evidence that the application owner's first-line review took "
-        "place, was complete, accurate, and properly supported."
-    )
-    doc.add_paragraph()
-
     quality_report = compute_data_quality_report(df)
     doc.add_heading(f"Data Quality — estimated reliability {quality_report['reliability_pct']}%", level=2)
     doc.add_paragraph(
@@ -1779,6 +1793,13 @@ def generate_word_report(
                     )
                     doc.add_paragraph(narrative)
                     counter += 1
+    doc.add_paragraph()
+
+    doc.add_heading("Annexes", level=2)
+    annex_rows = [["Annex", "Title", "Description"]]
+    for letter, title, description in ANNEXES_REFERENCE:
+        annex_rows.append([letter, title, description])
+    _docx_add_table(doc, annex_rows, col_widths_cm=[1.3, 4.5, 10.2])
     doc.add_paragraph()
 
     doc.add_heading("Validation", level=2)
@@ -2141,16 +2162,6 @@ def generate_pdf_report(
     # ==================================================================
     elements.append(Paragraph("Operational Annex — Actionable Cycle Detail", section_style))
 
-    elements.append(Paragraph("F. First List user access review Report", system_style))
-    elements.append(Paragraph(
-        "Supporting evidence for control 19 (First line user access review report and "
-        "accuracy): attach or reference here the approved monthly user access review "
-        "report(s) used as evidence that the application owner's first-line review took "
-        "place, was complete, accurate, and properly supported.",
-        note_style,
-    ))
-    elements.append(Spacer(1, 0.3 * cm))
-
     # ---- Qualité des données (contrôle préalable, informatif) ----
     quality_report = compute_data_quality_report(df)
     elements.append(Paragraph(
@@ -2266,6 +2277,32 @@ def generate_pdf_report(
 
     # ---- Rapport des exceptions (narratif, format audit classique) ----
     elements.extend(_build_exceptions_section(df, section_style, exception_style, action_style))
+
+    # ---- Annexes (preuves à l'appui, à joindre manuellement) ----
+    elements.append(Paragraph("Annexes", section_style))
+    annex_rows = [["Annex", "Title", "Description"]]
+    for letter, title, description in ANNEXES_REFERENCE:
+        annex_rows.append([letter, title, description])
+    annex_table = Table(
+        annex_rows, colWidths=[available_width * w for w in (0.07, 0.28, 0.65)], repeatRows=1,
+    )
+    annex_cell_style = ParagraphStyle("AnnexCell", fontSize=8.5, leading=10.5, fontName=DEFAULT_FONT)
+    for r in range(1, len(annex_rows)):
+        annex_rows[r][1] = Paragraph(annex_rows[r][1], annex_cell_style)
+        annex_rows[r][2] = Paragraph(annex_rows[r][2], annex_cell_style)
+    annex_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(annex_table)
+    elements.append(Spacer(1, 0.4 * cm))
 
     # ---- Sign-off (validation) ----
     elements.append(Paragraph("Validation", section_style))
