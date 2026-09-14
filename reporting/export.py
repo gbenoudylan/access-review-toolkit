@@ -91,6 +91,13 @@ RISK_COLORS_HEX = {
 # précis : ces recommandations sont volontairement génériques pour rester
 # valables quelle que soit l'entreprise ou le système concerné.
 ACTION_NARRATIVE = {
+    "Vérifier (date de dernière connexion non exploitable)": (
+        "The last login date for these accounts is present but not usable as-is "
+        "(truncated format, missing weekday and month — the day and year are known, "
+        "the month is not). Recommended action: verify the source date before any "
+        "decision — the account is neither confirmed dormant nor cleared, its real "
+        "login recency remains genuinely unknown."
+    ),
     "Révoquer immédiatement": (
         "These accounts remain active while the associated person has left "
         "the company. Recommended action: immediate access revocation."
@@ -187,6 +194,7 @@ _VALUE_TRANSLATIONS = {
     "Renommer selon la convention": "Rename according to naming convention",
     "Révoquer immédiatement": "Revoke immediately",
     "Vérifier (compte de test présumé)": "Verify (presumed test account)",
+    "Vérifier (date de dernière connexion non exploitable)": "Verify (last login date not usable)",
     "Vérifier avec le propriétaire technique (compte de service)": "Verify with technical owner (service account)",
     "Vérifier avec le propriétaire technique (mot de passe, compte de service)": "Verify with technical owner (password, service account)",
     # Autres valeurs pouvant apparaître telles quelles dans les tableaux
@@ -202,6 +210,7 @@ _VALUE_TRANSLATIONS = {
     "Mot de passe n'expirant jamais (privilégié)": "Password never expires (privileged)",
     "Dernier changement de mot de passe inconnu (non vérifiable)": "Last password change unknown (not verifiable)",
     "Mot de passe périmé (> seuil retenu)": "Stale password (> retained threshold)",
+    "Date de dernière connexion non exploitable (format tronqué)": "Last login date not usable (truncated format)",
     "Aucun manager/owner identifié": "No manager/owner identified",
     "Compte en doublon": "Duplicate account",
     "Compte verrouillé": "Locked account",

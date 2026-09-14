@@ -130,7 +130,19 @@ def _is_service_account_name(username) -> bool:
 # jamais une désactivation automatique : la détection par nom seul reste
 # un indice, pas une certitude.
 _TEST_ACCOUNT_RE = re.compile(
-    r"(^|[_\-\.])(test|uat|qa|dummy|demo|sandbox)(ing)?([_\-\.]|\d|$)", re.IGNORECASE
+    # 'test' SANS frontière de mot : preuve réelle rencontrée en pratique
+    # (comptes 'testadmin', 'dtest', 'sdptester', 'MTNtester' — le mot
+    # est presque toujours accolé directement à un autre fragment, pas
+    # isolé par un séparateur) — une frontière stricte comme pour les
+    # autres mots-clés ratait la quasi-totalité de ces comptes réels.
+    # Les autres mots-clés gardent une frontière stricte : plus courts
+    # ('qa') ou plus fréquents comme fragment de mot ordinaire ('demo'
+    # dans un patronyme comme 'Demontigny', 'qa' dans 'Qatar') — sans
+    # preuve équivalente que ces derniers s'accolent aussi en pratique,
+    # les assouplir ferait plus de mal (faux positifs sur de vrais noms)
+    # que de bien.
+    r"test(ing)?|(^|[_\-\.])(uat|qa|dummy|demo|sandbox)(ing)?([_\-\.]|\d|$)",
+    re.IGNORECASE,
 )
 
 
@@ -531,8 +543,10 @@ def analyze_access(
                 f"{_truncated_count} date(s) de dernière connexion au format tronqué "
                 f"(jour de semaine et mois manquants, ex. '4 20:09:01 +0000 2025') — "
                 f"non exploitables, à corriger à la source plutôt que devinées. "
-                f"Ces comptes ne sont ni comptés dormants ni exclus : leur ancienneté "
-                f"réelle de connexion reste simplement inconnue."
+                f"Ces comptes sont signalés (pire cas, cohérent avec le traitement des "
+                f"comptes jamais connectés) plutôt que silencieusement exclus du contrôle "
+                f"de dormance — leur ancienneté réelle de connexion reste inconnue, à "
+                f"vérifier manuellement plutôt que présumée."
             )
         _dayfirst_login, _login_date_status = _detect_dayfirst(df["last_login_date"])
         _yearfirst_login, _yearfirst_login_status = _detect_yearfirst(df["last_login_date"])
@@ -587,6 +601,31 @@ def analyze_access(
     df["is_dormant"] = df["days_since_last_login"].apply(
         lambda d: d is not None and d > dormant_threshold_days
     )
+
+    # Fiabilité maximale, même principe que pour 'password_last_set' (une
+    # date non déterminable est traitée comme le pire cas, pas ignorée) :
+    # une valeur RÉELLEMENT PRÉSENTE (donc une connexion a bien eu lieu)
+    # mais dont le format ne permet pas de déterminer la date exacte —
+    # ex. une date tronquée sans jour de semaine ni mois ('4 20:09:01
+    # +0000 2025', rencontré en pratique sur des exports où ces champs
+    # sont parfois manquants) — ne doit PAS silencieusement laisser le
+    # compte hors de portée du contrôle de dormance. Distinct de
+    # 'never_logged_in' (qui signale l'ABSENCE de connexion) : ici, une
+    # connexion a eu lieu, seule sa date précise reste inconnue — un
+    # signal différent, marqué séparément pour rester honnête sur ce
+    # qu'on sait vraiment plutôt que de le confondre avec une vraie
+    # dormance mesurée.
+    if "last_login_date" in df.columns:
+        raw_present = (
+            df["last_login_date"].notna()
+            & (df["last_login_date"].astype(str).str.strip() != "")
+        )
+        df["last_login_date_unparseable"] = (
+            raw_present & ~never_logged_in & df["days_since_last_login"].isna()
+        )
+    else:
+        df["last_login_date_unparseable"] = False
+    df["is_dormant"] = df["is_dormant"] | df["last_login_date_unparseable"]
 
     # Distinction du référentiel (contrôles 2 et 6) : "Dormant" suppose
     # une connexion déjà survenue, simplement ancienne ; "Never Used" est
@@ -840,6 +879,15 @@ def _determine_action(row) -> str:
         # un processus automatisé encore utilisé.
         return "Vérifier avec le propriétaire technique (compte de service)"
     if row["is_dormant"]:
+        if row.get("last_login_date_unparseable", False):
+            # Distinction honnête : on ne SAIT PAS que ce compte est
+            # réellement inactif depuis plus que le seuil — seulement que
+            # sa date de dernière connexion n'est pas exploitable telle
+            # quelle (format tronqué, ex. '4 20:09:01 +0000 2025' sans
+            # jour de semaine ni mois). Une désactivation directe
+            # prétendrait à une certitude qu'on n'a pas ; vérifier la
+            # date source est la bonne première étape.
+            return "Vérifier (date de dernière connexion non exploitable)"
         return "Désactiver (dormant)"
     if row["is_never_used"]:
         # Distinct du dormant classique : ce compte n'a JAMAIS servi
@@ -893,7 +941,10 @@ def _compute_risk_score(row) -> tuple[int, list[str]]:
         reasons.append(("Employé parti, compte encore actif", 50))
     if row["is_dormant"] or row.get("is_never_used", False):
         score += 20
-        reasons.append(("Compte dormant ou jamais utilisé", 20))
+        if row.get("last_login_date_unparseable", False):
+            reasons.append(("Date de dernière connexion non exploitable (format tronqué)", 20))
+        else:
+            reasons.append(("Compte dormant ou jamais utilisé", 20))
     if row["is_privileged_flag"]:
         score += 30
         reasons.append(("Compte privilégié", 30))

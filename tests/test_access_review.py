@@ -642,21 +642,37 @@ def test_dormant_and_never_used_are_properly_separated():
 def test_test_account_naming_pattern_detected_without_false_positives():
     """
     Contrôle 4 : détection par convention de nommage (test_user, uat_,
-    qa_, dummy_, sandbox_...), avec vérification explicite qu'un nom de
-    famille contenant incidemment ces lettres ('Testard') n'est pas
-    signalé à tort — la détection porte sur un jeton distinct, pas une
-    simple sous-chaîne n'importe où.
+    qa_, dummy_, sandbox_...). Le mot-clé 'test' est volontairement
+    détecté SANS frontière de mot stricte (compromis assumé après
+    preuve réelle sur un export client : 'testadmin', 'dtest',
+    'sdptester', 'MTNtester' — le mot-clé est presque toujours accolé
+    directement à un autre fragment, jamais isolé par un séparateur ;
+    une frontière stricte comme pour les autres mots-clés ratait la
+    quasi-totalité de ces comptes réels). Un nom de famille contenant
+    incidemment 'test' ('Testard') peut donc désormais être signalé à
+    tort — accepté comme le bon compromis pour un contrôle de sécurité :
+    un faux positif se rejette en un coup d'œil, un vrai compte de test
+    jamais détecté ne se rattrape pas. Les autres mots-clés ('uat',
+    'qa', 'dummy', 'demo', 'sandbox'), plus courts ou plus fréquents
+    comme fragment de mot ordinaire, gardent leur frontière stricte
+    faute de preuve équivalente qu'ils s'accolent aussi en pratique.
     """
     df = pd.DataFrame({
-        "username": ["test_user", "uat_admin", "jtestard", "contest_manager", "jdupont"],
-        "system": ["AD"] * 5,
+        "username": ["test_user", "uat_admin", "jtestard", "contest_manager", "jdupont",
+                      "testadmin", "dtest", "sdptester", "MTNtester", "qatar_ops"],
+        "system": ["AD"] * 10,
     })
     result = analyze_access(df)
     assert result.loc[0, "is_test_account"] == True
     assert result.loc[1, "is_test_account"] == True
-    assert result.loc[2, "is_test_account"] == False, "jtestard (nom de famille) ne doit pas être signalé"
-    assert result.loc[3, "is_test_account"] == False, "contest_manager ne doit pas être signalé"
+    assert result.loc[2, "is_test_account"] == True, "Compromis assumé : 'test' sans frontière"
+    assert result.loc[3, "is_test_account"] == True, "Compromis assumé : 'test' sans frontière"
     assert result.loc[4, "is_test_account"] == False
+    assert result.loc[5, "is_test_account"] == True, "Cas réel rencontré (export client)"
+    assert result.loc[6, "is_test_account"] == True, "Cas réel rencontré (export client)"
+    assert result.loc[7, "is_test_account"] == True, "Cas réel rencontré (export client)"
+    assert result.loc[8, "is_test_account"] == True, "Cas réel rencontré (export client)"
+    assert result.loc[9, "is_test_account"] == False, "'qa' garde sa frontière stricte (Qatar)"
     print("OK - test_test_account_naming_pattern_detected_without_false_positives")
 
 
@@ -1108,3 +1124,34 @@ def test_locked_detection_not_fooled_by_negation():
     result = analyze_access(df)
     assert result["is_locked"].tolist() == [False, False, False, True, True]
     print("OK - test_locked_detection_not_fooled_by_negation")
+
+
+def test_unparseable_but_present_login_date_treated_as_worst_case():
+    """
+    Vrai bug trouvé en aidant un utilisateur : un format de date de
+    dernière connexion tronqué (jour de semaine et mois manquants, ex.
+    '4 20:09:01 +0000 2025', rencontré en pratique sur un export réel)
+    laissait le compte silencieusement hors du contrôle de dormance
+    (days_since_last_login = None, ni compté ni signalé). Corrigé avec
+    le même principe que pour le mot de passe non renseigné : une
+    connexion a bien eu lieu (donc ce n'est pas 'jamais connecté'), mais
+    sa date précise reste inconnue — traité comme pire cas plutôt
+    qu'ignoré, avec un drapeau distinct pour rester honnête sur ce qu'on
+    sait vraiment.
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2", "u3"], "system": ["AD"] * 3,
+        "last_login_date": ["2026-09-01", "4 20:09:01 +0000 2025", "Never Logged In"],
+        "account_status": ["Active"] * 3,
+    })
+    result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-12"))
+    # u1 : date récente et exploitable -> pas dormant, pas de faux positif
+    assert result.loc[0, "is_dormant"] == False
+    assert result.loc[0, "last_login_date_unparseable"] == False
+    # u2 : format tronqué -> signalé comme pire cas, drapeau distinct
+    assert result.loc[1, "is_dormant"] == True
+    assert result.loc[1, "last_login_date_unparseable"] == True
+    assert result.loc[1, "review_action"] == "Vérifier (date de dernière connexion non exploitable)"
+    # u3 : jamais connecté (marqueur explicite) -> is_never_used, PAS ce nouveau drapeau
+    assert result.loc[2, "last_login_date_unparseable"] == False
+    print("OK - test_unparseable_but_present_login_date_treated_as_worst_case")
