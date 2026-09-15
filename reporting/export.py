@@ -1037,13 +1037,24 @@ def _docx_shade_cell(cell, hex_color: str) -> None:
     cell._tc.get_or_add_tcPr().append(shd)
 
 
-def _docx_set_cell(cell, text: str, bold: bool = False, color: RGBColor | None = None, size: int = 9) -> None:
+def _docx_set_cell(
+    cell, text: str, bold: bool = False, color: RGBColor | None = None, size: int = 9,
+    style_name: str | None = None,
+) -> None:
     cell.text = ""
     run = cell.paragraphs[0].add_run(str(text))
-    run.bold = bold
-    run.font.size = Pt(size)
-    if color:
-        run.font.color.rgb = color
+    if style_name:
+        # Style nommé (défini une fois dans _add_custom_docx_styles) :
+        # réduit fortement le volume de XML comparé à une mise en forme
+        # directe répétée sur chaque cellule — la définition vit une
+        # seule fois dans styles.xml, chaque passage ne fait qu'y
+        # référer par nom.
+        run.style = style_name
+    else:
+        run.bold = bold
+        run.font.size = Pt(size)
+        if color:
+            run.font.color.rgb = color
 
 
 def _docx_add_table(doc, rows: list, col_widths_cm: list[float] | None = None, header: bool = True) -> None:
@@ -1064,10 +1075,10 @@ def _docx_add_table(doc, rows: list, col_widths_cm: list[float] | None = None, h
         for j, value in enumerate(row):
             cell = cells[j]
             if header and i == 0:
-                _docx_set_cell(cell, value, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=9)
+                _docx_set_cell(cell, value, style_name="MTN Table Header")
                 _docx_shade_cell(cell, "1F2937")
             else:
-                _docx_set_cell(cell, value, size=8.5)
+                _docx_set_cell(cell, value, style_name="MTN Table Body")
             if col_widths_cm:
                 cell.width = Cm(col_widths_cm[j])
 
@@ -1102,14 +1113,14 @@ def _docx_add_dump_completeness_table(doc, dump_rows: list) -> None:
         for j, value in enumerate(row):
             cell = cells[j]
             if i == 0:
-                _docx_set_cell(cell, value, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=9)
+                _docx_set_cell(cell, value, style_name="MTN Table Header")
                 _docx_shade_cell(cell, "1F2937")
             elif j == 1:
-                _docx_set_cell(cell, value, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=8.5)
+                _docx_set_cell(cell, value, style_name="MTN Table Header")
                 _docx_shade_cell(cell, "1E8E5A" if value == "OK" else "C4372B")
                 cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
             else:
-                _docx_set_cell(cell, value, size=8.5)
+                _docx_set_cell(cell, value, style_name="MTN Table Body")
 
 
 def _docx_add_owner_tracking_table(doc) -> None:
@@ -1129,10 +1140,10 @@ def _docx_add_owner_tracking_table(doc) -> None:
         cells = table_row.cells
         for j, value in enumerate(values):
             if i == 0:
-                _docx_set_cell(cells[j], value, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=8.5)
+                _docx_set_cell(cells[j], value, style_name="MTN Table Header")
                 _docx_shade_cell(cells[j], "4B5563")
             else:
-                _docx_set_cell(cells[j], value, size=8.5)
+                _docx_set_cell(cells[j], value, style_name="MTN Table Body")
         if i == 1:
             table_row.height = Cm(1.1)
             table_row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
@@ -1163,6 +1174,39 @@ def _docx_add_signoff_block(doc, roles: list[str], filled_values: list[str | Non
     signature_row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
     for cell in signature_row.cells:
         cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+
+def _add_custom_docx_styles(doc) -> None:
+    """
+    Définit une fois pour toutes deux styles de caractère réutilisables
+    (en-tête de tableau blanc/gras, corps de tableau standard), plutôt
+    que de répéter la même mise en forme directe (w:rPr complet : gras,
+    couleur, taille) sur CHACUNE des centaines de cellules du document.
+
+    Trouvé en résolvant un vrai problème de compatibilité Word Online/
+    SharePoint : le rapport complet (43 tableaux) s'ouvrait normalement
+    dans Word Desktop mais pas dans Word Online, alors que le XML est
+    parfaitement valide — la cause la plus probable, une fois la
+    validité du schéma exclue, est la complexité/volume du document.
+    Utiliser de vrais styles Word (définis une seule fois dans
+    styles.xml, référencés par nom dans chaque passage plutôt que
+    dupliqués) est la pratique standard recommandée pour réduire cette
+    complexité sans retirer le moindre tableau ni changer le rendu
+    visuel.
+    """
+    from docx.enum.style import WD_STYLE_TYPE
+
+    styles = doc.styles
+    if "MTN Table Header" not in [s.name for s in styles]:
+        header_style = styles.add_style("MTN Table Header", WD_STYLE_TYPE.CHARACTER)
+        header_style.font.name = DEFAULT_FONT_BOLD
+        header_style.font.size = Pt(9)
+        header_style.font.bold = True
+        header_style.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    if "MTN Table Body" not in [s.name for s in styles]:
+        body_style = styles.add_style("MTN Table Body", WD_STYLE_TYPE.CHARACTER)
+        body_style.font.name = DEFAULT_FONT
+        body_style.font.size = Pt(8.5)
 
 
 def generate_word_report(
@@ -1214,6 +1258,8 @@ def generate_word_report(
     doc.core_properties.modified = now
     doc.core_properties.title = "Application Accounts Review"
     doc.core_properties.subject = application_scope or ""
+
+    _add_custom_docx_styles(doc)
 
     # Marges resserrées pour laisser de la place aux tableaux larges
     for section in doc.sections:

@@ -1194,3 +1194,40 @@ def test_word_document_has_real_metadata_not_2013_placeholder():
     assert doc.core_properties.author == "Dylan Gbenou"
     assert doc.core_properties.created.year == datetime.now().year
     print("OK - test_word_document_has_real_metadata_not_2013_placeholder")
+
+
+def test_docx_uses_named_styles_not_repeated_direct_formatting():
+    """
+    Trouvé en résolvant un problème de compatibilité Word Online/
+    SharePoint (document complexe qui s'ouvrait dans Word Desktop mais
+    pas dans Word Online, alors que le XML est valide) : la mise en
+    forme des cellules de tableau (en-tête blanc/gras notamment) était
+    répétée en entier sur chaque cellule plutôt que définie une seule
+    fois via un style Word nommé et référencé — pratique standard
+    recommandée pour réduire la complexité XML sans changer le rendu
+    visuel ni retirer le moindre tableau.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+    from docx import Document
+
+    df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
+    output = generate_word_report(df, "output/test_named_styles.docx")
+    doc = Document(str(output))
+    style_names = [s.name for s in doc.styles]
+    assert "MTN Table Header" in style_names
+    assert "MTN Table Body" in style_names
+
+    # Au moins une cellule de tableau doit réellement référencer le
+    # style plutôt que de porter sa propre mise en forme directe.
+    found_styled_run = False
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        if run.style is not None and run.style.name in ("MTN Table Header", "MTN Table Body"):
+                            found_styled_run = True
+    assert found_styled_run
+    print("OK - test_docx_uses_named_styles_not_repeated_direct_formatting")
