@@ -1063,6 +1063,20 @@ def _docx_add_table(doc, rows: list, col_widths_cm: list[float] | None = None, h
     table = doc.add_table(rows=len(rows), cols=len(rows[0]))
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = "Table Grid"
+    if col_widths_cm:
+        # Sans ceci, Word (Desktop ET surtout Word Online, qui s'est
+        # montré plus strict) reste libre de RECALCULER les largeurs de
+        # colonne selon le contenu, ignorant les largeurs de cellule
+        # qu'on impose explicitement plus bas — une colonne étroite
+        # voulue (ex. 'SN') peut alors se retrouver bien plus large que
+        # prévu, allongeant tout le tableau. Désactiver l'ajustement
+        # automatique ET renseigner la grille de colonnes au niveau de
+        # la TABLE (pas seulement cellule par cellule) force Word à
+        # respecter les largeurs demandées.
+        table.autofit = False
+        table.allow_autofit = False
+        for j, width_cm in enumerate(col_widths_cm):
+            table.columns[j].width = Cm(width_cm)
     # table.cell(i, j) reconstruit TOUTE la structure de fusion de cellules
     # de la table depuis le XML à CHAQUE appel (limitation connue de
     # python-docx) — utilisé dans une double boucle, ça rend le
@@ -1327,7 +1341,7 @@ def generate_word_report(
     controls_rows = [["SN", "Control", "Control Description/Expectations"]]
     for sn, name, desc in TEMPLATE_CONTROLS:
         controls_rows.append([str(sn), name, desc.replace("\n", " ")])
-    _docx_add_table(doc, controls_rows, col_widths_cm=[0.7, 4, 12.3])
+    _docx_add_table(doc, controls_rows, col_widths_cm=[1.2, 3.8, 12])
     doc.add_paragraph()
 
     # ---- II. PRINCIPLES ----

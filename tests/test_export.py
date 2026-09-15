@@ -938,10 +938,15 @@ def test_extraction_origin_overrides_filename_system():
 def test_controls_reference_table_sn_column_is_narrow():
     """La colonne SN du tableau de référence des 18 contrôles (section
     I. OBJECTIVE) doit rester étroite (juste assez pour un numéro à 1-2
-    chiffres), pas la même largeur proportionnelle que les colonnes de
+    chiffres SANS retour à la ligne — 'SN' et '10' à '19' sur une seule
+    ligne), pas la même largeur proportionnelle que les colonnes de
     contenu — retour utilisateur explicite après comparaison visuelle.
-    Vérifié directement sur le code source plutôt que sur le rendu
-    visuel, pour une garde de non-régression simple et rapide."""
+    Élargie de 0.7 à 1.2cm après un second retour : trop étroite, 'SN'
+    et les numéros à deux chiffres se coupaient sur deux lignes une fois
+    l'auto-ajustement désactivé (voir test suivant) et donc réellement
+    respectée par Word. Vérifié directement sur le code source plutôt
+    que sur le rendu visuel, pour une garde de non-régression simple et
+    rapide."""
     import inspect
     from reporting import export
 
@@ -949,8 +954,41 @@ def test_controls_reference_table_sn_column_is_narrow():
     assert "(0.03, 0.20, 0.77)" in pdf_source
 
     word_source = inspect.getsource(export.generate_word_report)
-    assert "[0.7, 4, 12.3]" in word_source
+    assert "[1.2, 3.8, 12]" in word_source
     print("OK - test_controls_reference_table_sn_column_is_narrow")
+
+
+def test_docx_tables_with_explicit_widths_disable_autofit():
+    """
+    Vrai bug trouvé après un retour utilisateur ("la colonne SN prend
+    beaucoup d'espace") : Word reste libre de RECALCULER les largeurs de
+    colonne selon le contenu tant que l'auto-ajustement n'est pas
+    explicitement désactivé — une largeur de cellule imposée dans le
+    code peut donc être silencieusement ignorée à l'ouverture. Corrigé
+    en désactivant l'auto-ajustement et en renseignant la grille de
+    colonnes au niveau de la table (pas seulement cellule par cellule)
+    dès qu'une largeur explicite est demandée.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
+    output = generate_word_report(df, "output/test_autofit.docx")
+    doc = Document(str(output))
+    found = False
+    for table in doc.tables:
+        header = [c.text for c in table.rows[0].cells]
+        if header == ["SN", "Control", "Control Description/Expectations"]:
+            found = True
+            assert table.autofit is False
+            tblPr = table._tbl.find(qn("w:tblPr"))
+            layout = tblPr.find(qn("w:tblLayout"))
+            assert layout is not None and layout.get(qn("w:type")) == "fixed"
+    assert found
+    print("OK - test_docx_tables_with_explicit_widths_disable_autofit")
 
 
 def test_review_comparison_normalizes_case_for_created_deleted():
