@@ -11,8 +11,12 @@ validateur, et persiste ces décisions dans un fichier local entre deux
 exécutions — pour que le suivi survive d'une revue mensuelle à l'autre.
 
 Stockage volontairement simple (JSON local) : suffisant pour un usage
-individuel ou en petite équipe. Pour un usage à grande échelle partagé
-entre plusieurs personnes, une vraie base de données serait préférable.
+individuel ou en petite équipe. Protégé contre les écritures concurrentes
+par un verrou de fichier (analysis/file_lock.py) — sans quoi deux
+reviewers enregistrant une décision au même moment pouvaient
+silencieusement s'écraser l'un l'autre. Pour un usage à grande échelle
+partagé entre de nombreuses personnes, une vraie base de données
+resterait préférable.
 """
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+
+from analysis.file_lock import locked
 
 logger = logging.getLogger("workflow")
 
@@ -77,23 +83,31 @@ def apply_review_decision(
     if status not in VALID_STATUSES:
         raise ValueError(f"Statut invalide : {status}. Attendu : {VALID_STATUSES}")
 
-    store = _load_store(store_path)
-    key = _account_key(username, system)
-    entry = {
-        "status": status,
-        "validated_by": validated_by,
-        "comment": comment,
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    }
-    # Migration silencieuse de l'ancien format (un seul dict par compte,
-    # sans historique) vers une liste — pour ne pas perdre les décisions
-    # déjà enregistrées par un usage antérieur de l'outil.
-    existing = store.get(key, [])
-    if isinstance(existing, dict):
-        existing = [existing]
-    existing.append(entry)
-    store[key] = existing
-    _save_store(store_path, store)
+    # Verrou exclusif autour du cycle lecture-modification-écriture :
+    # sans lui, deux reviewers enregistrant une décision au même moment
+    # peuvent silencieusement s'écraser l'un l'autre (chacun lit avant
+    # l'écriture de l'autre, donc chacun écrit une version qui ignore la
+    # mise à jour de l'autre), voire corrompre le fichier si les deux
+    # écritures se chevauchent physiquement — un risque réel pour un
+    # outil pensé pour une équipe, pas un seul utilisateur.
+    with locked(store_path):
+        store = _load_store(store_path)
+        key = _account_key(username, system)
+        entry = {
+            "status": status,
+            "validated_by": validated_by,
+            "comment": comment,
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        # Migration silencieuse de l'ancien format (un seul dict par compte,
+        # sans historique) vers une liste — pour ne pas perdre les décisions
+        # déjà enregistrées par un usage antérieur de l'outil.
+        existing = store.get(key, [])
+        if isinstance(existing, dict):
+            existing = [existing]
+        existing.append(entry)
+        store[key] = existing
+        _save_store(store_path, store)
     logger.info(f"Décision enregistrée pour {key} : {status}")
 
 

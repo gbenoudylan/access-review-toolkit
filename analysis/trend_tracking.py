@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from analysis.file_lock import locked
+
 logger = logging.getLogger("trend_tracking")
 
 DEFAULT_TREND_STORE_PATH = Path(__file__).parent.parent / "data" / "trend_history.json"
@@ -77,7 +79,6 @@ def record_cycle_snapshot(
     recharger tout l'historique.
     """
     store_path = Path(store_path)
-    history = _load_store(store_path)
 
     systems = sorted(df["system"].dropna().astype(str).str.strip().unique()) if "system" in df.columns else []
     risk_counts = df["risk_level"].value_counts().to_dict() if "risk_level" in df.columns else {}
@@ -110,10 +111,16 @@ def record_cycle_snapshot(
         "by_system": by_system,
     }
 
-    history.append(snapshot)
-    store_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(store_path, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+    # Verrou exclusif autour du cycle lecture-modification-écriture :
+    # même risque de perte de mise à jour / corruption que pour l'audit
+    # trail des décisions de revue si deux enregistrements de cycle
+    # avaient lieu au même moment.
+    with locked(store_path):
+        history = _load_store(store_path)
+        history.append(snapshot)
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(store_path, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
 
     logger.info(
         f"Instantané de tendance enregistré ({snapshot['date']}, périmètre : "
@@ -144,12 +151,25 @@ def load_trend_history(
             columns=["date", "period_label", "systems", "total_accounts"] + TRACKED_BOOLEAN_METRICS
         )
 
+    # Comparaison de système insensible à la casse/espaces : le même
+    # système peut être enregistré avec une casse différente selon le
+    # cycle (variation d'export réaliste, ex. 'AD' puis 'ad') — sans
+    # cette normalisation, filtrer sur 'AD' raterait silencieusement les
+    # cycles où il a été enregistré autrement, donnant l'impression
+    # trompeuse que la tendance s'est arrêtée alors que rien n'a changé
+    # sur le fond.
+    system_norm = system.strip().lower() if system is not None else None
+
     rows = []
     for snap in history:
-        if system is not None:
-            if system not in snap.get("by_system", {}):
+        if system_norm is not None:
+            by_system = snap.get("by_system", {})
+            matched_key = next(
+                (k for k in by_system if str(k).strip().lower() == system_norm), None
+            )
+            if matched_key is None:
                 continue
-            sys_data = snap["by_system"][system]
+            sys_data = by_system[matched_key]
             row = {
                 "date": snap["date"], "period_label": snap.get("period_label", ""),
                 "systems": system, "total_accounts": sys_data.get("total_accounts", 0),

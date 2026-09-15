@@ -872,10 +872,17 @@ def analyze_access(
         normalized_name = (
             df["full_name"].astype(str).str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
         )
+        # Le système lui-même est normalisé pour le regroupement (mais pas
+        # pour l'affichage) : deux comptes du même système peuvent être
+        # enregistrés avec une casse différente selon la source d'export
+        # (ex. 'AD' puis 'ad') — sans cette normalisation, un vrai doublon
+        # sur le même système passerait inaperçu, croyant à tort qu'il
+        # s'agit de deux systèmes distincts.
+        normalized_system = df["system"].astype(str).str.strip().str.lower()
         dup_counts = (
             df[active_mask]
-            .assign(_normalized_name=normalized_name[active_mask])
-            .groupby(["_normalized_name", "system"])["username"]
+            .assign(_normalized_name=normalized_name[active_mask], _normalized_system=normalized_system[active_mask])
+            .groupby(["_normalized_name", "_normalized_system"])["username"]
             .transform("nunique")
         )
         df["is_duplicate_account"] = False

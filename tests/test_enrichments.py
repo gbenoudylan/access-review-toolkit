@@ -251,3 +251,57 @@ def test_sod_name_fallback_does_not_override_username_based_confidence_label():
     assert result["sod_conflict"].tolist() == [True, True]
     assert "homonymes" not in result.loc[0, "sod_conflict_detail"]
     print("OK - test_sod_name_fallback_does_not_override_username_based_confidence_label")
+
+
+def test_sod_matrix_ignores_self_referential_pairs():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum : une ligne de
+    la matrice SoD où les deux rôles sont identiques (ex. 'Admin'/
+    'Admin' — une erreur de saisie plausible dans un tableur maintenu à
+    la main) faisait signaler à tort TOUT compte portant simplement ce
+    rôle une seule fois comme étant en conflit — un rôle ne peut pas
+    être en conflit avec lui-même.
+    """
+    from analysis.sod_detection import load_custom_sod_matrix, detect_sod_conflicts
+    import pandas as pd
+
+    content = b"role_1,role_2\nAdmin,Admin\nCreateur,Validateur\n"
+    pairs = load_custom_sod_matrix(content, "matrix.csv")
+    assert pairs == [("Createur", "Validateur")]
+
+    df = pd.DataFrame({"username": ["u1"], "system": ["AD"], "role": ["Admin"]})
+    result = detect_sod_conflicts(df, conflicts=pairs)
+    assert result.loc[0, "sod_conflict"] == False
+    print("OK - test_sod_matrix_ignores_self_referential_pairs")
+
+
+def test_role_splitting_preserves_comma_in_role_name_when_semicolon_present():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum : un nom de rôle
+    métier peut légitimement contenir une virgule ('Manager, Finance
+    Department') — convertir systématiquement ';' en ',' avant de
+    découper les rôles multi-valués coupait ce rôle UNIQUE en deux
+    fragments, pouvant déclencher un faux conflit SoD si ces fragments
+    correspondaient par coïncidence à une paire de la matrice.
+
+    Corrigé pour le cas où un point-virgule est disponible comme
+    séparateur non ambigu entre plusieurs rôles (dont un contient une
+    virgule) — le cas où la SEULE virgule présente fait partie du nom
+    d'un rôle unique, sans aucun point-virgule pour lever l'ambiguïté,
+    reste un cas non résolu : structurellement impossible à distinguer
+    de deux rôles séparés sans information supplémentaire.
+    """
+    from analysis.sod_detection import _split_roles, detect_sod_conflicts
+    import pandas as pd
+
+    assert _split_roles("Manager, Finance Department; Payment Creator") == [
+        "Manager, Finance Department", " Payment Creator",
+    ]
+
+    df = pd.DataFrame({
+        "username": ["u1"], "system": ["AD"],
+        "role": ["Manager, Finance Department; Payment Validator"],
+    })
+    result = detect_sod_conflicts(df, conflicts=[("Payment Creator", "Payment Validator")])
+    assert result.loc[0, "sod_conflict"] == False
+    print("OK - test_role_splitting_preserves_comma_in_role_name_when_semicolon_present")

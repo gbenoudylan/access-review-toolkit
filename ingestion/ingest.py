@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 import pandas as pd
+import openpyxl
 
 try:
     from rapidfuzz import fuzz
@@ -233,7 +234,41 @@ def standardize_columns(df: pd.DataFrame, column_mapping: dict = None) -> pd.Dat
             rename_map[col] = matched
         else:
             primary_col = claimed_by[matched]
-            df[primary_col] = df[primary_col].combine_first(df[col])
+            # Avant de fusionner : deux colonnes candidates pour le même
+            # champ standard peuvent avoir des valeurs RÉELLEMENT
+            # différentes sur une même ligne (pas juste l'une vide et
+            # l'autre renseignée) — ex. deux colonnes 'role' avec 'Admin'
+            # et 'Standard' pour le même compte. combine_first() garderait
+            # silencieusement la première valeur non vide sans jamais
+            # signaler ce désaccord, perdant l'information sans trace —
+            # même risque que la fusion multi-feuilles (déjà corrigé
+            # ailleurs), ici pour deux colonnes en double au sein d'un
+            # même tableau.
+            both_filled = (
+                df[primary_col].notna() & df[col].notna()
+                & (df[primary_col].astype(str).str.strip() != "")
+                & (df[col].astype(str).str.strip() != "")
+            )
+            disagreement = both_filled & (df[primary_col].astype(str) != df[col].astype(str))
+            if disagreement.any():
+                n_conflicts = int(disagreement.sum())
+                logger.warning(
+                    f"{n_conflicts} ligne(s) où les colonnes en double '{primary_col}' et "
+                    f"'{col}' (toutes deux reconnues comme '{matched}') ont des valeurs "
+                    f"différentes — la valeur de '{primary_col}' est conservée, celle de "
+                    f"'{col}' est perdue pour ces lignes. À vérifier manuellement si ce "
+                    f"n'est pas voulu."
+                )
+            # combine_first() ne considère comme "manquante" qu'une vraie
+            # valeur NaN — une chaîne vide ("") dans la colonne primaire
+            # ne serait donc PAS remplacée par la valeur réelle de la
+            # colonne en double, même en l'absence de tout désaccord
+            # (une ligne complémentaire légitime perdrait sa vraie
+            # valeur). Les chaînes vides/blanches sont donc traitées
+            # comme manquantes ici, uniquement pour cette fusion.
+            primary_filled = df[primary_col].mask(df[primary_col].astype(str).str.strip() == "")
+            secondary_filled = df[col].mask(df[col].astype(str).str.strip() == "")
+            df[primary_col] = primary_filled.combine_first(secondary_filled)
             df = df.drop(columns=[col])
             logger.info(
                 f"Colonne '{col}' fusionnée dans '{primary_col}' (toutes deux -> '{matched}')."
@@ -324,6 +359,16 @@ def compute_data_quality_report(df: pd.DataFrame) -> dict:
         invalid_mask = non_empty & parsed.isna() & ~is_never_marker
         issues["invalid_dates"] = int(invalid_mask.sum())
         problem_mask |= invalid_mask
+        # Une date de dernière connexion dans le FUTUR (par rapport à la
+        # date d'extraction) est structurellement impossible — toujours
+        # une erreur (saisie manuelle, décalage d'horloge, fuseau mal
+        # géré...), jamais une simple ambiguïté comme pour un format de
+        # date incertain. Distingué des dates invalides ci-dessus, qui
+        # ne peuvent tout simplement pas être interprétées : ici, la
+        # date EST interprétée, mais le résultat ne peut pas être vrai.
+        future_mask = parsed.notna() & (parsed < 0)
+        issues["future_dates"] = int(future_mask.sum())
+        problem_mask |= future_mask
 
     if "account_status" in df.columns:
         non_empty = df["account_status"].notna() & (df["account_status"].astype(str).str.strip() != "")
@@ -1185,6 +1230,66 @@ def _read_excel_all_sheets(
     Voir _merge_or_stack_named_tables pour la logique de décision.
     """
     sheets = pd.read_excel(path, header=None, sheet_name=None)
+
+    # openpyxl reconnaît automatiquement les cellules d'erreur de formule
+    # ('#REF!', '#DIV/0!', '#N/A', '#VALUE!'...) comme un type de donnée
+    # distinct (data_type == 'e'), et pandas les convertit alors
+    # silencieusement en valeur manquante — indiscernable d'une case
+    # réellement vide. Une formule cassée dans le fichier source est
+    # pourtant un signal différent : ça indique un problème dans le
+    # fichier lui-même (référence supprimée, feuille manquante...), pas
+    # simplement une donnée jamais renseignée — et d'autres cellules du
+    # même fichier pourraient être affectées par la même cause sans que
+    # ce soit aussi visible. Comptage séparé, juste pour avertir : on ne
+    # bloque pas l'ingestion pour autant, la donnée manquante reste
+    # traitée normalement partout ailleurs.
+    try:
+        error_cells_count = 0
+        wb_raw = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        for ws in wb_raw.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    if cell.data_type == "e":
+                        error_cells_count += 1
+        if error_cells_count:
+            logger.warning(
+                f"{error_cells_count} cellule(s) d'erreur de formule Excel détectée(s) "
+                f"(#REF!, #DIV/0!, #N/A...) — traitées comme données manquantes, mais "
+                f"cela indique probablement un problème dans le fichier source "
+                f"(référence supprimée, feuille manquante...) à vérifier, pas "
+                f"nécessairement une donnée jamais renseignée."
+            )
+    except Exception:
+        pass  # purement informatif : un échec ici ne doit jamais bloquer l'ingestion.
+
+    # Cellules fusionnées : Excel n'écrit la valeur QUE dans la cellule
+    # en haut à gauche de la plage fusionnée — les autres sont vides en
+    # interne, même si elles affichent visuellement la même valeur dans
+    # le tableur (motif très courant : fusionner la colonne 'manager' ou
+    # 'système' sur plusieurs lignes pour éviter la répétition visuelle).
+    # Sans ce remplissage, ces lignes perdraient silencieusement une
+    # information pourtant clairement visible à l'œil dans le fichier —
+    # ex. plusieurs comptes signalés à tort "sans manager identifié"
+    # alors que le manager est bien affiché pour chacun d'eux.
+    try:
+        wb_merged = openpyxl.load_workbook(path, data_only=True)
+        for sheet_name, sheet_df in sheets.items():
+            if sheet_name not in wb_merged.sheetnames:
+                continue
+            ws = wb_merged[sheet_name]
+            for merged_range in ws.merged_cells.ranges:
+                top_value = ws.cell(row=merged_range.min_row, column=merged_range.min_col).value
+                if top_value is None:
+                    continue
+                for row_idx in range(merged_range.min_row, merged_range.max_row + 1):
+                    for col_idx in range(merged_range.min_col, merged_range.max_col + 1):
+                        # Index pandas 0-based, openpyxl 1-based.
+                        df_row, df_col = row_idx - 1, col_idx - 1
+                        if 0 <= df_row < len(sheet_df) and 0 <= df_col < sheet_df.shape[1]:
+                            sheet_df.iat[df_row, df_col] = top_value
+    except Exception as e:
+        logger.warning(f"Cellules fusionnées non traitées ({e}) — poursuite sans ce remplissage.")
+
     sheet_dfs: dict = {}
     for sheet_name, raw in sheets.items():
         raw = raw.dropna(how="all")

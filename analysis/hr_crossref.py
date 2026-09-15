@@ -273,7 +273,35 @@ def load_transferred_employees(file_path, sheet_name: str | None = None) -> pd.D
                 f"Aucune feuille de mutation/affectation trouvée automatiquement parmi "
                 f"{wb.sheetnames} — précise le nom exact de la feuille avec sheet_name."
             )
-        sheet_name = matches[0]
+        if len(matches) > 1:
+            # Plusieurs feuilles correspondent (ex. classeur archivant
+            # plusieurs années : 'Affectation 2025' ET 'Affectation-
+            # Mutation 2026') — prendre silencieusement la première
+            # reviendrait à risquer d'utiliser une feuille obsolète d'une
+            # année précédente sans que personne ne s'en aperçoive.
+            # Repli raisonnable : privilégier l'année la plus récente
+            # trouvée dans le nom de chaque candidate, puisque ce
+            # classeur suit visiblement une convention d'archivage par
+            # année. En cas d'égalité (même année ou aucune année
+            # détectée dans aucun des noms), refuser de deviner.
+            years = {s: re.search(r"(20\d{2})", s) for s in matches}
+            years = {s: int(m.group(1)) for s, m in years.items() if m}
+            if len(years) == len(matches) and len(set(years.values())) == len(years):
+                sheet_name = max(years, key=years.get)
+                logger.warning(
+                    f"Plusieurs feuilles correspondent à 'mutation/affectation' parmi "
+                    f"{matches} — la plus récente par année détectée dans le nom "
+                    f"('{sheet_name}') a été retenue. Précise sheet_name explicitement "
+                    f"si ce n'est pas la bonne."
+                )
+            else:
+                raise ValueError(
+                    f"Plusieurs feuilles correspondent à 'mutation/affectation' sans "
+                    f"année exploitable pour trancher sans ambiguïté : {matches} — "
+                    f"précise le nom exact de la feuille voulue avec sheet_name."
+                )
+        else:
+            sheet_name = matches[0]
     elif sheet_name not in wb.sheetnames:
         raise ValueError(f"Feuille '{sheet_name}' introuvable. Feuilles disponibles : {wb.sheetnames}")
 

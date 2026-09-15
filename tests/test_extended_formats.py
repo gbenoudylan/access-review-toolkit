@@ -855,3 +855,201 @@ def test_generic_accounts_fix_applies_to_zip_archives_too():
     assert len(df) == 8
     assert set(df["system"].unique()) == {"AD", "SAP"}
     print("OK - test_generic_accounts_fix_applies_to_zip_archives_too")
+
+
+def test_duplicate_raw_columns_with_real_conflict_warns():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum : deux colonnes
+    brutes portant le même libellé exact (ex. deux colonnes 'role' dans
+    un export mal formé) avec des valeurs RÉELLEMENT différentes sur
+    une même ligne étaient fusionnées via combine_first() sans jamais
+    signaler ce désaccord — même risque que la fusion multi-feuilles
+    (déjà corrigé ailleurs), jamais appliqué à ce cas de colonnes en
+    double au sein d'un même tableau.
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "username,system,role,role\nu1,AD,Admin,Standard\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+    import logging
+    import io
+    log_stream = io.StringIO()
+    handler = logging.StreamHandler(log_stream)
+    logging.getLogger("ingestion").addHandler(handler)
+    df = load_file(path, default_system="Test")
+    logging.getLogger("ingestion").removeHandler(handler)
+    assert "valeurs différentes" in log_stream.getvalue()
+    assert df.loc[0, "role"] == "Admin"
+    print("OK - test_duplicate_raw_columns_with_real_conflict_warns")
+
+
+def test_duplicate_raw_columns_complementary_no_false_positive():
+    """Deux colonnes en double dont les valeurs sont complémentaires
+    (l'une vide, l'autre remplie, jamais les deux à la fois sur une même
+    ligne) ne doivent PAS déclencher l'avertissement de conflit — une
+    chaîne vide ne doit pas être traitée comme une valeur réelle en
+    désaccord."""
+    import tempfile
+    from ingestion.ingest import load_file
+    import logging
+    import io
+
+    content = "username,system,role,role\nu1,AD,Admin,\nu2,AD,,Standard\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+    log_stream = io.StringIO()
+    handler = logging.StreamHandler(log_stream)
+    logging.getLogger("ingestion").addHandler(handler)
+    df = load_file(path, default_system="Test")
+    logging.getLogger("ingestion").removeHandler(handler)
+    assert "valeurs différentes" not in log_stream.getvalue()
+    assert df.loc[0, "role"] == "Admin"
+    assert df.loc[1, "role"] == "Standard"
+    print("OK - test_duplicate_raw_columns_complementary_no_false_positive")
+
+
+def test_excel_formula_error_cells_trigger_warning():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum : openpyxl
+    reconnaît automatiquement les cellules d'erreur de formule Excel
+    ('#REF!', '#DIV/0!', '#N/A'...) comme un type de donnée distinct, et
+    pandas les convertit silencieusement en valeur manquante —
+    indiscernable d'une case réellement vide. Une formule cassée dans le
+    fichier source est pourtant un signal différent (problème dans le
+    fichier lui-même), qui mérite un avertissement plutôt que de
+    disparaître sans trace.
+    """
+    import openpyxl
+    import tempfile
+    import logging
+    import io
+    import pandas as pd
+    from ingestion.ingest import load_file
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["username", "system", "account_status"])
+    ws.append(["u1", "AD", "Active"])
+    ws.append(["u2", "AD", "#REF!"])
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    wb.save(path)
+
+    log_stream = io.StringIO()
+    handler = logging.StreamHandler(log_stream)
+    logging.getLogger("ingestion").addHandler(handler)
+    df = load_file(path, default_system="Test")
+    logging.getLogger("ingestion").removeHandler(handler)
+
+    assert "erreur de formule Excel" in log_stream.getvalue()
+    assert pd.isna(df.loc[1, "account_status"])
+    print("OK - test_excel_formula_error_cells_trigger_warning")
+
+
+def test_excel_without_formula_errors_no_false_positive_warning():
+    """Un fichier Excel normal, sans cellule d'erreur, ne doit jamais
+    déclencher cet avertissement."""
+    import openpyxl
+    import tempfile
+    import logging
+    import io
+    from ingestion.ingest import load_file
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["username", "system", "account_status"])
+    ws.append(["u1", "AD", "Active"])
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    wb.save(path)
+
+    log_stream = io.StringIO()
+    handler = logging.StreamHandler(log_stream)
+    logging.getLogger("ingestion").addHandler(handler)
+    load_file(path, default_system="Test")
+    logging.getLogger("ingestion").removeHandler(handler)
+
+    assert "erreur de formule Excel" not in log_stream.getvalue()
+    print("OK - test_excel_without_formula_errors_no_false_positive_warning")
+
+
+def test_future_login_date_flagged_as_data_quality_issue():
+    """
+    Trouvé en poussant la fiabilité au maximum : une date de dernière
+    connexion dans le FUTUR (par rapport à la date d'extraction) est
+    structurellement impossible — toujours une erreur (saisie manuelle,
+    décalage d'horloge...), jamais une simple ambiguïté de format comme
+    pour les dates déjà détectées. Distinct des 'invalid_dates' :
+    ici la date EST interprétée, mais le résultat ne peut pas être vrai.
+    """
+    import pandas as pd
+    from ingestion.ingest import compute_data_quality_report
+
+    df = pd.DataFrame({
+        "username": ["u1", "u2"], "system": ["AD"] * 2,
+        "last_login_date": ["2027-01-01", "2026-01-01"],
+    })
+    report = compute_data_quality_report(df)
+    assert report["issues"]["future_dates"] == 1
+    print("OK - test_future_login_date_flagged_as_data_quality_issue")
+
+
+def test_merged_cells_forward_fill_manager_column():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum : Excel n'écrit
+    la valeur d'une cellule fusionnée que dans la cellule en haut à
+    gauche de la plage — les autres restent vides en interne, même si
+    elles affichent visuellement la même valeur dans le tableur (motif
+    très courant : fusionner 'manager' ou 'système' sur plusieurs lignes
+    pour éviter la répétition visuelle). Sans traitement, ces comptes
+    étaient signalés à tort 'sans manager identifié' alors que le
+    manager est clairement affiché pour chacun d'eux dans le fichier.
+    """
+    import openpyxl
+    import tempfile
+    from ingestion.ingest import load_file
+    from analysis.access_review import analyze_access
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["username", "system", "manager", "account_status"])
+    ws.append(["u1", "AD", "Marie Diallo", "Active"])
+    ws.append(["u2", "AD", None, "Active"])
+    ws.append(["u3", "AD", None, "Active"])
+    ws.merge_cells("C2:C4")
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    wb.save(path)
+
+    df = load_file(path, default_system="Test")
+    assert df["manager"].tolist() == ["Marie Diallo", "Marie Diallo", "Marie Diallo"]
+    result = analyze_access(df)
+    assert result["has_no_manager"].tolist() == [False, False, False]
+    print("OK - test_merged_cells_forward_fill_manager_column")
+
+
+def test_merged_title_cell_does_not_break_ingestion():
+    """Une cellule fusionnée utilisée comme titre (hors zone de données)
+    ne doit pas perturber l'ingestion normale — non-régression."""
+    import openpyxl
+    import tempfile
+    from ingestion.ingest import load_file
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.merge_cells("A1:D1")
+    ws["A1"] = "Export mensuel"
+    ws.append(["username", "system", "account_status", "last_login_date"])
+    ws.append(["u1", "AD", "Active", "2026-01-01"])
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    wb.save(path)
+
+    df = load_file(path, default_system="Test")
+    assert df.loc[0, "username"] == "u1"
+    assert df.loc[0, "account_status"] == "Active"
+    print("OK - test_merged_title_cell_does_not_break_ingestion")

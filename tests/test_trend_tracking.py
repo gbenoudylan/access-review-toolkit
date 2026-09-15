@@ -139,3 +139,25 @@ def test_multiple_cycles_same_system_show_real_trend():
     assert history["is_dormant"].tolist() == [5, 3, 1]
     store_path.unlink()
     print("OK - test_multiple_cycles_same_system_show_real_trend")
+
+
+def test_system_filter_is_case_insensitive_across_cycles():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum : le même
+    système peut être enregistré avec une casse différente selon le
+    cycle (variation d'export réaliste, ex. 'AD' puis 'ad') — filtrer
+    l'historique sur 'AD' ratait silencieusement les cycles enregistrés
+    autrement, donnant l'impression trompeuse que la tendance s'était
+    arrêtée alors que rien n'avait changé sur le fond.
+    """
+    store_path = _fresh_store()
+    df1 = pd.DataFrame({"username": ["u1", "u2"], "system": ["AD", "AD"], "account_status": ["Active"] * 2})
+    record_cycle_snapshot(analyze_access(df1), "T1", store_path=store_path)
+    df2 = pd.DataFrame({"username": ["u1", "u2"], "system": ["ad", "ad"], "account_status": ["Active"] * 2})
+    record_cycle_snapshot(analyze_access(df2), "T2", store_path=store_path)
+
+    result = load_trend_history(store_path=store_path, system="AD")
+    assert len(result) == 2
+    assert result["total_accounts"].tolist() == [2, 2]
+    store_path.unlink()
+    print("OK - test_system_filter_is_case_insensitive_across_cycles")

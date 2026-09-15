@@ -1186,3 +1186,29 @@ def test_orphaned_account_requires_active_status_when_known():
     result = analyze_access(df)
     assert result.loc[0, "is_orphaned_account"] == False
     print("OK - test_orphaned_account_requires_active_status_when_known")
+
+
+def test_duplicate_detection_normalizes_system_case_too():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum : deux comptes
+    de la même personne, sur le même système, mais enregistré avec une
+    casse différente selon l'export ('AD' puis 'ad') n'étaient pas
+    détectés comme doublons — le regroupement se faisait sur le nom
+    normalisé mais le système brut, ratant le cas où c'est justement le
+    système qui varie en casse. Vérifié aussi qu'un vrai système
+    différent (AD vs SAP) ne fusionne pas à tort.
+    """
+    df = pd.DataFrame({
+        "username": ["jdupont1", "jdupont2"], "full_name": ["Jean Dupont", "Jean Dupont"],
+        "system": ["AD", "ad"], "account_status": ["Active", "Active"],
+    })
+    result = analyze_access(df)
+    assert result["is_duplicate_account"].tolist() == [True, True]
+
+    different_system_df = pd.DataFrame({
+        "username": ["jdupont1", "jdupont2"], "full_name": ["Jean Dupont", "Jean Dupont"],
+        "system": ["AD", "SAP"], "account_status": ["Active", "Active"],
+    })
+    result_diff = analyze_access(different_system_df)
+    assert result_diff["is_duplicate_account"].tolist() == [False, False]
+    print("OK - test_duplicate_detection_normalizes_system_case_too")

@@ -50,6 +50,13 @@ def load_custom_sod_matrix(file_bytes: bytes, filename: str) -> list[tuple[str, 
     par ligne. Permet à chaque entreprise d'adapter la matrice sans
     modifier le code : chaque organisation a sa propre liste de rôles
     incompatibles, la matrice par défaut n'est qu'un point de départ.
+
+    Une paire où les deux rôles sont identiques (ex. 'Admin'/'Admin' —
+    une erreur de saisie plausible dans un tableur maintenu à la main)
+    est ignorée : un rôle ne peut pas être en conflit avec lui-même, et
+    la garder ferait signaler à tort TOUT compte portant simplement ce
+    rôle une seule fois, une explosion de faux positifs pour une simple
+    coquille dans la matrice source.
     """
     import io
     from pathlib import Path as _Path
@@ -62,10 +69,21 @@ def load_custom_sod_matrix(file_bytes: bytes, filename: str) -> list[tuple[str, 
         raise ValueError("La matrice SoD doit contenir au moins deux colonnes (rôle 1, rôle 2).")
     col_a, col_b = matrix_df.columns[:2]
     pairs = []
+    self_referential_count = 0
     for _, row in matrix_df.iterrows():
         a, b = row[col_a], row[col_b]
         if pd.notna(a) and pd.notna(b) and str(a).strip() and str(b).strip():
-            pairs.append((str(a).strip(), str(b).strip()))
+            a_clean, b_clean = str(a).strip(), str(b).strip()
+            if a_clean.lower() == b_clean.lower():
+                self_referential_count += 1
+                continue
+            pairs.append((a_clean, b_clean))
+    if self_referential_count:
+        logger.warning(
+            f"{self_referential_count} ligne(s) de la matrice SoD ignorée(s) car les deux "
+            f"rôles y sont identiques (probable erreur de saisie) — un rôle ne peut pas "
+            f"être en conflit avec lui-même."
+        )
     return pairs
 
 
@@ -73,6 +91,26 @@ def _normalize(text) -> str:
     if text is None or (isinstance(text, float) and pd.isna(text)):
         return ""
     return str(text).strip().lower()
+
+
+def _split_roles(raw_roles: str) -> list[str]:
+    """
+    Découpe un champ 'role' multi-valué en rôles individuels.
+
+    Point-virgule prioritaire sur la virgule : un nom de rôle métier peut
+    légitimement contenir une virgule ('Manager, Finance Department',
+    'Analyst, Level 2') — convertir systématiquement ';' en ',' avant de
+    découper (comportement précédent) détruisait cette distinction et
+    coupait un rôle UNIQUE en deux fragments, pouvant déclencher un faux
+    conflit SoD si ces fragments correspondaient par coïncidence à une
+    paire de la matrice. Si au moins un point-virgule est présent, on
+    découpe UNIQUEMENT sur celui-ci (les virgules éventuelles restent
+    alors partie du nom de rôle) ; sinon, on découpe sur la virgule,
+    seul séparateur disponible.
+    """
+    if ";" in raw_roles:
+        return raw_roles.split(";")
+    return raw_roles.split(",")
 
 
 def detect_sod_conflicts(
@@ -121,7 +159,7 @@ def detect_sod_conflicts(
     for _, row in df.iterrows():
         user = _norm_user(row["username"])
         raw_roles = str(row["role"]) if pd.notna(row["role"]) else ""
-        for r in raw_roles.replace(";", ",").split(","):
+        for r in _split_roles(raw_roles):
             r_norm = _normalize(r)
             if r_norm:
                 roles_per_user.setdefault(user, set()).add(r_norm)
@@ -157,7 +195,7 @@ def detect_sod_conflicts(
             if not name_key:
                 continue
             raw_roles = str(row["role"]) if pd.notna(row["role"]) else ""
-            for r in raw_roles.replace(";", ",").split(","):
+            for r in _split_roles(raw_roles):
                 r_norm = _normalize(r)
                 if r_norm:
                     roles_per_name.setdefault(name_key, set()).add(r_norm)

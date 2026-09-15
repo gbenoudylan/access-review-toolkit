@@ -533,9 +533,20 @@ def main():
     if trend_history_all.empty:
         st.info("Aucun cycle encore enregistré dans l'historique de tendance.")
     else:
-        available_systems = sorted(
-            {s.strip() for row in trend_history_all["systems"] for s in row.split(",") if s.strip() and s.strip() != "Non renseigné"}
-        )
+        # Dédoublonnage insensible à la casse : le même système peut
+        # apparaître avec une casse différente selon le cycle (variation
+        # d'export réaliste) — sans ça, 'AD' et 'ad' apparaîtraient comme
+        # deux entrées distinctes dans la liste alors qu'elles désignent
+        # le même système et donneraient le même résultat une fois
+        # sélectionnées.
+        raw_systems = {
+            s.strip() for row in trend_history_all["systems"] for s in row.split(",")
+            if s.strip() and s.strip() != "Non renseigné"
+        }
+        seen_norm = {}
+        for s in raw_systems:
+            seen_norm.setdefault(s.lower(), s)  # garde la première casse rencontrée
+        available_systems = sorted(seen_norm.values())
         scope_choice = st.selectbox(
             "Périmètre à afficher",
             options=["Tous systèmes (totaux globaux)"] + available_systems,

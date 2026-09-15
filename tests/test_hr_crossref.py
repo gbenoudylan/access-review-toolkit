@@ -212,3 +212,58 @@ def test_flag_transferred_ignores_word_order_and_flags_homonyms():
     assert result.loc[0, "is_transferred_but_active"] == True
     assert result.loc[0, "transferred_name_ambiguous"] == True
     print("OK - test_flag_transferred_ignores_word_order_and_flags_homonyms")
+
+
+def test_transfer_sheet_ambiguity_resolved_by_most_recent_year():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum : quand plusieurs
+    feuilles correspondent à l'indice de détection automatique (ex. un
+    classeur archivant 'Affectation 2025' ET 'Affectation-Mutation
+    2026'), prendre silencieusement la première revenait à risquer
+    d'utiliser une feuille obsolète d'une année précédente sans que
+    personne ne s'en aperçoive. Corrigé : la feuille avec l'année la
+    plus récente détectée dans son nom est retenue, avec avertissement.
+    """
+    import openpyxl
+    import tempfile
+    from analysis.hr_crossref import load_transferred_employees
+
+    wb = openpyxl.Workbook()
+    ws1 = wb.active
+    ws1.title = "Affectation 2025"
+    ws1.append(["Nom & Prénoms"])
+    ws1.append(["Ancien Employé 2025"])
+    ws2 = wb.create_sheet("Affectation-Mutation 2026")
+    ws2.append(["Nom & Prénoms"])
+    ws2.append(["Jean Dupont"])
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    wb.save(path)
+
+    result = load_transferred_employees(path)
+    assert result["full_name"].tolist() == ["Jean Dupont"]
+    print("OK - test_transfer_sheet_ambiguity_resolved_by_most_recent_year")
+
+
+def test_transfer_sheet_ambiguity_without_year_raises_clear_error():
+    """Sans année exploitable pour départager plusieurs feuilles
+    candidates, l'ambiguïté ne doit jamais être résolue au hasard —
+    erreur claire demandant de préciser la feuille voulue."""
+    import openpyxl
+    import tempfile
+    import pytest
+    from analysis.hr_crossref import load_transferred_employees
+
+    wb = openpyxl.Workbook()
+    ws1 = wb.active
+    ws1.title = "Affectation Nord"
+    ws1.append(["Nom & Prénoms"])
+    ws2 = wb.create_sheet("Mutation Sud")
+    ws2.append(["Nom & Prénoms"])
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    wb.save(path)
+
+    with pytest.raises(ValueError, match="sans année exploitable"):
+        load_transferred_employees(path)
+    print("OK - test_transfer_sheet_ambiguity_without_year_raises_clear_error")
