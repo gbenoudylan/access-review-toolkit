@@ -1138,14 +1138,16 @@ def test_profile_modified_and_reactivated_show_before_after_comparison_table():
     print("OK - test_profile_modified_and_reactivated_show_before_after_comparison_table")
 
 
-def test_control_19_present_and_annexes_filled_as_sections():
+def test_control_19_present_and_annexes_left_empty():
     """
     Nouvelle section 19 (First line user access review report and
-    accuracy) et annexes (A à D, F) demandées explicitement, en
-    sections distinctes remplies avec les données déjà calculées
-    (pas un tableau de simples descriptions, pas de Priority Actions/
-    Risk Score/Exceptions Report/Validation de fin — retirés sur
-    demande explicite).
+    accuracy) demandée explicitement. Annexes A à F : d'abord remplies
+    automatiquement avec les données déjà calculées, puis explicitement
+    VIDÉES sur demande finale de l'utilisateur ("laisse l'espace vide
+    stp c'est à nous de le remplir") — seuls les titres doivent
+    apparaître, à compléter manuellement après génération. Toujours pas
+    de Priority Actions/Risk Score/Exceptions Report/Validation de fin
+    (retirés sur une demande antérieure, toujours valable).
     """
     import pandas as pd
     from analysis.access_review import analyze_access
@@ -1180,7 +1182,7 @@ def test_control_19_present_and_annexes_filled_as_sections():
     # validation de FIN de document (minuscule, Role/Name/Date) est retirée.
     assert "Control Performer" in pdf_text  # en-tête toujours là
 
-    annex_idx = pdf_text.find("Annexes")
+    annex_idx = pdf_text.rfind("Annexes")
     assert annex_idx != -1
     annex_text = pdf_text[annex_idx:]
     assert "A. User access form of created accounts" in annex_text
@@ -1188,10 +1190,9 @@ def test_control_19_present_and_annexes_filled_as_sections():
     assert "C. Rationale for Profile Change" in annex_text
     assert "D. List Of Users Used for the review" in annex_text
     assert "F. First List user access review Report" in annex_text
-    # C (Profile Change) doit être rempli avec le vrai avant/après, pas
-    # juste un intitulé vide.
-    assert "Standard User" in annex_text and "Administrator" in annex_text
-    assert "2026-06-01" in annex_text and "2026-09-14" in annex_text
+    # Vide : les données de comparaison (déjà visibles dans les sections
+    # 11/12 principales) ne doivent PAS être dupliquées dans l'annexe.
+    assert "Standard User" not in annex_text and "Administrator" not in annex_text
 
     word_path = generate_word_report(
         curr_result, "output/test_control19.docx", previous_df=prev_result,
@@ -1204,12 +1205,14 @@ def test_control_19_present_and_annexes_filled_as_sections():
     assert "Exceptions Report" not in word_text
     assert any(p.text == "A. User access form of created accounts" for p in doc.paragraphs)
     assert any(p.text == "F. First List user access review Report" for p in doc.paragraphs)
-    found_profile_annex = any(
+    # La comparaison de profil (jdupont : Standard User -> Administrator)
+    # doit exister dans la section 11 principale, mais plus dans l'annexe.
+    found_profile_table = any(
         [c.text for c in t.rows[0].cells] == ["Account", "System", "Previous Profile", "Extraction Date", "New Profile", "Extraction Date"]
         for t in doc.tables
     )
-    assert found_profile_annex
-    print("OK - test_control_19_present_and_annexes_filled_as_sections")
+    assert found_profile_table  # toujours présent dans la section 11 principale
+    print("OK - test_control_19_present_and_annexes_left_empty")
 
 
 def test_word_document_has_real_metadata_not_2013_placeholder():
@@ -1269,3 +1272,110 @@ def test_docx_uses_named_styles_not_repeated_direct_formatting():
                             found_styled_run = True
     assert found_styled_run
     print("OK - test_docx_uses_named_styles_not_repeated_direct_formatting")
+
+
+def test_account_tables_never_capped_per_explicit_user_decision():
+    """
+    Historique important : un plafond avait été introduit après un cas
+    réel (2000 comptes, 291 pages, Word refusant d'ouvrir le fichier),
+    puis explicitement retiré sur demande finale de l'utilisateur
+    ("non non retire les plafonds je ne veux pas de plafond affiche
+    tout") après une réflexion sur les compromis — la complétude prime,
+    y compris au risque d'un document volumineux. Ce test fige ce choix
+    : aucun tableau de comptes n'est jamais tronqué, à aucune échelle.
+    """
+    import pandas as pd
+    import numpy as np
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report, generate_pdf_report, generate_excel_report
+    from docx import Document
+    import pdfplumber
+    import openpyxl
+
+    np.random.seed(1)
+    n = 500
+    df = pd.DataFrame({
+        "username": [f"acct{i:04d}" for i in range(n)],
+        "full_name": [f"Person {i}" for i in range(n)],
+        "system": ["AD"] * n,
+        "account_status": ["Active"] * n,
+        "last_login_date": ["2020-01-01"] * n,  # tous dormants -> un seul gros tableau
+    })
+    result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-15"))
+
+    word_path = generate_word_report(result, "output/test_uncapped_scale.docx")
+    doc = Document(str(word_path))
+    word_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Showing the first" not in word_text
+    # Le tableau du contrôle Dormant doit contenir les 500 comptes.
+    dormant_table = next(
+        t for t in doc.tables if len(t.rows) > 400
+    )
+    assert len(dormant_table.rows) == n + 1  # en-tête + n comptes
+
+    pdf_path = generate_pdf_report(result, "output/test_uncapped_scale.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        pdf_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    assert "Showing the first" not in pdf_text
+
+    excel_path = generate_excel_report(result, "output/test_uncapped_scale.xlsx")
+    wb = openpyxl.load_workbook(str(excel_path))
+    ws = wb["Review Plan"]
+    assert ws.max_row == n + 1
+    print("OK - test_account_tables_never_capped_per_explicit_user_decision")
+
+
+def test_annexes_a_to_f_are_left_empty_for_manual_completion():
+    """
+    Demande explicite : les annexes A à F ne doivent contenir QUE leur
+    titre, sans tableau ni donnée pré-remplie — c'est à l'équipe de les
+    compléter manuellement après génération, pas à l'outil de deviner
+    leur contenu.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_word_report, generate_pdf_report
+    from docx import Document
+    import pdfplumber
+
+    df = pd.DataFrame({
+        "username": ["u1"], "full_name": ["Jean Dupont"], "system": ["AD"],
+        "account_status": ["Active"], "account_created_date": ["2026-09-01"],
+    })
+    result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-15"))
+
+    word_path = generate_word_report(result, "output/test_annexes_empty.docx")
+    doc = Document(str(word_path))
+    for letter, title in [
+        ("A", "User access form of created accounts"),
+        ("B", "Justification of Reactivated accounts"),
+        ("C", "Rationale for Profile Change"),
+        ("D", "List Of Users Used for the review"),
+        ("F", "First List user access review Report"),
+    ]:
+        assert any(p.text == f"{letter}. {title}" for p in doc.paragraphs)
+    # Aucun tableau ne doit apparaître APRÈS le titre "Annexes" dans
+    # l'ordre réel du document (comparaison par contenu de tableau
+    # trop fragile : un tableau de section principale contient aussi
+    # "u1" légitimement).
+    from docx.oxml.ns import qn
+    body = doc.element.body
+    annexes_heading_seen = False
+    tables_after_annexes = 0
+    for child in body:
+        if child.tag == qn("w:p") and "Annexes" in "".join(
+            node.text or "" for node in child.iter(qn("w:t"))
+        ):
+            annexes_heading_seen = True
+            continue
+        if annexes_heading_seen and child.tag == qn("w:tbl"):
+            tables_after_annexes += 1
+    assert tables_after_annexes == 0
+
+    pdf_path = generate_pdf_report(result, "output/test_annexes_empty.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        pdf_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    annex_idx = pdf_text.rfind("Annexes")
+    annex_tail = pdf_text[annex_idx:]
+    assert "u1" not in annex_tail
+    print("OK - test_annexes_a_to_f_are_left_empty_for_manual_completion")

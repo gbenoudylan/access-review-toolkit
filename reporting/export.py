@@ -597,11 +597,11 @@ def _build_capped_account_table(
     colonnes justificatives propres à CE contrôle (ex. dernière connexion
     réelle pour "Dormant", pas seulement l'action qui en résulte) ET
     l'action recommandée — pour que la revue soit directement exploitable
-    à partir de cette seule section, sans plafond : ce sont les 18
-    sections qui sont effectivement revues, la complétude prime ici sur
-    la longueur du document. Largeurs de colonnes proportionnelles et
-    retour à la ligne automatique (même infrastructure que le détail
-    principal) — sans quoi un en-tête un peu long chevauche son voisin.
+    à partir de cette seule section, sans plafond, sur demande explicite :
+    la complétude prime sur la longueur du document. Largeurs de
+    colonnes proportionnelles et retour à la ligne automatique (même
+    infrastructure que le détail principal) — sans quoi un en-tête un
+    peu long chevauche son voisin.
     """
     default_cols = ["username", "full_name", "system", "review_action"]
     cols = [c for c in (columns or default_cols) if c in subset_df.columns]
@@ -1542,9 +1542,6 @@ def generate_word_report(
                 default_cols = ["username", "full_name", "system", "review_action"]
                 cols = [c for c in (CONTROL_TABLE_COLUMNS.get(key) or default_cols) if c in subset.columns]
                 if cols:
-                    # Pas de plafond ici : ce sont les 18 sections qui sont
-                    # effectivement revues, la complétude prime sur la
-                    # longueur du document.
                     doc.add_paragraph()
                     display = subset[cols].fillna("").astype(str).map(_translate_value)
                     detail_rows = [[ALL_COLUMN_LABELS.get(c, c) for c in cols]] + display.values.tolist()
@@ -1627,56 +1624,19 @@ def generate_word_report(
 
     doc.add_heading("Annexes", level=2)
 
-    # ---- A. Comptes créés (réutilise la même logique que le contrôle 10) ----
-    doc.add_heading("A. User access form of created accounts", level=3)
-    if "is_recently_created" in df.columns and "account_created_date" in df.columns:
-        created_subset = df[df["is_recently_created"] == True]  # noqa: E712
-    else:
-        created_names = comparison_stats.get("created_accounts") or []
-        created_subset = df[df["username"].astype(str).isin(created_names)] if created_names and "username" in df.columns else df.iloc[0:0]
-    if len(created_subset):
-        cols = [c for c in ("username", "full_name", "system", "account_created_date", "account_status") if c in created_subset.columns]
-        display = created_subset[cols].fillna("").astype(str).map(_translate_value)
-        _docx_add_table(doc, [[ALL_COLUMN_LABELS.get(c, c) for c in cols]] + display.values.tolist())
-    else:
-        doc.add_paragraph("No account created within the review window for this cycle.")
-    doc.add_paragraph()
-
-    # ---- B. Comptes réactivés (réutilise le détail avant/après du contrôle 12) ----
-    doc.add_heading("B. Justification of Reactivated accounts", level=3)
-    reactivated_detail = comparison_stats.get("reactivated_detail") or []
-    if reactivated_detail:
-        _docx_add_comparison_detail_table(doc, reactivated_detail, "Status")
-    else:
-        doc.add_paragraph("No account reactivated since the previous review for this cycle.")
-    doc.add_paragraph()
-
-    # ---- C. Profils modifiés (réutilise le détail avant/après du contrôle 11) ----
-    doc.add_heading("C. Rationale for Profile Change", level=3)
-    profile_modified_detail = comparison_stats.get("profile_modified_detail") or []
-    if profile_modified_detail:
-        _docx_add_comparison_detail_table(doc, profile_modified_detail, "Profile")
-    else:
-        doc.add_paragraph("No profile change detected since the previous review for this cycle.")
-    doc.add_paragraph()
-
-    # ---- D. Liste complète des comptes couverts par la revue ----
-    doc.add_heading("D. List Of Users Used for the review", level=3)
-    d_cols = [c for c in ("username", "full_name", "system", "account_status") if c in df.columns]
-    if d_cols and len(df):
-        d_display = df[d_cols].fillna("").astype(str).map(_translate_value)
-        _docx_add_table(doc, [[ALL_COLUMN_LABELS.get(c, c) for c in d_cols]] + d_display.values.tolist())
-    else:
-        doc.add_paragraph("No account data available for this cycle.")
-    doc.add_paragraph()
-
-    # ---- F. Rapport de première ligne — document externe, pas dans nos données ----
-    doc.add_heading("F. First List user access review Report", level=3)
-    doc.add_paragraph(
-        "Not derivable from the ingested access data — attach or reference here the "
-        "approved monthly user access review report used as evidence for control 19 "
-        "(First line user access review report and accuracy)."
-    )
+    # Sections A à F laissées vides à la demande explicite de l'utilisateur
+    # (équipe MTN) : seuls les titres sont générés, le contenu est ajouté
+    # manuellement après coup — pas de tableau ni de donnée pré-remplie.
+    for letter, title in [
+        ("A", "User access form of created accounts"),
+        ("B", "Justification of Reactivated accounts"),
+        ("C", "Rationale for Profile Change"),
+        ("D", "List Of Users Used for the review"),
+        ("F", "First List user access review Report"),
+    ]:
+        doc.add_heading(f"{letter}. {title}", level=3)
+        doc.add_paragraph()
+        doc.add_paragraph()
 
     doc.save(str(output_path))
     logger.info(f"Rapport Word généré : {output_path}")
@@ -2093,59 +2053,20 @@ def generate_pdf_report(
     ]))
     elements.append(summary_table)
 
-    export_df_full = _prepare_export_df(df)
-
     elements.append(Paragraph("Annexes", section_style))
 
-    # ---- A. Comptes créés (réutilise la même logique que le contrôle 10) ----
-    elements.append(Paragraph("A. User access form of created accounts", system_style))
-    if "is_recently_created" in df.columns and "account_created_date" in df.columns:
-        created_subset = df[df["is_recently_created"] == True]  # noqa: E712
-    else:
-        created_names = comparison_stats.get("created_accounts") or []
-        created_subset = df[df["username"].astype(str).isin(created_names)] if created_names and "username" in df.columns else df.iloc[0:0]
-    if len(created_subset):
-        a_cols = [c for c in ("username", "full_name", "system", "account_created_date", "account_status") if c in created_subset.columns]
-        elements.extend(_build_capped_account_table(created_subset, available_width, columns=a_cols))
-    else:
-        elements.append(Paragraph("No account created within the review window for this cycle.", note_style))
-    elements.append(Spacer(1, 0.3 * cm))
-
-    # ---- B. Comptes réactivés (réutilise le détail avant/après du contrôle 12) ----
-    elements.append(Paragraph("B. Justification of Reactivated accounts", system_style))
-    reactivated_detail = comparison_stats.get("reactivated_detail") or []
-    if reactivated_detail:
-        elements.append(_build_comparison_detail_table(reactivated_detail, "Status", available_width))
-    else:
-        elements.append(Paragraph("No account reactivated since the previous review for this cycle.", note_style))
-    elements.append(Spacer(1, 0.3 * cm))
-
-    # ---- C. Profils modifiés (réutilise le détail avant/après du contrôle 11) ----
-    elements.append(Paragraph("C. Rationale for Profile Change", system_style))
-    profile_modified_detail = comparison_stats.get("profile_modified_detail") or []
-    if profile_modified_detail:
-        elements.append(_build_comparison_detail_table(profile_modified_detail, "Profile", available_width))
-    else:
-        elements.append(Paragraph("No profile change detected since the previous review for this cycle.", note_style))
-    elements.append(Spacer(1, 0.3 * cm))
-
-    # ---- D. Liste complète des comptes couverts par la revue ----
-    elements.append(Paragraph("D. List Of Users Used for the review", system_style))
-    d_cols = [c for c in ("username", "full_name", "system", "account_status") if c in df.columns]
-    if d_cols and len(df):
-        elements.extend(_build_capped_account_table(df, available_width, columns=d_cols))
-    else:
-        elements.append(Paragraph("No account data available for this cycle.", note_style))
-    elements.append(Spacer(1, 0.3 * cm))
-
-    # ---- F. Rapport de première ligne — document externe, pas dans nos données ----
-    elements.append(Paragraph("F. First List user access review Report", system_style))
-    elements.append(Paragraph(
-        "Not derivable from the ingested access data — attach or reference here the "
-        "approved monthly user access review report used as evidence for control 19 "
-        "(First line user access review report and accuracy).",
-        note_style,
-    ))
+    # Sections A à F laissées vides à la demande explicite de l'utilisateur
+    # (équipe MTN) : seuls les titres sont générés, le contenu est ajouté
+    # manuellement après coup — pas de tableau ni de donnée pré-remplie.
+    for letter, title in [
+        ("A", "User access form of created accounts"),
+        ("B", "Justification of Reactivated accounts"),
+        ("C", "Rationale for Profile Change"),
+        ("D", "List Of Users Used for the review"),
+        ("F", "First List user access review Report"),
+    ]:
+        elements.append(Paragraph(f"{letter}. {title}", system_style))
+        elements.append(Spacer(1, 1.5 * cm))
 
     doc.build(elements)
     logger.info(f"Rapport PDF généré ({period_label}) : {output_path}")
