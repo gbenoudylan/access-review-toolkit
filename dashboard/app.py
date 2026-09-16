@@ -587,11 +587,19 @@ def main():
                     st.info("Une acceptation existe pour ce compte, mais pour un constat différent de l'actuel — ne s'applique pas ici.")
                 current_action = account.get("review_action")
                 if current_action and current_action != "Aucune action":
+                    # La case à cocher doit être HORS du formulaire : à
+                    # l'intérieur d'un st.form, Streamlit ne réévalue le
+                    # script qu'à la soumission, pas à chaque interaction
+                    # — cocher la case ne ferait donc rien apparaître
+                    # avant que le formulaire entier soit déjà soumis.
+                    has_expiration = st.checkbox(
+                        "Prévoir une échéance de revalidation",
+                        key=f"has_expiration_{acc_username}_{acc_system}",
+                    )
                     with st.form(key=f"risk_acc_form_{acc_username}_{acc_system}"):
                         comment = st.text_area(
                             f"Justification pour accepter '{current_action}' sur ce compte",
                         )
-                        has_expiration = st.checkbox("Prévoir une échéance de revalidation")
                         expiration = st.date_input("Échéance") if has_expiration else None
                         accepted_by = st.text_input("Accepté par")
                         submitted = st.form_submit_button("Accepter ce risque")
