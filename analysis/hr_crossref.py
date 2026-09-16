@@ -82,8 +82,20 @@ def _normalize_name_bag(name) -> tuple:
     ponctuation retirés pour la même raison que la détection de doublons
     (analysis/access_review.py) : deux systèmes différents écrivent
     rarement les noms de façon strictement identique.
+
+    Apostrophe traitée différemment du tiret : une apostrophe précédée
+    d'une seule lettre ('N'', 'D'', 'L'', 'O'' — très courant dans les
+    patronymes ivoiriens/ouest-africains comme "N'Guessan", "N'Diaye")
+    marque presque toujours une contraction, pas une séparation entre
+    deux mots distincts — si un système la supprime purement et
+    simplement à la saisie ("NGuessan" au lieu de "N'Guessan"), les deux
+    doivent rester reconnus comme le même nom. Le tiret, lui, reste un
+    séparateur (ex. 'Jean-Pierre' vs 'Jean Pierre' doivent aussi
+    correspondre, mais en deux mots distincts) : les deux conventions
+    coexistent réellement selon le caractère utilisé.
     """
     text = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"\b([a-zA-Z])['’]", r"\1", text)
     words = re.findall(r"[a-z]+", text.lower())
     return tuple(sorted(words))
 
@@ -164,6 +176,15 @@ def cross_reference_with_hr(iam_df: pd.DataFrame, hr_df_raw_path: str = None, hr
             "porter le même nom), résultat à vérifier plus attentivement que d'habitude."
         )
         hr_df = hr_df.copy()
+        # Dédoublonnage AVANT de détecter les homonymes : la même
+        # personne listée deux fois avec des informations IDENTIQUES
+        # (erreur de saisie/copier-coller, plausible dans un référentiel
+        # RH maintenu à la main) n'est PAS un homonyme — seules des
+        # lignes qui partagent le même nom mais diffèrent sur le reste
+        # (statut, département...) représentent une vraie ambiguïté
+        # entre deux personnes distinctes.
+        dedup_cols = [c for c in hr_df.columns if c != "_name_key"]
+        hr_df = hr_df.drop_duplicates(subset=dedup_cols).reset_index(drop=True)
         hr_df["_name_key"] = hr_df["full_name"].apply(_normalize_name_bag)
         name_counts = hr_df["_name_key"].value_counts()
         ambiguous_keys = set(name_counts[name_counts > 1].index)
@@ -362,6 +383,14 @@ def flag_transferred_but_still_active(iam_df: pd.DataFrame, transferred_df: pd.D
         return iam_df
 
     transferred_df = transferred_df.copy()
+    # Dédoublonnage AVANT de détecter les homonymes : une même personne
+    # listée deux fois avec des informations identiques (erreur de
+    # saisie/copier-coller, plausible dans un tableau RH maintenu à la
+    # main) n'est PAS un homonyme — seules des lignes qui partagent le
+    # même nom mais diffèrent sur le reste (département, date...)
+    # représentent une vraie ambiguïté entre deux personnes distinctes.
+    original_cols = [c for c in transferred_df.columns if c != "_name_key"]
+    transferred_df = transferred_df.drop_duplicates(subset=original_cols).reset_index(drop=True)
     transferred_df["_name_key"] = transferred_df["full_name"].apply(_normalize_name_bag)
     name_counts = transferred_df["_name_key"].value_counts()
     ambiguous_keys = set(name_counts[name_counts > 1].index)

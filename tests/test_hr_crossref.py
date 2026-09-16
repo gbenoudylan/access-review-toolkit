@@ -267,3 +267,87 @@ def test_transfer_sheet_ambiguity_without_year_raises_clear_error():
     with pytest.raises(ValueError, match="sans année exploitable"):
         load_transferred_employees(path)
     print("OK - test_transfer_sheet_ambiguity_without_year_raises_clear_error")
+
+
+def test_name_matching_handles_apostrophe_removed_without_space():
+    """
+    Vrai cas limite trouvé en poussant la fiabilité au maximum : un
+    patronyme comme "N'Guessan" (très courant en Côte d'Ivoire/Afrique
+    de l'Ouest) peut être saisi sans apostrophe dans un système
+    ("NGuessan", collé) et avec dans un autre — l'apostrophe après une
+    seule lettre (N', D', L', O') marque une contraction, pas une
+    séparation entre deux mots, contrairement au tiret ('Jean-Pierre')
+    qui doit continuer à correspondre à 'Jean Pierre' en deux mots
+    distincts. Les deux conventions coexistent réellement selon le
+    caractère utilisé — vérifié qu'aucune des deux ne casse l'autre.
+    """
+    from analysis.hr_crossref import _normalize_name_bag
+
+    assert _normalize_name_bag("Marie N'Guessan") == _normalize_name_bag("Marie NGuessan")
+    assert _normalize_name_bag("Jean-Pierre Kouassi") == _normalize_name_bag("Kouassi Jean Pierre")
+    print("OK - test_name_matching_handles_apostrophe_removed_without_space")
+
+
+def test_transfer_duplicate_row_not_treated_as_homonym():
+    """
+    Vrai faux positif trouvé en poussant la fiabilité au maximum : la
+    même personne listée deux fois dans le fichier de mutations avec
+    des informations IDENTIQUES (erreur de saisie/copier-coller,
+    plausible dans un tableur RH maintenu à la main) était traitée
+    comme deux personnes homonymes distinctes. Corrigé en dédoublonnant
+    les lignes strictement identiques avant de détecter les homonymes —
+    un vrai homonyme (même nom, informations DIFFÉRENTES) reste
+    correctement signalé comme ambigu.
+    """
+    import pandas as pd
+    from analysis.hr_crossref import flag_transferred_but_still_active
+
+    duplicate_entry = pd.DataFrame({
+        "full_name": ["Marie Martin", "Marie Martin"],
+        "old_department": ["Sales", "Sales"], "new_department": ["HR", "HR"],
+    })
+    iam_df = pd.DataFrame({
+        "username": ["mmartin"], "full_name": ["Marie Martin"],
+        "system": ["AD"], "account_status": ["Active"],
+    })
+    result = flag_transferred_but_still_active(iam_df, duplicate_entry)
+    assert result.loc[0, "is_transferred_but_active"] == True
+    assert result.loc[0, "transferred_name_ambiguous"] == False
+
+    true_homonyms = pd.DataFrame({
+        "full_name": ["Marie Martin", "Marie Martin"],
+        "old_department": ["Sales", "Finance"], "new_department": ["HR", "IT"],
+    })
+    result2 = flag_transferred_but_still_active(iam_df, true_homonyms)
+    assert result2.loc[0, "transferred_name_ambiguous"] == True
+    print("OK - test_transfer_duplicate_row_not_treated_as_homonym")
+
+
+def test_hr_crossref_duplicate_row_not_treated_as_homonym():
+    """
+    Même faux positif que pour les comptes transférés, trouvé dans
+    cross_reference_with_hr : la même personne listée deux fois dans le
+    référentiel RH avec des informations IDENTIQUES (erreur de saisie)
+    était traitée comme un homonyme ambigu au lieu d'être simplement
+    dédoublonnée. Un vrai homonyme (même nom, statuts différents) reste
+    correctement signalé comme ambigu.
+    """
+    import tempfile
+    from analysis.hr_crossref import cross_reference_with_hr
+
+    iam_df = pd.DataFrame({"username": ["jdupont"], "full_name": ["Jean Dupont"], "system": ["AD"]})
+
+    duplicate_csv = "Nom,Prénom,Statut\nDupont,Jean,Actif\nDupont,Jean,Actif\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(duplicate_csv)
+        path = tmp.name
+    result = cross_reference_with_hr(iam_df, hr_df_raw_path=path)
+    assert result.loc[0, "employee_status"] == "Actif"
+
+    homonym_csv = "Nom,Prénom,Statut\nDupont,Jean,Actif\nDupont,Jean,Parti\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp2:
+        tmp2.write(homonym_csv)
+        path2 = tmp2.name
+    result2 = cross_reference_with_hr(iam_df, hr_df_raw_path=path2)
+    assert "Ambigu" in result2.loc[0, "employee_status"]
+    print("OK - test_hr_crossref_duplicate_row_not_treated_as_homonym")

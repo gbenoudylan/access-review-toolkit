@@ -1053,3 +1053,30 @@ def test_merged_title_cell_does_not_break_ingestion():
     assert df.loc[0, "username"] == "u1"
     assert df.loc[0, "account_status"] == "Active"
     print("OK - test_merged_title_cell_does_not_break_ingestion")
+
+
+def test_data_quality_duplicate_username_detection_is_case_insensitive():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum, cohérent avec
+    le motif de casse déjà corrigé partout ailleurs cette session : le
+    même compte apparaissant deux fois avec une casse différente
+    ('jdupont' puis 'JDupont' — variation d'export réaliste) n'était pas
+    détecté comme doublon par le contrôle qualité, une comparaison
+    stricte ratant ce cas pourtant emblématique.
+    """
+    import pandas as pd
+    from ingestion.ingest import compute_data_quality_report
+
+    df = pd.DataFrame({
+        "username": ["jdupont", "JDupont"], "full_name": ["Jean Dupont"] * 2,
+        "system": ["AD"] * 2, "account_status": ["Active"] * 2,
+    })
+    report = compute_data_quality_report(df)
+    assert report["issues"]["duplicate_usernames"] == 2
+
+    different_accounts = pd.DataFrame({
+        "username": ["jdupont", "mmartin"], "system": ["AD"] * 2, "account_status": ["Active"] * 2,
+    })
+    report2 = compute_data_quality_report(different_accounts)
+    assert report2["issues"]["duplicate_usernames"] == 0
+    print("OK - test_data_quality_duplicate_username_detection_is_case_insensitive")

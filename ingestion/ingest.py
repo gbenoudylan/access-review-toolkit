@@ -343,7 +343,17 @@ def compute_data_quality_report(df: pd.DataFrame) -> dict:
 
     if "username" in df.columns and "system" in df.columns:
         has_username = df["username"].notna() & (df["username"].astype(str).str.strip() != "")
-        dup_mask = df.duplicated(subset=["username", "system"], keep=False) & has_username
+        # Comparaison insensible à la casse/espaces : le même compte peut
+        # apparaître avec une casse différente selon l'export (ex.
+        # 'jdupont' puis 'JDupont') — une comparaison stricte manquerait
+        # ce doublon, qui est pourtant exactement le genre de problème
+        # que ce contrôle qualité doit signaler.
+        normalized_username = df["username"].astype(str).str.strip().str.lower()
+        normalized_system = df["system"].astype(str).str.strip().str.lower()
+        dup_mask = (
+            pd.DataFrame({"u": normalized_username, "s": normalized_system}).duplicated(keep=False)
+            & has_username
+        )
         issues["duplicate_usernames"] = int(dup_mask.sum())
         problem_mask |= dup_mask
 
