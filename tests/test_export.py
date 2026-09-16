@@ -1414,3 +1414,136 @@ def test_annexes_a_to_f_are_left_empty_for_manual_completion():
     annex_tail = pdf_text[annex_idx:]
     assert "u1" not in annex_tail
     print("OK - test_annexes_a_to_f_are_left_empty_for_manual_completion")
+
+
+def test_risk_acceptance_removes_account_from_control_tables_and_summary():
+    """
+    Fonctionnalité demandée explicitement : un compte dont le risque a
+    été formellement accepté (voir analysis/risk_acceptance.py) doit
+    disparaître de TOUS les comptages de findings actifs (tableau de
+    contrôle individuel, Executive Summary, Control Summary) — mais
+    'Total Accounts Reviewed' reste le vrai total de la population
+    revue, acceptés compris. Le compte doit apparaître, avec le détail
+    de sa justification, dans la nouvelle section Exceptions — vérifié
+    pour PDF ET Word.
+    """
+    import pandas as pd
+    import tempfile
+    from pathlib import Path
+    from analysis.access_review import analyze_access
+    from analysis.risk_acceptance import save_risk_acceptance, apply_risk_acceptances
+    from reporting.export import generate_pdf_report, generate_word_report
+    import pdfplumber
+    from docx import Document
+
+    store = Path(tempfile.gettempdir()) / f"test_risk_acc_export_{tempfile.mktemp()[-8:]}.json"
+    if store.exists():
+        store.unlink()
+
+    df = pd.DataFrame({
+        "username": ["jdupont", "mmartin"], "system": ["AD"] * 2,
+        "account_status": ["Active"] * 2,
+        "last_login_date": ["2020-01-01", "2020-01-01"],
+    })
+    result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-16"))
+    save_risk_acceptance(
+        "jdupont", "AD", result.loc[0, "review_action"],
+        "Compte de maintenance trimestrielle, validé par le owner IT.",
+        "Dylan Gbenou", expiration_date="2099-12-31", store_path=store,
+    )
+    result = apply_risk_acceptances(result, store_path=store)
+
+    pdf_path = generate_pdf_report(result, "output/test_risk_acc_perm.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    dormant_section = text[text.find("2.Dormant"):text.find("2.Dormant") + 600]
+    assert "jdupont" not in dormant_section
+    assert "mmartin" in dormant_section
+    assert "Total Accounts Reviewed 2" in text.replace("\n", " ")
+    assert "Dormant Accounts 1" in text.replace("\n", " ")
+    exc_section = text[text.find("Exceptions — Risques acceptés"):]
+    assert "jdupont" in exc_section
+    assert "Dylan Gbenou" in exc_section
+
+    word_path = generate_word_report(result, "output/test_risk_acc_perm.docx")
+    doc = Document(str(word_path))
+    found_in_control_table = any(
+        "jdupont" in [c.text for c in row.cells]
+        for table in doc.tables
+        for row in table.rows[1:]
+        if any("Last Login" in c.text for c in table.rows[0].cells)
+    )
+    assert not found_in_control_table
+    word_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Exceptions — Risques acceptés" in word_text
+    print("OK - test_risk_acceptance_removes_account_from_control_tables_and_summary")
+
+
+def test_compute_control_coverage_excludes_accepted_accounts():
+    """compute_control_coverage est partagée entre le PDF et le
+    dashboard (Control Coverage) — un seul correctif doit suffire à
+    couvrir les deux de façon cohérente."""
+    import pandas as pd
+    import tempfile
+    from pathlib import Path
+    from analysis.access_review import analyze_access
+    from analysis.risk_acceptance import save_risk_acceptance, apply_risk_acceptances
+    from reporting.export import compute_control_coverage
+
+    store = Path(tempfile.gettempdir()) / f"test_coverage_{tempfile.mktemp()[-8:]}.json"
+    if store.exists():
+        store.unlink()
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"],
+        "account_status": ["Active"], "last_login_date": ["2020-01-01"],
+    })
+    result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-16"))
+    save_risk_acceptance(
+        "jdupont", "AD", result.loc[0, "review_action"], "Justifié.", "Dylan",
+        expiration_date="2099-12-31", store_path=store,
+    )
+    result = apply_risk_acceptances(result, store_path=store)
+    coverage = compute_control_coverage(result, {})
+    dormant_row = next(r for r in coverage if r[0] == 2)
+    assert dormant_row[3] == "—" or dormant_row[3] == "0"
+    print("OK - test_compute_control_coverage_excludes_accepted_accounts")
+
+
+def test_expired_risk_acceptance_flagged_in_exceptions_and_reactive_as_finding():
+    """Une acceptation EXPIRÉE doit redevenir un finding actif normal
+    (pas silencieusement exclue), tout en étant signalée distinctement
+    pour attirer l'attention sur le besoin de revalidation."""
+    import pandas as pd
+    import tempfile
+    from pathlib import Path
+    from analysis.access_review import analyze_access
+    from analysis.risk_acceptance import save_risk_acceptance, apply_risk_acceptances
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    store = Path(tempfile.gettempdir()) / f"test_expired_{tempfile.mktemp()[-8:]}.json"
+    if store.exists():
+        store.unlink()
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"],
+        "account_status": ["Active"], "last_login_date": ["2020-01-01"],
+    })
+    result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-16"))
+    save_risk_acceptance(
+        "jdupont", "AD", result.loc[0, "review_action"], "Justifié mais périmé.", "Dylan",
+        expiration_date="2020-01-01", store_path=store,  # déjà expirée
+    )
+    result = apply_risk_acceptances(result, store_path=store)
+    assert result.loc[0, "is_risk_acceptance_expired"] == True
+    assert result.loc[0, "is_risk_accepted"] == False
+    assert result.loc[0, "review_action"] != "Exception (risque accepté)"
+
+    pdf_path = generate_pdf_report(result, "output/test_expired_acc.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    dormant_section = text[text.find("2.Dormant"):text.find("2.Dormant") + 600]
+    assert "jdupont" in dormant_section  # redevenu un finding actif
+    assert "EXPIRED" in text  # signalé distinctement dans les Exceptions
+    print("OK - test_expired_risk_acceptance_flagged_in_exceptions_and_reactive_as_finding")

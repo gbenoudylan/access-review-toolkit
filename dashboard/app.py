@@ -26,6 +26,9 @@ from analysis.access_review import analyze_access, summarize
 from analysis.hr_crossref import cross_reference_with_hr, load_transferred_employees, flag_transferred_but_still_active
 from analysis.sod_detection import detect_sod_conflicts, load_custom_sod_matrix
 from analysis.trend_tracking import record_cycle_snapshot, load_trend_history
+from analysis.risk_acceptance import (
+    save_risk_acceptance, remove_risk_acceptance, apply_risk_acceptances,
+)
 from analysis.review_workflow import (
     attach_review_status, review_summary, apply_review_decision, VALID_STATUSES, get_audit_trail,
 )
@@ -35,6 +38,7 @@ st.set_page_config(page_title="Access Review Toolkit", page_icon="🔐", layout=
 
 RISK_ORDER = ["Critique", "Élevé", "Moyen", "Faible"]
 DECISIONS_STORE_PATH = Path(__file__).parent.parent / "data" / "review_decisions.json"
+RISK_ACCEPTANCE_STORE_PATH = Path(__file__).parent.parent / "data" / "risk_acceptances.json"
 TREND_STORE_PATH = Path(__file__).parent.parent / "data" / "trend_history.json"
 
 
@@ -362,6 +366,7 @@ def main():
                         st.cache_data.clear()
                         st.rerun()
 
+    df = apply_risk_acceptances(df, store_path=RISK_ACCEPTANCE_STORE_PATH)
     df = attach_review_status(df, store_path=DECISIONS_STORE_PATH)
     summary = summarize(df)
     workflow_summary = review_summary(df)
@@ -556,6 +561,54 @@ def main():
                 reasons = account.get("risk_score_reasons") or []
                 for label, pts in reasons:
                     st.write(f"+ {pts} — {label}")
+
+            # Acceptation de risque : ne couvre que le constat PRÉCIS
+            # accepté (voir analysis/risk_acceptance.py) — jamais le
+            # compte dans l'absolu, pour ne jamais masquer un futur
+            # problème différent sur ce même compte.
+            st.markdown("**Acceptation de risque**")
+            acc_username, acc_system = str(account.get("username")), str(account.get("system"))
+            if account.get("is_risk_accepted"):
+                expiration_val = account.get("risk_acceptance_expiration")
+                expiration_text = f"jusqu'au {expiration_val}" if expiration_val else "(sans échéance)"
+                st.success(
+                    f"Risque accepté pour « {account.get('risk_acceptance_accepted_finding') or '—'} » "
+                    f"par {account.get('risk_acceptance_accepted_by') or '—'} {expiration_text}.\n\n"
+                    f"Commentaire : {account.get('risk_acceptance_comment') or '—'}"
+                )
+                if st.button("Retirer cette acceptation", key=f"remove_risk_acc_{acc_username}_{acc_system}"):
+                    remove_risk_acceptance(acc_username, acc_system, store_path=RISK_ACCEPTANCE_STORE_PATH)
+                    st.cache_data.clear()
+                    st.rerun()
+            else:
+                if account.get("is_risk_acceptance_expired"):
+                    st.warning("Une acceptation existait pour ce constat mais son échéance est dépassée — à revalider.")
+                elif account.get("is_risk_acceptance_stale"):
+                    st.info("Une acceptation existe pour ce compte, mais pour un constat différent de l'actuel — ne s'applique pas ici.")
+                current_action = account.get("review_action")
+                if current_action and current_action != "Aucune action":
+                    with st.form(key=f"risk_acc_form_{acc_username}_{acc_system}"):
+                        comment = st.text_area(
+                            f"Justification pour accepter '{current_action}' sur ce compte",
+                        )
+                        has_expiration = st.checkbox("Prévoir une échéance de revalidation")
+                        expiration = st.date_input("Échéance") if has_expiration else None
+                        accepted_by = st.text_input("Accepté par")
+                        submitted = st.form_submit_button("Accepter ce risque")
+                        if submitted:
+                            if not comment.strip():
+                                st.error("La justification est requise.")
+                            else:
+                                save_risk_acceptance(
+                                    acc_username, acc_system, current_action, comment.strip(),
+                                    accepted_by.strip() or "—",
+                                    expiration_date=expiration.isoformat() if expiration else None,
+                                    store_path=RISK_ACCEPTANCE_STORE_PATH,
+                                )
+                                st.cache_data.clear()
+                                st.rerun()
+                else:
+                    st.caption("Aucune action en cours sur ce compte — rien à accepter.")
 
             st.markdown("**Review — historique complet**")
             if "system" in df.columns:
