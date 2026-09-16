@@ -28,6 +28,7 @@ from analysis.sod_detection import detect_sod_conflicts, load_custom_sod_matrix
 from analysis.trend_tracking import record_cycle_snapshot, load_trend_history
 from analysis.risk_acceptance import (
     save_risk_acceptance, remove_risk_acceptance, apply_risk_acceptances,
+    ACCEPTABLE_FINDING_KEYS, get_accepted_findings_detail,
 )
 from analysis.review_workflow import (
     attach_review_status, review_summary, apply_review_decision, VALID_STATUSES, get_audit_trail,
@@ -536,19 +537,11 @@ def main():
                 st.write(f"Créé le : {account.get('account_created_date') or '—'}")
 
             st.markdown("**Findings**")
-            finding_labels = {
-                "is_terminated_but_active": "Employé parti, compte encore actif",
-                "is_dormant": "Compte dormant",
-                "is_never_used": "Jamais utilisé depuis sa création",
-                "is_password_stale": "Mot de passe périmé",
-                "has_non_expiring_password": "Mot de passe n'expirant jamais",
-                "has_no_manager": "Aucun manager identifié",
-                "is_duplicate_account": "Compte en doublon",
-                "is_test_account": "Nom évoquant un compte de test",
-                "is_non_compliant_naming": "Nom non conforme à la convention",
-                "sod_conflict": "Conflit de séparation des tâches (SoD)",
-            }
-            findings = [label for key, label in finding_labels.items() if account.get(key)]
+            # Même liste que ACCEPTABLE_FINDING_KEYS (analysis/risk_acceptance.py)
+            # — un finding affiché ici doit toujours être acceptable via
+            # le formulaire plus bas, sans dupliquer une seconde liste
+            # qui risquerait de diverger avec le temps.
+            findings = [label for key, label in ACCEPTABLE_FINDING_KEYS.items() if account.get(key)]
             if findings:
                 for f in findings:
                     st.write(f)
@@ -564,59 +557,70 @@ def main():
 
             # Acceptation de risque : ne couvre que le constat PRÉCIS
             # accepté (voir analysis/risk_acceptance.py) — jamais le
-            # compte dans l'absolu, pour ne jamais masquer un futur
-            # problème différent sur ce même compte.
+            # compte dans l'absolu. Un compte peut cumuler plusieurs
+            # constats indépendants à la fois (ex. dormant ET conflit
+            # SoD) : chacun s'accepte séparément, pour ne jamais en
+            # masquer un qui n'a pas été spécifiquement traité.
             st.markdown("**Acceptation de risque**")
             acc_username, acc_system = str(account.get("username")), str(account.get("system"))
-            if account.get("is_risk_accepted"):
-                expiration_val = account.get("risk_acceptance_expiration")
-                expiration_text = f"jusqu'au {expiration_val}" if expiration_val else "(sans échéance)"
-                st.success(
-                    f"Risque accepté pour « {account.get('risk_acceptance_accepted_finding') or '—'} » "
-                    f"par {account.get('risk_acceptance_accepted_by') or '—'} {expiration_text}.\n\n"
-                    f"Commentaire : {account.get('risk_acceptance_comment') or '—'}"
-                )
-                if st.button("Retirer cette acceptation", key=f"remove_risk_acc_{acc_username}_{acc_system}"):
-                    remove_risk_acceptance(acc_username, acc_system, store_path=RISK_ACCEPTANCE_STORE_PATH)
+            accepted_keys = account.get("accepted_finding_keys") or []
+            expired_keys = account.get("expired_finding_keys") or []
+
+            for key in accepted_keys:
+                label = ACCEPTABLE_FINDING_KEYS.get(key, key)
+                st.success(f"Risque accepté pour « {label} ».")
+                if st.button("Retirer cette acceptation", key=f"remove_risk_acc_{acc_username}_{acc_system}_{key}"):
+                    remove_risk_acceptance(acc_username, acc_system, key, store_path=RISK_ACCEPTANCE_STORE_PATH)
                     st.cache_data.clear()
                     st.rerun()
-            else:
-                if account.get("is_risk_acceptance_expired"):
-                    st.warning("Une acceptation existait pour ce constat mais son échéance est dépassée — à revalider.")
-                elif account.get("is_risk_acceptance_stale"):
-                    st.info("Une acceptation existe pour ce compte, mais pour un constat différent de l'actuel — ne s'applique pas ici.")
-                current_action = account.get("review_action")
-                if current_action and current_action != "Aucune action":
-                    # La case à cocher doit être HORS du formulaire : à
-                    # l'intérieur d'un st.form, Streamlit ne réévalue le
-                    # script qu'à la soumission, pas à chaque interaction
-                    # — cocher la case ne ferait donc rien apparaître
-                    # avant que le formulaire entier soit déjà soumis.
-                    has_expiration = st.checkbox(
-                        "Prévoir une échéance de revalidation",
-                        key=f"has_expiration_{acc_username}_{acc_system}",
+            for key in expired_keys:
+                label = ACCEPTABLE_FINDING_KEYS.get(key, key)
+                st.warning(f"L'acceptation pour « {label} » a expiré — redevenu un finding actif, à revalider.")
+
+            # Constats actuellement vrais sur ce compte, pas déjà couverts
+            # par une acceptation active — seuls ceux-là peuvent être
+            # acceptés maintenant.
+            acceptable_now = [
+                key for key in ACCEPTABLE_FINDING_KEYS
+                if account.get(key) and key not in accepted_keys
+            ]
+            if acceptable_now:
+                target_key = st.selectbox(
+                    "Constat à accepter",
+                    options=acceptable_now,
+                    format_func=lambda k: ACCEPTABLE_FINDING_KEYS.get(k, k),
+                    key=f"target_finding_{acc_username}_{acc_system}",
+                )
+                # La case à cocher doit être HORS du formulaire : à
+                # l'intérieur d'un st.form, Streamlit ne réévalue le
+                # script qu'à la soumission, pas à chaque interaction —
+                # cocher la case ne ferait donc rien apparaître avant
+                # que le formulaire entier soit déjà soumis.
+                has_expiration = st.checkbox(
+                    "Prévoir une échéance de revalidation",
+                    key=f"has_expiration_{acc_username}_{acc_system}_{target_key}",
+                )
+                with st.form(key=f"risk_acc_form_{acc_username}_{acc_system}_{target_key}"):
+                    comment = st.text_area(
+                        f"Justification pour accepter « {ACCEPTABLE_FINDING_KEYS.get(target_key, target_key)} » sur ce compte",
                     )
-                    with st.form(key=f"risk_acc_form_{acc_username}_{acc_system}"):
-                        comment = st.text_area(
-                            f"Justification pour accepter '{current_action}' sur ce compte",
-                        )
-                        expiration = st.date_input("Échéance") if has_expiration else None
-                        accepted_by = st.text_input("Accepté par")
-                        submitted = st.form_submit_button("Accepter ce risque")
-                        if submitted:
-                            if not comment.strip():
-                                st.error("La justification est requise.")
-                            else:
-                                save_risk_acceptance(
-                                    acc_username, acc_system, current_action, comment.strip(),
-                                    accepted_by.strip() or "—",
-                                    expiration_date=expiration.isoformat() if expiration else None,
-                                    store_path=RISK_ACCEPTANCE_STORE_PATH,
-                                )
-                                st.cache_data.clear()
-                                st.rerun()
-                else:
-                    st.caption("Aucune action en cours sur ce compte — rien à accepter.")
+                    expiration = st.date_input("Échéance") if has_expiration else None
+                    accepted_by = st.text_input("Accepté par")
+                    submitted = st.form_submit_button("Accepter ce risque")
+                    if submitted:
+                        if not comment.strip():
+                            st.error("La justification est requise.")
+                        else:
+                            save_risk_acceptance(
+                                acc_username, acc_system, target_key, comment.strip(),
+                                accepted_by.strip() or "—",
+                                expiration_date=expiration.isoformat() if expiration else None,
+                                store_path=RISK_ACCEPTANCE_STORE_PATH,
+                            )
+                            st.cache_data.clear()
+                            st.rerun()
+            elif not accepted_keys and not expired_keys:
+                st.caption("Aucun constat en cours sur ce compte — rien à accepter.")
 
             st.markdown("**Review — historique complet**")
             if "system" in df.columns:

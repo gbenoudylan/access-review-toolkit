@@ -177,52 +177,6 @@ def _is_test_account_name(username) -> bool:
     return bool(_TEST_ACCOUNT_RE.search(str(username).strip()))
 
 
-def _normalize_for_naming_check(text: str) -> str:
-    """Retire accents/espaces/tirets/apostrophes pour une comparaison
-    tolérante — sans quoi un nom africain/français accentué ('Ébénézer',
-    'N'Guessan') serait signalé à tort comme non conforme."""
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    return re.sub(r"[\s\-']", "", text).lower()
-
-
-def _expected_username_first_last(first_name: str, last_name: str) -> str | None:
-    """
-    Contrôle 9 (Naming convention) — règle du référentiel : 'première
-    lettre du prénom + nom de famille' (ex. Michael Brown -> mbrown).
-    Retourne None si l'un des deux champs est vide (pas assez
-    d'information pour une comparaison fiable).
-    """
-    first_name = str(first_name).strip() if first_name else ""
-    last_name = str(last_name).strip() if last_name else ""
-    if not first_name or not last_name:
-        return None
-    return _normalize_for_naming_check(first_name[0] + last_name)
-
-
-def _check_naming_convention(row) -> bool | None:
-    """
-    True si le compte NE respecte PAS la convention attendue, False si
-    conforme, None si non vérifiable (infos manquantes) — à distinguer
-    d'un vrai résultat "conforme".
-    """
-    first_name, last_name = None, None
-    if row.get("first_name") and row.get("last_name"):
-        first_name, last_name = row["first_name"], row["last_name"]
-    elif row.get("full_name"):
-        parts = str(row["full_name"]).strip().split()
-        if len(parts) >= 2:
-            first_name, last_name = parts[0], parts[-1]
-
-    expected = _expected_username_first_last(first_name, last_name) if first_name else None
-    if expected is None or not row.get("username"):
-        return None
-
-    actual = _normalize_for_naming_check(str(row["username"]))
-    # Tolère un suffixe numérique (doublons légitimes : jdupont, jdupont2...)
-    actual_no_suffix = re.sub(r"\d+$", "", actual)
-    return actual != expected and actual_no_suffix != expected
-
-
 _AMBIGUOUS_DATE_START_RE = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})")
 
 
@@ -856,15 +810,14 @@ def analyze_access(
         df["is_test_account"] = False
         df["is_orphaned_account"] = False
 
-    # Contrôle 9 (Naming convention) : vérifiable seulement si un nom
-    # complet (ou prénom/nom séparés) est disponible pour comparer à la
-    # règle attendue. Résultat "non vérifiable" traité comme conforme
-    # (False) pour ne pas fabriquer de faux signal sans information.
-    if "username" in df.columns and ("full_name" in df.columns or ("first_name" in df.columns and "last_name" in df.columns)):
-        naming_result = df.apply(_check_naming_convention, axis=1)
-        df["is_non_compliant_naming"] = naming_result.fillna(False)
-    else:
-        df["is_non_compliant_naming"] = False
+    # Contrôle 9 (Naming convention) : demande explicite de ne PLUS
+    # calculer automatiquement — chaque OPCOs a sa propre convention de
+    # nommage, une règle unique codée en dur produirait un faux signal
+    # pour toutes les entités qui n'utilisent pas cette convention
+    # précise. Laissé à la vérification manuelle du reviewer plutôt que
+    # de risquer un score de risque ou une action recommandée basés sur
+    # une hypothèse potentiellement fausse.
+    df["is_non_compliant_naming"] = False
 
     # Comptes en doublon : la même personne détient plusieurs comptes actifs
     # pour un même usage. On approxime via le nom complet (à défaut d'un

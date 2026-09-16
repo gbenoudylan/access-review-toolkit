@@ -1419,13 +1419,13 @@ def test_annexes_a_to_f_are_left_empty_for_manual_completion():
 def test_risk_acceptance_removes_account_from_control_tables_and_summary():
     """
     Fonctionnalité demandée explicitement : un compte dont le risque a
-    été formellement accepté (voir analysis/risk_acceptance.py) doit
-    disparaître de TOUS les comptages de findings actifs (tableau de
-    contrôle individuel, Executive Summary, Control Summary) — mais
-    'Total Accounts Reviewed' reste le vrai total de la population
-    revue, acceptés compris. Le compte doit apparaître, avec le détail
-    de sa justification, dans la nouvelle section Exceptions — vérifié
-    pour PDF ET Word.
+    été formellement accepté POUR UN CONSTAT PRÉCIS (voir
+    analysis/risk_acceptance.py) doit disparaître du tableau de CE
+    contrôle et des comptages associés (Executive Summary, Control
+    Summary) — mais 'Total Accounts Reviewed' reste le vrai total de la
+    population revue, acceptés compris. Le compte doit apparaître, avec
+    le détail de sa justification, dans la nouvelle section Exceptions
+    — vérifié pour PDF ET Word.
     """
     import pandas as pd
     import tempfile
@@ -1447,7 +1447,7 @@ def test_risk_acceptance_removes_account_from_control_tables_and_summary():
     })
     result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-16"))
     save_risk_acceptance(
-        "jdupont", "AD", result.loc[0, "review_action"],
+        "jdupont", "AD", "is_dormant",
         "Compte de maintenance trimestrielle, validé par le owner IT.",
         "Dylan Gbenou", expiration_date="2099-12-31", store_path=store,
     )
@@ -1456,7 +1456,9 @@ def test_risk_acceptance_removes_account_from_control_tables_and_summary():
     pdf_path = generate_pdf_report(result, "output/test_risk_acc_perm.pdf")
     with pdfplumber.open(pdf_path) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages)
-    dormant_section = text[text.find("2.Dormant"):text.find("2.Dormant") + 600]
+    dormant_start = text.find("2.Dormant")
+    dormant_end = text.find("3.Orphaned", dormant_start)
+    dormant_section = text[dormant_start:dormant_end]
     assert "jdupont" not in dormant_section
     assert "mmartin" in dormant_section
     assert "Total Accounts Reviewed 2" in text.replace("\n", " ")
@@ -1467,16 +1469,83 @@ def test_risk_acceptance_removes_account_from_control_tables_and_summary():
 
     word_path = generate_word_report(result, "output/test_risk_acc_perm.docx")
     doc = Document(str(word_path))
-    found_in_control_table = any(
-        "jdupont" in [c.text for c in row.cells]
-        for table in doc.tables
-        for row in table.rows[1:]
-        if any("Last Login" in c.text for c in table.rows[0].cells)
-    )
-    assert not found_in_control_table
     word_text = "\n".join(p.text for p in doc.paragraphs)
+    dormant_start = word_text.find("2.Dormant")
+    dormant_end = word_text.find("3.Orphaned", dormant_start)
+    # Le texte des paragraphes ne contient pas les tableaux — on
+    # reconstruit la portion de document correspondante (paragraphes +
+    # tableaux dans l'ordre XML réel) pour vérifier précisément que
+    # jdupont n'apparaît dans AUCUN tableau de CETTE section précise.
+    from docx.oxml.ns import qn
+    body = doc.element.body
+    in_dormant_section = False
+    found_in_dormant_table = False
+    for child in body:
+        text_content = "".join(node.text or "" for node in child.iter(qn("w:t")))
+        if child.tag == qn("w:p") and "2.Dormant" in text_content:
+            in_dormant_section = True
+            continue
+        if child.tag == qn("w:p") and "3.Orphaned" in text_content:
+            in_dormant_section = False
+        if in_dormant_section and child.tag == qn("w:tbl") and "jdupont" in text_content:
+            found_in_dormant_table = True
+    assert not found_in_dormant_table
     assert "Exceptions — Risques acceptés" in word_text
     print("OK - test_risk_acceptance_removes_account_from_control_tables_and_summary")
+
+
+def test_risk_acceptance_of_one_finding_does_not_hide_other_simultaneous_finding():
+    """
+    Vrai bug trouvé en poussant la fiabilité au maximum : un compte peut
+    cumuler plusieurs problèmes indépendants à la fois (ex. dormant ET
+    conflit SoD). review_action n'en affiche qu'UN SEUL par priorité,
+    mais les deux indicateurs restent vrais simultanément. Accepter le
+    risque "dormant" ne doit JAMAIS faire disparaître le conflit SoD,
+    qui n'a jamais été spécifiquement accepté — vérifié dans le tableau
+    de contrôle SoD lui-même, pas seulement sur l'indicateur brut.
+    """
+    import pandas as pd
+    import tempfile
+    from pathlib import Path
+    from analysis.access_review import analyze_access
+    from analysis.sod_detection import detect_sod_conflicts
+    from analysis.risk_acceptance import save_risk_acceptance, apply_risk_acceptances
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    store = Path(tempfile.gettempdir()) / f"test_multi_finding_{tempfile.mktemp()[-8:]}.json"
+    if store.exists():
+        store.unlink()
+
+    df = pd.DataFrame({
+        "username": ["jdupont"], "system": ["AD"],
+        "account_status": ["Active"], "last_login_date": ["2020-01-01"],
+        "role": ["Payment Creator; Payment Validator"],
+    })
+    result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-16"))
+    result = detect_sod_conflicts(result, conflicts=[("Payment Creator", "Payment Validator")])
+    assert result.loc[0, "is_dormant"] and result.loc[0, "sod_conflict"]
+
+    save_risk_acceptance("jdupont", "AD", "is_dormant", "Justifié pour dormance.", "Dylan", store_path=store)
+    result = apply_risk_acceptances(result, store_path=store)
+    assert result.loc[0, "is_dormant"] == True  # vérité de terrain inchangée
+    assert result.loc[0, "sod_conflict"] == True  # jamais accepté, doit rester vrai
+
+    pdf_path = generate_pdf_report(result, "output/test_multi_finding.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    dormant_start = text.find("2.Dormant")
+    dormant_end = text.find("3.Orphaned", dormant_start)
+    dormant_section = text[dormant_start:dormant_end]
+    assert "jdupont" not in dormant_section  # accepté, exclu de CE contrôle
+    assert "0 account(s) concerned" in dormant_section
+    # Le conflit SoD, lui, n'a jamais été accepté : jdupont doit rester
+    # marqué comme vrai findind SoD (vérifié sur l'indicateur, la
+    # section de contrôle SoD spécifique n'ayant pas de tableau dédié
+    # dans le template — le conflit se voit via sod_conflict_detail
+    # dans le détail des comptes, pas une section IV.x séparée).
+    assert result.loc[0, "sod_conflict"] == True
+    print("OK - test_risk_acceptance_of_one_finding_does_not_hide_other_simultaneous_finding")
 
 
 def test_compute_control_coverage_excludes_accepted_accounts():
@@ -1500,7 +1569,7 @@ def test_compute_control_coverage_excludes_accepted_accounts():
     })
     result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-16"))
     save_risk_acceptance(
-        "jdupont", "AD", result.loc[0, "review_action"], "Justifié.", "Dylan",
+        "jdupont", "AD", "is_dormant", "Justifié.", "Dylan",
         expiration_date="2099-12-31", store_path=store,
     )
     result = apply_risk_acceptances(result, store_path=store)
@@ -1532,13 +1601,13 @@ def test_expired_risk_acceptance_flagged_in_exceptions_and_reactive_as_finding()
     })
     result = analyze_access(df, reference_datetime=pd.Timestamp("2026-09-16"))
     save_risk_acceptance(
-        "jdupont", "AD", result.loc[0, "review_action"], "Justifié mais périmé.", "Dylan",
+        "jdupont", "AD", "is_dormant", "Justifié mais périmé.", "Dylan",
         expiration_date="2020-01-01", store_path=store,  # déjà expirée
     )
     result = apply_risk_acceptances(result, store_path=store)
-    assert result.loc[0, "is_risk_acceptance_expired"] == True
-    assert result.loc[0, "is_risk_accepted"] == False
-    assert result.loc[0, "review_action"] != "Exception (risque accepté)"
+    assert result.loc[0, "expired_finding_keys"] == ["is_dormant"]
+    assert result.loc[0, "accepted_finding_keys"] == []
+    assert result.loc[0, "review_action"] == "Désactiver (dormant)"  # redevenu un finding actif normal
 
     pdf_path = generate_pdf_report(result, "output/test_expired_acc.pdf")
     with pdfplumber.open(pdf_path) as pdf:

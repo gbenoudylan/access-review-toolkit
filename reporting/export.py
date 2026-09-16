@@ -45,6 +45,7 @@ from reporting.template_sections import (
     DUMP_COMPLETENESS_COLUMNS, CONTROL_SUBSECTIONS, CONCLUSION_HEADING,
 )
 from analysis.access_review import _is_active_account
+from analysis.risk_acceptance import get_accepted_findings_detail
 from ingestion.ingest import compute_data_quality_report
 
 logger = logging.getLogger("export")
@@ -480,14 +481,23 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
     (Control Coverage), pour ne jamais dupliquer cette logique.
     Retourne une liste de tuples (numéro, titre, statut, affichage_compte).
 
-    Les comptes dont le risque a été formellement accepté sont exclus de
-    ces comptages — ce ne sont plus des findings actifs (voir
-    analysis/risk_acceptance.py) — corrigé ici plutôt que chez chaque
-    appelant, puisque cette fonction est partagée par le PDF ET le
-    dashboard : un seul correctif couvre les deux de façon cohérente.
+    Un compte dont le risque a été accepté pour un constat PRÉCIS
+    (ex. 'is_dormant') est exclu du comptage de CE contrôle précis
+    uniquement — jamais des autres contrôles, même s'il cumule
+    plusieurs problèmes simultanément (voir analysis/risk_acceptance.py
+    et is_finding_accepted). Un vrai bug trouvé en testant un compte à
+    la fois dormant ET en conflit SoD : une exclusion globale par
+    compte aurait aussi fait disparaître le conflit SoD, jamais
+    spécifiquement accepté.
     """
-    if "is_risk_accepted" in df.columns:
-        df = df[~df["is_risk_accepted"]]
+    from analysis.risk_acceptance import is_finding_accepted
+
+    def _count_excluding_accepted(key: str) -> int:
+        if "accepted_finding_keys" not in df.columns:
+            return int(df[key].sum())
+        mask = df[key] & ~df.apply(lambda r: is_finding_accepted(r, key), axis=1)
+        return int(mask.sum())
+
     rows = []
     dump_ok = all(
         any(c in df.columns and df[c].notna().any() for c in candidates)
@@ -526,7 +536,7 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
             else:
                 status, count_display = ("⚠️" if value > 0 else "OK"), str(value)
         elif key in df.columns:
-            count = int(df[key].sum())
+            count = _count_excluding_accepted(key)
             status = "⚠️" if count > 0 else "OK"
             count_display = str(count)
         else:
@@ -748,17 +758,11 @@ def _build_control_subsections(
     qui est signalé avant de pouvoir commenter/dater l'action, l'ordre
     inverse l'obligerait à faire l'aller-retour.
     """
-    # Les comptes dont le risque a été formellement accepté (voir
-    # analysis/risk_acceptance.py) ne doivent plus apparaître comme des
-    # findings actifs dans AUCUNE des sous-sections ci-dessous — ils
-    # restent visibles, mais uniquement dans la section "Exceptions"
-    # dédiée. Filtré ici, une seule fois, plutôt que dans chaque
-    # sous-section individuellement : chacune se base sur son propre
-    # indicateur booléen (is_dormant, is_privileged_flag...), qui reste
-    # vrai même après acceptation — seul review_action change, donc un
-    # filtre par indicateur seul laisserait le compte visible ici.
-    if "is_risk_accepted" in df.columns:
-        df = df[~df["is_risk_accepted"]]
+    # Un compte dont le risque a été accepté pour un constat PRÉCIS n'est
+    # exclu que du tableau du contrôle correspondant — jamais des autres,
+    # même s'il cumule plusieurs problèmes simultanément (voir
+    # is_finding_accepted plus bas et analysis/risk_acceptance.py).
+    from analysis.risk_acceptance import is_finding_accepted
 
     elements = []
     for number, title, guidance, key in CONTROL_SUBSECTIONS:
@@ -822,6 +826,8 @@ def _build_control_subsections(
                 comparison_detail = comparison_stats.get("profile_modified_detail") or []
         elif key in df.columns:
             subset = df[df[key] == True]  # noqa: E712 (comparaison explicite voulue sur une colonne booléenne)
+            if len(subset):
+                subset = subset[~subset.apply(lambda r: is_finding_accepted(r, key), axis=1)]
             count = len(subset)
         else:
             note = f"N/A — column '{key}' missing from the ingested data."
@@ -1454,15 +1460,14 @@ def generate_word_report(
     clarif_p.runs[0].font.size = Pt(8.5)
 
     doc.add_heading("Control Summary", level=2)
-    # Les comptes dont le risque a été formellement accepté ne doivent
-    # plus compter comme des findings actifs dans AUCUNE section qui
-    # suit (ce résumé, le détail nominatif par contrôle, ni l'Executive
-    # Summary plus bas) — mais la section Exceptions, elle, a besoin de
-    # les voir tous : df_all_accounts préserve l'ensemble complet,
-    # restauré juste avant cette section.
+    # Un compte dont le risque a été accepté pour un constat PRÉCIS n'est
+    # exclu que du comptage/tableau du contrôle correspondant — jamais
+    # des autres, même s'il cumule plusieurs problèmes simultanément
+    # (voir is_finding_accepted et analysis/risk_acceptance.py).
+    # df_all_accounts préserve l'ensemble complet pour la section
+    # Exceptions plus bas.
     df_all_accounts = df
-    if "is_risk_accepted" in df.columns:
-        df = df[~df["is_risk_accepted"]]
+    from analysis.risk_acceptance import is_finding_accepted
     summary_rows = [["No.", "Control", "Result", "Findings"]]
     dump_ok = all(
         any(c in df.columns and df[c].notna().any() for c in candidates)
@@ -1488,7 +1493,11 @@ def generate_word_report(
             value = comparison_stats.get(key.lstrip("_"))
             status, count_display = ("N/A", "—") if value is None else (("⚠" if value > 0 else "OK"), str(value))
         elif key in df.columns:
-            count = int(df[key].sum())
+            if "accepted_finding_keys" in df.columns:
+                mask = df[key] & ~df.apply(lambda r: is_finding_accepted(r, key), axis=1)
+                count = int(mask.sum())
+            else:
+                count = int(df[key].sum())
             status, count_display = ("⚠" if count > 0 else "OK"), str(count)
         else:
             status, count_display = "N/A", "—"
@@ -1562,6 +1571,8 @@ def generate_word_report(
                 comparison_detail = comparison_stats.get("profile_modified_detail") or []
         elif key in df.columns:
             subset = df[df[key] == True]  # noqa: E712
+            if len(subset):
+                subset = subset[~subset.apply(lambda r: is_finding_accepted(r, key), axis=1)]
             count = len(subset)
         else:
             note = f"N/A — column '{key}' missing from the ingested data."
@@ -1640,45 +1651,55 @@ def generate_word_report(
     doc.add_paragraph()
 
     doc.add_heading("Executive Summary", level=2)
-    # df est déjà filtré (comptes acceptés exclus) depuis Control Summary
-    # plus haut — 'Total Accounts Reviewed' reste le VRAI total de la
-    # population revue, sourcé depuis df_all_accounts (acceptés compris).
+    # 'Total Accounts Reviewed' reste le vrai total de la population
+    # revue (acceptés compris) — risk_level est déjà recalculé par
+    # apply_risk_acceptances en excluant les constats acceptés. Les
+    # comptages BRUTS par indicateur ci-dessous excluent spécifiquement
+    # les comptes acceptés POUR CE constat précis (is_finding_accepted),
+    # jamais une exclusion globale du compte.
     total_accounts_reviewed = len(df_all_accounts)
+
+    def _count_excluding_accepted_word(flag_col: str) -> int:
+        if "accepted_finding_keys" not in df.columns:
+            return int(df[flag_col].sum())
+        mask = df[flag_col] & ~df.apply(lambda r: is_finding_accepted(r, flag_col), axis=1)
+        return int(mask.sum())
+
     risk_counts = df["risk_level"].value_counts() if "risk_level" in df.columns else {}
     exec_rows = [["Indicator", "Value"], ["Total Accounts Reviewed", str(total_accounts_reviewed)]]
     for risk in RISK_COLORS_HEX:
         exec_rows.append([_translate_value(risk), str(int(risk_counts.get(risk, 0)))])
     if "is_terminated_but_active" in df.columns:
-        exec_rows.append(["Active Accounts of Departed Employees", str(int(df["is_terminated_but_active"].sum()))])
+        exec_rows.append(["Active Accounts of Departed Employees", str(_count_excluding_accepted_word("is_terminated_but_active"))])
     if "is_dormant" in df.columns:
-        exec_rows.append(["Dormant Accounts", str(int(df["is_dormant"].sum()))])
+        exec_rows.append(["Dormant Accounts", str(_count_excluding_accepted_word("is_dormant"))])
     if "is_never_used" in df.columns:
-        exec_rows.append(["Never Used Accounts", str(int(df["is_never_used"].sum()))])
+        exec_rows.append(["Never Used Accounts", str(_count_excluding_accepted_word("is_never_used"))])
     if "is_password_stale" in df.columns:
-        exec_rows.append(["Stale Passwords", str(int(df["is_password_stale"].sum()))])
+        exec_rows.append(["Stale Passwords", str(_count_excluding_accepted_word("is_password_stale"))])
     if "is_duplicate_account" in df.columns:
-        exec_rows.append(["Duplicate Accounts", str(int(df["is_duplicate_account"].sum()))])
+        exec_rows.append(["Duplicate Accounts", str(_count_excluding_accepted_word("is_duplicate_account"))])
     if "is_locked" in df.columns:
-        exec_rows.append(["Locked Accounts (outside dormancy)", str(int(df["is_locked"].sum()))])
+        exec_rows.append(["Locked Accounts (outside dormancy)", str(_count_excluding_accepted_word("is_locked"))])
     _docx_add_table(doc, exec_rows)
     doc.add_paragraph()
 
     # ---- Exceptions : comptes dont le risque a été formellement accepté ----
     df = df_all_accounts  # restaure l'ensemble complet (voir plus haut)
     doc.add_heading("Exceptions — Risques acceptés", level=2)
-    accepted_mask = df["is_risk_accepted"] if "is_risk_accepted" in df.columns else pd.Series(False, index=df.index)
-    accepted_df = df[accepted_mask]
-    if len(accepted_df):
-        exc_cols = ["username", "system", "risk_acceptance_accepted_finding", "risk_acceptance_comment",
-                    "risk_acceptance_accepted_by", "risk_acceptance_expiration"]
+    accepted_detail = get_accepted_findings_detail(df)
+    if accepted_detail:
         exc_labels = ["Account", "System", "Accepted Finding", "Justification", "Accepted By", "Expiration"]
-        exc_display = accepted_df[exc_cols].fillna("").astype(str)
-        exc_display["risk_acceptance_expiration"] = exc_display["risk_acceptance_expiration"].replace("", "—")
-        _docx_add_table(doc, [exc_labels] + exc_display.values.tolist())
+        exc_rows_data = [
+            [d["username"], d["system"], d["accepted_finding"], d["comment"], d["accepted_by"], d["expiration_date"] or "—"]
+            for d in accepted_detail
+        ]
+        _docx_add_table(doc, [exc_labels] + exc_rows_data)
     else:
         doc.add_paragraph("No risk acceptance recorded for this cycle.")
-    if "is_risk_acceptance_expired" in df.columns and df["is_risk_acceptance_expired"].any():
-        expired_names = df.loc[df["is_risk_acceptance_expired"], "username"].astype(str).tolist()
+    has_expired = "expired_finding_keys" in df.columns and df["expired_finding_keys"].apply(len).gt(0).any()
+    if has_expired:
+        expired_names = df.loc[df["expired_finding_keys"].apply(len).gt(0), "username"].astype(str).tolist()
         p = doc.add_paragraph()
         p.add_run(
             f"{len(expired_names)} account(s) had a risk acceptance that has EXPIRED and "
@@ -2079,35 +2100,48 @@ def generate_pdf_report(
 
     # ---- Résumé exécutif ----
     elements.append(Paragraph("Executive Summary", section_style))
-    # Même principe que pour le résumé Word : 'Total Accounts Reviewed'
-    # reste le vrai total de la population revue (acceptés compris),
-    # tous les AUTRES comptages excluent les comptes dont le risque a
-    # été formellement accepté — ce ne sont plus des findings actifs.
+    # 'Total Accounts Reviewed' reste le vrai total de la population
+    # revue (acceptés compris) — risk_level est déjà recalculé par
+    # apply_risk_acceptances en excluant les constats acceptés, donc la
+    # répartition Critique/Élevé/Moyen/Faible est déjà correcte sans
+    # filtre supplémentaire ici. Les comptages BRUTS par indicateur
+    # (Dormant Accounts, etc.) ci-dessous doivent, eux, exclure
+    # spécifiquement les comptes acceptés POUR CE constat précis — voir
+    # is_finding_accepted, jamais une exclusion globale du compte.
+    from analysis.risk_acceptance import is_finding_accepted
+
+    def _count_excluding_accepted(flag_col: str, control_key: str = None) -> int:
+        control_key = control_key or flag_col
+        if "accepted_finding_keys" not in df.columns:
+            return int(df[flag_col].sum())
+        mask = df[flag_col] & ~df.apply(lambda r: is_finding_accepted(r, control_key), axis=1)
+        return int(mask.sum())
+
     df_all_accounts = df
     total_accounts_reviewed = len(df)
-    if "is_risk_accepted" in df.columns:
-        df = df[~df["is_risk_accepted"]]
     risk_counts = df["risk_level"].value_counts() if "risk_level" in df.columns else {}
     summary_data = [["Indicator", "Value"], ["Total Accounts Reviewed", str(total_accounts_reviewed)]]
     for risk in RISK_COLORS_HEX:
         summary_data.append([_translate_value(risk), str(int(risk_counts.get(risk, 0)))])
     if "is_terminated_but_active" in df.columns:
-        summary_data.append(["Active Accounts of Departed Employees", str(int(df["is_terminated_but_active"].sum()))])
+        summary_data.append(["Active Accounts of Departed Employees", str(_count_excluding_accepted("is_terminated_but_active"))])
     if "is_dormant" in df.columns:
-        summary_data.append(["Dormant Accounts", str(int(df["is_dormant"].sum()))])
+        summary_data.append(["Dormant Accounts", str(_count_excluding_accepted("is_dormant"))])
     if "is_never_used" in df.columns:
-        summary_data.append(["Never Used Accounts", str(int(df["is_never_used"].sum()))])
+        summary_data.append(["Never Used Accounts", str(_count_excluding_accepted("is_never_used"))])
     if "is_password_stale" in df.columns:
-        summary_data.append(["Stale Passwords", str(int(df["is_password_stale"].sum()))])
+        summary_data.append(["Stale Passwords", str(_count_excluding_accepted("is_password_stale"))])
     if "is_privileged_flag" in df.columns and "has_non_expiring_password" in df.columns:
-        summary_data.append([
-            "Privileged Accounts with Non-Expiring Password",
-            str(int((df["is_privileged_flag"] & df["has_non_expiring_password"]).sum())),
-        ])
+        combined_mask = df["is_privileged_flag"] & df["has_non_expiring_password"]
+        if "accepted_finding_keys" in df.columns:
+            combined_mask = combined_mask & ~df.apply(
+                lambda r: is_finding_accepted(r, "has_non_expiring_password"), axis=1
+            )
+        summary_data.append(["Privileged Accounts with Non-Expiring Password", str(int(combined_mask.sum()))])
     if "is_duplicate_account" in df.columns:
-        summary_data.append(["Duplicate Accounts", str(int(df["is_duplicate_account"].sum()))])
+        summary_data.append(["Duplicate Accounts", str(_count_excluding_accepted("is_duplicate_account"))])
     if "is_locked" in df.columns:
-        summary_data.append(["Locked Accounts (outside dormancy)", str(int(df["is_locked"].sum()))])
+        summary_data.append(["Locked Accounts (outside dormancy)", str(_count_excluding_accepted("is_locked"))])
 
     summary_table = Table(summary_data, colWidths=[9 * cm, 4 * cm])
     summary_table.setStyle(TableStyle([
@@ -2128,21 +2162,17 @@ def generate_pdf_report(
     # le constat précis accepté — voir analysis/risk_acceptance.py.
     elements.append(Paragraph("Exceptions — Risques acceptés", section_style))
     df = df_all_accounts  # restaure l'ensemble complet (voir Executive Summary plus haut)
-    accepted_mask = df["is_risk_accepted"] if "is_risk_accepted" in df.columns else pd.Series(False, index=df.index)
-    accepted_df = df[accepted_mask]
-    if len(accepted_df):
-        exc_cols = ["username", "system", "risk_acceptance_accepted_finding", "risk_acceptance_comment",
-                    "risk_acceptance_accepted_by", "risk_acceptance_expiration"]
+    accepted_detail = get_accepted_findings_detail(df)
+    if accepted_detail:
         exc_labels = ["Account", "System", "Accepted Finding", "Justification", "Accepted By", "Expiration"]
-        exc_display = accepted_df[exc_cols].fillna("").astype(str)
-        exc_display["risk_acceptance_expiration"] = exc_display["risk_acceptance_expiration"].replace("", "—")
         exc_col_widths = _compute_column_widths(exc_labels, available_width)
         exc_cell_style = ParagraphStyle("ExcCell", fontSize=7.5, leading=9, fontName=DEFAULT_FONT)
         exc_header_style = ParagraphStyle("ExcHeader", fontSize=7.5, leading=9, fontName=DEFAULT_FONT_BOLD, textColor=colors.white)
         header_row = [Paragraph(label, exc_header_style) for label in exc_labels]
         data_rows = [
-            [Paragraph(str(v), exc_cell_style) for v in row]
-            for row in exc_display.values.tolist()
+            [Paragraph(str(d[k] or "—"), exc_cell_style) for k in
+             ("username", "system", "accepted_finding", "comment", "accepted_by", "expiration_date")]
+            for d in accepted_detail
         ]
         exc_table = Table([header_row] + data_rows, colWidths=exc_col_widths, repeatRows=1)
         exc_table.setStyle(TableStyle([
@@ -2163,8 +2193,9 @@ def generate_pdf_report(
     # Acceptations expirées : redevenues des findings actifs, mais
     # signalées ici distinctement pour attirer l'attention sur le besoin
     # de revalidation plutôt que de se fondre dans les findings normaux.
-    if "is_risk_acceptance_expired" in df.columns and df["is_risk_acceptance_expired"].any():
-        expired_names = df.loc[df["is_risk_acceptance_expired"], "username"].astype(str).tolist()
+    has_expired = "expired_finding_keys" in df.columns and df["expired_finding_keys"].apply(len).gt(0).any()
+    if has_expired:
+        expired_names = df.loc[df["expired_finding_keys"].apply(len).gt(0), "username"].astype(str).tolist()
         elements.append(Paragraph(
             f"⚠ {len(expired_names)} account(s) had a risk acceptance that has EXPIRED and "
             f"require re-validation (now listed as active findings again): {', '.join(expired_names)}.",

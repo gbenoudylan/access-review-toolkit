@@ -63,7 +63,7 @@ TEMPLATE_CONTROLS = [
     (13, "Deleted accounts",
      "Accounts deleted since the previous review/Ensure all deletion are done according the "
      "process(Keep the justification)."),
-    (14, "Password Ages",
+    (14, "Expired password(Password age> 90days)",
      "Password ages, calculated since the last modification, to detect accounts with a password "
      "age greater than 90 days./Except service account ,All accounts that the age exceed 90 days "
      "must be changed or disable.Any account that is exceptional must be recorded for "
@@ -157,7 +157,7 @@ CONTROL_SUBSECTIONS = [
     (6, "Inactive Accounts", None, "is_never_used"),
     (7, "Service Accounts", None, "is_service_account"),
     (8, "Duplicate Accounts", None, "is_duplicate_account"),
-    (9, "Active Non-compliant logins", None, "is_non_compliant_naming"),
+    (9, "Active Non-compliant logins", None, None),
     (10, "Accounts created",
      "Guidance: check the creation date of the extraction to identify new account , if the "
      "system does not provide creation , perform the comparison between the last extraction "

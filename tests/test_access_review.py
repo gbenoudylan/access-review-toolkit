@@ -692,22 +692,23 @@ def test_naming_convention_tolerates_accents_and_numeric_suffix():
     print("OK - test_naming_convention_tolerates_accents_and_numeric_suffix")
 
 
-def test_naming_convention_flags_real_mismatch():
-    """Un username sans rapport avec le nom réel doit être signalé."""
+def test_naming_convention_never_auto_computed():
+    """
+    Demande explicite : le contrôle 9 (naming convention) ne doit plus
+    JAMAIS être calculé automatiquement, y compris pour un cas qui
+    aurait auparavant été détecté comme non conforme — chaque OPCOs a
+    sa propre convention de nommage, une règle unique codée en dur
+    (celle de MTN Liberia) produirait un faux signal pour toute entité
+    qui n'utilise pas cette convention précise. Laissé à la
+    vérification manuelle du reviewer plutôt que de risquer une action
+    recommandée ou un score de risque basés sur une hypothèse fausse.
+    """
     df = pd.DataFrame({
         "username": ["random123"], "full_name": ["Marie Curie"], "system": ["AD"],
     })
     result = analyze_access(df)
-    assert result.loc[0, "is_non_compliant_naming"] == True
-    print("OK - test_naming_convention_flags_real_mismatch")
-
-
-def test_naming_convention_not_checked_without_full_name():
-    """Sans nom complet disponible, le contrôle ne doit rien inventer."""
-    df = pd.DataFrame({"username": ["jdupont"], "system": ["AD"]})
-    result = analyze_access(df)
     assert result.loc[0, "is_non_compliant_naming"] == False
-    print("OK - test_naming_convention_not_checked_without_full_name")
+    print("OK - test_naming_convention_never_auto_computed")
 
 
 def test_risk_score_capped_at_100_and_explainable():
