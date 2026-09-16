@@ -1028,15 +1028,15 @@ def test_review_comparison_normalizes_case_for_created_deleted():
     print("OK - test_review_comparison_normalizes_case_for_created_deleted")
 
 
-def test_accounts_created_uses_direct_date_when_available_no_previous_review_needed():
+def test_accounts_created_uses_direct_date_when_no_previous_review():
     """
-    Demande explicite : le contrôle 'Accounts created' doit d'abord
-    utiliser account_created_date directement (comptes créés dans les 90
-    jours depuis la date d'extraction), sans nécessiter de revue
-    précédente — la comparaison avec une revue précédente ne sert que de
-    repli quand cette colonne est absente. Confirmé cohérent avec le
-    texte officiel du template ('check the creation date... if the
-    system does not provide creation, perform the comparison...').
+    Sans revue précédente fournie, le contrôle 'Accounts created' se
+    base sur account_created_date directement (comptes créés dans les
+    90 jours depuis la date d'extraction) — seule méthode disponible
+    dans ce cas. Voir test_accounts_created_prioritizes_comparison...
+    pour le cas où les deux méthodes sont possibles : la comparaison
+    prend alors le dessus (directive explicite — plus fiable qu'une
+    fenêtre fixe de 90 jours).
     """
     import pandas as pd
     from analysis.access_review import analyze_access
@@ -1056,7 +1056,42 @@ def test_accounts_created_uses_direct_date_when_available_no_previous_review_nee
     assert "1 account(s) concerned" in snippet
     assert "u1" in snippet
     assert "u2" not in snippet
-    print("OK - test_accounts_created_uses_direct_date_when_available_no_previous_review_needed")
+    print("OK - test_accounts_created_uses_direct_date_when_no_previous_review")
+
+
+def test_accounts_created_prioritizes_comparison_over_90_day_window():
+    """
+    Directive explicite : quand une revue précédente EST fournie, la
+    comparaison exacte (ce compte existe maintenant, n'existait pas
+    avant) prime sur la fenêtre de 90 jours — plus fiable qu'une
+    approximation temporelle fixe, qui pourrait rater un compte créé
+    91 jours plus tôt mais réellement nouveau depuis le dernier cycle
+    de revue. La fenêtre de 90 jours ne sert de repli QUE quand aucune
+    revue précédente n'est disponible.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report
+    import pdfplumber
+
+    previous = pd.DataFrame({"username": ["u1"], "system": ["AD"], "account_status": ["Active"]})
+    current = pd.DataFrame({
+        "username": ["u1", "u2"], "system": ["AD"] * 2, "account_status": ["Active"] * 2,
+        # Les DEUX comptes ont une date de création ANCIENNE (hors
+        # fenêtre de 90 jours) — si la fenêtre de 90 jours l'emportait
+        # à tort, u2 ne serait jamais détecté comme créé.
+        "account_created_date": ["2020-01-01", "2020-01-01"],
+    })
+    prev_result = analyze_access(previous)
+    curr_result = analyze_access(current, reference_datetime=pd.Timestamp("2026-09-16"))
+    output = generate_pdf_report(curr_result, "output/test_created_priority.pdf", previous_df=prev_result)
+    with pdfplumber.open(output) as pdf:
+        text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    idx = text.find("10.Accounts created")
+    snippet = text[idx:idx + 700]
+    assert "1 account(s) concerned" in snippet
+    assert "u2" in snippet  # nouveau par comparaison, malgré la date ancienne
+    print("OK - test_accounts_created_prioritizes_comparison_over_90_day_window")
 
 
 def test_accounts_created_falls_back_to_comparison_without_creation_date():

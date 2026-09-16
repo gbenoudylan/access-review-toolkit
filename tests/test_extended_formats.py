@@ -1190,3 +1190,56 @@ def test_custom_column_mapping_persists_across_files():
 
     store_path.unlink()
     print("OK - test_custom_column_mapping_persists_across_files")
+
+
+def test_accounts_created_priority_and_boolean_polarity_inversion():
+    """
+    Deux directives explicites, testées ensemble :
+
+    1. Priorité inversée pour 'Accounts created' : quand une revue
+       précédente EST fournie, la comparaison exacte prime sur la
+       fenêtre de 90 jours (plus fiable — un compte créé 91 jours plus
+       tôt mais réellement nouveau depuis le dernier cycle ne serait
+       jamais détecté par la seule fenêtre fixe).
+
+    2. Inversion de polarité pour les indicateurs booléens (ex.
+       'identity/accountDisabled' : true signifie précisément que le
+       compte n'est PAS actif) — sans cette inversion, fusionner tel
+       quel produirait un statut inversé et silencieusement faux
+       ('true' étant déjà reconnu comme marqueur actif par ailleurs).
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+    from analysis.access_review import analyze_access
+
+    content = "username,system,identity/accountDisabled\nu1,AD,true\nu2,AD,false\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+
+    custom = {"identity accountdisabled": "account_status__inverted_bool"}
+    df = load_file(path, default_system="Test", custom_mappings=custom)
+    assert df.loc[0, "account_status"] == "Disabled"
+    assert df.loc[1, "account_status"] == "Active"
+
+    result = analyze_access(df)
+    assert result.loc[0, "account_status"] == "Disabled"
+    print("OK - test_accounts_created_priority_and_boolean_polarity_inversion")
+
+
+def test_boolean_inversion_leaves_unrecognized_values_unchanged():
+    """Une valeur qui n'est ni un marqueur vrai/faux reconnu ('Unknown'
+    par exemple) doit rester inchangée plutôt que d'être écrasée par
+    une supposition."""
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "username,system,identity/accountDisabled\nu1,AD,Unknown\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+
+    custom = {"identity accountdisabled": "account_status__inverted_bool"}
+    df = load_file(path, default_system="Test", custom_mappings=custom)
+    assert df.loc[0, "account_status"] == "Unknown"
+    print("OK - test_boolean_inversion_leaves_unrecognized_values_unchanged")

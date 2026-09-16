@@ -269,14 +269,29 @@ def main():
         "account_expiry_date", "employee_status", "password_last_set",
         "password_expiry_date", "password_status",
     ]
-    if unmapped_columns:
-        important_missing = [
-            f for f in ("last_login_date", "password_last_set", "account_status", "full_name")
-            if f not in df.columns
-        ]
+
+    def _is_effectively_empty(series) -> bool:
+        return series.isna().all() or (series.astype(str).str.strip().isin(["", "nan", "none"])).all()
+
+    # Un champ reconnu mais entièrement VIDE (ex. une colonne 'status'
+    # présente mais sans une seule valeur renseignée, alors qu'une autre
+    # colonne du même fichier — ex. 'identity/accountDisabled' — porte
+    # la vraie donnée) doit être traité comme un manque au même titre
+    # qu'une colonne jamais reconnue : sinon, personne ne s'aperçoit
+    # jamais que la vraie donnée existe ailleurs dans le fichier.
+    important_check_fields = ("last_login_date", "password_last_set", "account_status", "full_name")
+    important_missing = [f for f in important_check_fields if f not in df.columns]
+    important_empty = [
+        f for f in important_check_fields
+        if f in df.columns and f not in important_missing and _is_effectively_empty(df[f])
+    ]
+    important_needing_attention = important_missing + important_empty
+
+    if unmapped_columns or important_empty:
         with st.expander(
-            f"Colonnes non reconnues ({len(unmapped_columns)}) — à associer manuellement si besoin",
-            expanded=bool(important_missing),
+            f"Colonnes non reconnues ou champs vides ({len(unmapped_columns)}) — "
+            f"à associer manuellement si besoin",
+            expanded=bool(important_needing_attention),
         ):
             st.caption(
                 "Ces colonnes du fichier n'ont pas été reconnues automatiquement et sont "
@@ -286,11 +301,16 @@ def main():
                 "de colonne, sans qu'il soit nécessaire de la refaire."
             )
             if important_missing:
+                st.warning("Champs importants absents : " + ", ".join(important_missing))
+            if important_empty:
                 st.warning(
-                    "Champs importants absents suite à cette non-reconnaissance : "
-                    + ", ".join(important_missing)
+                    "Champs importants présents mais entièrement VIDES (une autre colonne du "
+                    "fichier contient peut-être la vraie donnée, ex. un indicateur "
+                    "vrai/faux comme 'identity/accountDisabled' au lieu de 'status') : "
+                    + ", ".join(important_empty)
                 )
             assignments = {}
+            invert_choices = {}
             for col in unmapped_columns:
                 choice = st.selectbox(
                     f"'{col}' correspond à :",
@@ -299,9 +319,19 @@ def main():
                 )
                 if choice != "Ignorer":
                     assignments[col] = choice
+                    if choice == "account_status":
+                        invert_choices[col] = st.checkbox(
+                            f"'{col}' est un indicateur inversé (ex. 'accountDisabled' : "
+                            f"vrai = compte désactivé, PAS actif) plutôt qu'un statut direct",
+                            key=f"invert_{col}",
+                        )
             if assignments and st.button("Enregistrer ces correspondances et relancer l'analyse"):
                 for raw_col, standard_field in assignments.items():
-                    save_custom_column_mapping(raw_col, standard_field)
+                    target = (
+                        f"{standard_field}__inverted_bool"
+                        if invert_choices.get(raw_col) else standard_field
+                    )
+                    save_custom_column_mapping(raw_col, target)
                 st.cache_data.clear()
                 st.success(f"{len(assignments)} correspondance(s) enregistrée(s). Relance en cours...")
                 st.rerun()

@@ -497,12 +497,20 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
             status = "OK"
             count_display = str(count) if count is not None else "—"
         elif key == "_created":
-            if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+            # Priorité à la comparaison avec une revue précédente quand
+            # elle est fournie : plus fiable qu'une fenêtre de 90 jours
+            # fixe (un compte créé il y a 91 jours ressortirait quand
+            # même comme "nouveau" par comparaison s'il n'existait pas
+            # à la revue précédente). La fenêtre de 90 jours ne sert de
+            # repli QUE quand aucune revue précédente n'est fournie.
+            value = comparison_stats.get("created")
+            if value is not None:
+                status, count_display = ("⚠️" if value > 0 else "OK"), str(value)
+            elif "is_recently_created" in df.columns and "account_created_date" in df.columns:
                 count = int(df["is_recently_created"].sum())
                 status, count_display = ("⚠️" if count > 0 else "OK"), str(count)
             else:
-                value = comparison_stats.get("created")
-                status, count_display = ("N/A", "—") if value is None else (("⚠️" if value > 0 else "OK"), str(value))
+                status, count_display = "N/A", "—"
         elif key in ("_reactivated", "_deleted", "_profile_modified"):
             value = comparison_stats.get(key.lstrip("_"))
             if value is None:
@@ -764,21 +772,20 @@ def _build_control_subsections(
                 if names and previous_df is not None and "username" in previous_df.columns:
                     subset = previous_df[previous_df["username"].astype(str).isin(names)]
         elif key == "_created":
-            if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+            value = comparison_stats.get("created")
+            if value is not None:
+                count = value
+                names = comparison_stats.get("created_accounts") or []
+                if names and "username" in df.columns:
+                    subset = df[df["username"].astype(str).isin(names)]
+            elif "is_recently_created" in df.columns and "account_created_date" in df.columns:
                 subset = df[df["is_recently_created"] == True]  # noqa: E712
                 count = len(subset)
             else:
-                value = comparison_stats.get("created")
-                if value is None:
-                    note = (
-                        "N/A — no 'account_created_date' column, and no previous review "
-                        "provided to establish the comparison either."
-                    )
-                else:
-                    count = value
-                    names = comparison_stats.get("created_accounts") or []
-                    if names and "username" in df.columns:
-                        subset = df[df["username"].astype(str).isin(names)]
+                note = (
+                    "N/A — no previous review provided to establish the comparison, "
+                    "and no 'account_created_date' column either."
+                )
         elif key == "_reactivated":
             value = comparison_stats.get("reactivated")
             if value is None:
@@ -1440,12 +1447,14 @@ def generate_word_report(
             status = "OK"
             count_display = str(int(df["account_status"].apply(_is_active_account).sum())) if "account_status" in df.columns else "—"
         elif key == "_created":
-            if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+            value = comparison_stats.get("created")
+            if value is not None:
+                status, count_display = ("⚠" if value > 0 else "OK"), str(value)
+            elif "is_recently_created" in df.columns and "account_created_date" in df.columns:
                 count = int(df["is_recently_created"].sum())
                 status, count_display = ("⚠" if count > 0 else "OK"), str(count)
             else:
-                value = comparison_stats.get("created")
-                status, count_display = ("N/A", "—") if value is None else (("⚠" if value > 0 else "OK"), str(value))
+                status, count_display = "N/A", "—"
         elif key in ("_deleted", "_reactivated", "_profile_modified"):
             value = comparison_stats.get(key.lstrip("_"))
             status, count_display = ("N/A", "—") if value is None else (("⚠" if value > 0 else "OK"), str(value))
@@ -1494,21 +1503,20 @@ def generate_word_report(
                 if names and previous_df is not None and "username" in previous_df.columns:
                     subset = previous_df[previous_df["username"].astype(str).isin(names)]
         elif key == "_created":
-            if "is_recently_created" in df.columns and "account_created_date" in df.columns:
+            value = comparison_stats.get("created")
+            if value is not None:
+                count = value
+                names = comparison_stats.get("created_accounts") or []
+                if names and "username" in df.columns:
+                    subset = df[df["username"].astype(str).isin(names)]
+            elif "is_recently_created" in df.columns and "account_created_date" in df.columns:
                 subset = df[df["is_recently_created"] == True]  # noqa: E712
                 count = len(subset)
             else:
-                value = comparison_stats.get("created")
-                if value is None:
-                    note = (
-                        "N/A — no 'account_created_date' column, and no previous review "
-                        "provided to establish the comparison either."
-                    )
-                else:
-                    count = value
-                    names = comparison_stats.get("created_accounts") or []
-                    if names and "username" in df.columns:
-                        subset = df[df["username"].astype(str).isin(names)]
+                note = (
+                    "N/A — no previous review provided to establish the comparison, "
+                    "and no 'account_created_date' column either."
+                )
         elif key == "_reactivated":
             value = comparison_stats.get("reactivated")
             if value is None:

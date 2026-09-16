@@ -243,6 +243,9 @@ def standardize_columns(
         df = df.copy()
         df.columns = new_labels
 
+    _BOOLEAN_TRUE_MARKERS = {"true", "1", "yes", "oui", "y"}
+    _BOOLEAN_FALSE_MARKERS = {"false", "0", "no", "non", "n"}
+
     for col in df.columns:
         # Retire le suffixe temporaire ('__dupN') avant reconnaissance,
         # sans quoi il empêche le fuzzy matching de reconnaître la colonne.
@@ -251,6 +254,35 @@ def standardize_columns(
         if not matched:
             unmatched.append(col)
             continue
+        # Correction manuelle avec inversion de polarité (dashboard) :
+        # certains champs sources sont des booléens de sens OPPOSÉ au
+        # champ standard visé (ex. 'identity/accountDisabled' — true
+        # signifie précisément que le compte n'est PAS actif, l'inverse
+        # d'un champ 'status'/'enabled' classique où true signifierait
+        # actif). Fusionner tel quel produirait un résultat inversé et
+        # silencieusement faux. Reconnu via un marqueur spécial ajouté
+        # par le dashboard (voir save_custom_column_mapping), traité ici
+        # en convertissant les valeurs AVANT la fusion normale.
+        if matched.endswith("__inverted_bool"):
+            matched = matched[: -len("__inverted_bool")]
+            normalized_values = df[col].astype(str).str.strip().str.lower()
+            is_true = normalized_values.isin(_BOOLEAN_TRUE_MARKERS)
+            is_false = normalized_values.isin(_BOOLEAN_FALSE_MARKERS)
+            transformed = df[col].copy()
+            transformed[is_true] = "Disabled"
+            transformed[is_false] = "Active"
+            df[col] = transformed
+            # Repli : une valeur qui n'est ni un marqueur vrai/faux
+            # reconnu reste inchangée plutôt que d'être écrasée par une
+            # supposition — au cas où la colonne contiendrait autre
+            # chose qu'un booléen strict pour certaines lignes.
+            unrecognized = ~(is_true | is_false)
+            if unrecognized.any():
+                logger.warning(
+                    f"{int(unrecognized.sum())} valeur(s) de la colonne '{col}' (inversion de "
+                    f"polarité demandée) ne ressemblent pas à un booléen vrai/faux reconnu — "
+                    f"laissées telles quelles plutôt que devinées."
+                )
         if matched not in claimed_by:
             claimed_by[matched] = col
             rename_map[col] = matched
