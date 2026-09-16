@@ -151,12 +151,12 @@ DUMP_COMPLETENESS_COLUMNS = [
 # (numéro, titre exact, consigne exacte ou None, clé de donnée ou None)
 CONTROL_SUBSECTIONS = [
     (2, "Dormant Accounts", "Guidance : Check the last login that exceed 90 days", "is_dormant"),
-    (3, "Orphaned Accounts", None, "is_orphaned_account"),
+    (3, "Orphaned accounts", None, "is_orphaned_account"),
     (4, "Test Accounts", None, "is_test_account"),
-    (5, "Active Accounts", None, "_active_count"),
-    (6, "Inactive Accounts", None, "is_never_used"),
+    (5, "Active accounts", None, "_active_count"),
+    (6, "Inactive accounts", None, "is_never_used"),
     (7, "Service Accounts", None, "is_service_account"),
-    (8, "Duplicate Accounts", None, "is_duplicate_account"),
+    (8, "Duplicate accounts", None, "is_duplicate_account"),
     (9, "Active Non-compliant logins", None, None),
     (10, "Accounts created",
      "Guidance: check the creation date of the extraction to identify new account , if the "
@@ -167,8 +167,8 @@ CONTROL_SUBSECTIONS = [
     (11, "Profile Modified", None, "_profile_modified"),
     (12, "Reactivated accounts", None, "_reactivated"),
     (13, "Deleted accounts", None, "_deleted"),
-    (14, "Password ages<=90days", None, "is_password_stale"),
-    (15, "3PP Accounts", None, None),
+    (14, "Expired password(Password age> 90days)", None, "is_password_stale"),
+    (15, "3PP (Third-Party Personnel)", None, None),
     (16, "Administrator Accounts", None, "is_privileged_flag"),
     (17, "Annual User Profile and matrix review", None, None),
     (18, "Terminated Users and Transferred users",

@@ -258,8 +258,8 @@ def test_all_18_control_subsections_present_with_exact_titles():
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
     for expected in [
-        "1.Dump completeness and accuracy", "2.Dormant Accounts", "3.Orphaned Accounts",
-        "9.Active Non-compliant logins", "15.3PP Accounts", "16.Administrator Accounts",
+        "1.Dump completeness and accuracy", "2.Dormant Accounts", "3.Orphaned accounts",
+        "9.Active Non-compliant logins", "15.3PP (Third-Party Personnel)", "16.Administrator Accounts",
         "18.Terminated Users and Transferred users", "V. CONCLUSION",
     ]:
         assert expected in full_text, f"'{expected}' absent du rapport"
@@ -1616,3 +1616,63 @@ def test_expired_risk_acceptance_flagged_in_exceptions_and_reactive_as_finding()
     assert "jdupont" in dormant_section  # redevenu un finding actif
     assert "EXPIRED" in text  # signalé distinctement dans les Exceptions
     print("OK - test_expired_risk_acceptance_flagged_in_exceptions_and_reactive_as_finding")
+
+
+def test_control_14_title_consistent_in_reference_table_and_actual_section():
+    """
+    Vrai bug trouvé par l'utilisateur : le titre du contrôle 14 avait été
+    renommé dans TEMPLATE_CONTROLS (le tableau de référence "I.
+    OBJECTIVE") mais pas dans CONTROL_SUBSECTIONS (la vraie section IV.14
+    effectivement rendue avec son tableau de comptes) — deux listes
+    distinctes qui doivent rester synchronisées. Vérifié directement sur
+    le texte du rapport généré, pas seulement sur le code source, pour
+    ne jamais rater ce genre d'incohérence silencieuse à nouveau.
+    """
+    import pandas as pd
+    from analysis.access_review import analyze_access
+    from reporting.export import generate_pdf_report, generate_word_report
+    import pdfplumber
+    from docx import Document
+
+    df = analyze_access(pd.DataFrame({"username": ["u1"], "system": ["AD"]}))
+    pdf_path = generate_pdf_report(df, "output/test_section14_perm.pdf")
+    with pdfplumber.open(pdf_path) as pdf:
+        pdf_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    assert "Expired password(Password age" in pdf_text
+    assert "Password ages<=90days" not in pdf_text
+
+    word_path = generate_word_report(df, "output/test_section14_perm.docx")
+    doc = Document(str(word_path))
+    word_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Expired password(Password age" in word_text
+    assert "Password ages<=90days" not in word_text
+    print("OK - test_control_14_title_consistent_in_reference_table_and_actual_section")
+
+
+def test_template_controls_and_subsections_titles_always_in_sync():
+    """
+    Vrai bug trouvé par l'utilisateur : le titre du contrôle 14 avait
+    été renommé dans TEMPLATE_CONTROLS (tableau de référence "I.
+    OBJECTIVE") mais pas dans CONTROL_SUBSECTIONS (la vraie section IV.x
+    effectivement rendue) — deux listes distinctes, entretenues à la
+    main, qui peuvent diverger silencieusement si on ne modifie qu'une
+    seule des deux. En creusant, 5 AUTRES incohérences existaient déjà
+    (casse différente pour la plupart, libellé différent pour le
+    contrôle 15) — corrigées dans la foulée. Ce test compare les deux
+    listes programmatiquement pour qu'aucune divergence future ne passe
+    plus inaperçue, quel que soit le contrôle concerné.
+    """
+    from reporting.template_sections import TEMPLATE_CONTROLS, CONTROL_SUBSECTIONS
+
+    ref_titles = {n: t for n, t, *_ in TEMPLATE_CONTROLS}
+    sub_titles = {n: t for n, t, *_ in CONTROL_SUBSECTIONS}
+    # Le contrôle 1 (Dump completeness) a sa propre section dédiée, hors
+    # de la boucle générique CONTROL_SUBSECTIONS — absence légitime, pas
+    # une incohérence.
+    mismatches = {
+        n: (ref_titles[n], sub_titles[n])
+        for n in sub_titles
+        if n in ref_titles and ref_titles[n] != sub_titles[n]
+    }
+    assert not mismatches, f"Titres incohérents entre les deux listes : {mismatches}"
+    print("OK - test_template_controls_and_subsections_titles_always_in_sync")
