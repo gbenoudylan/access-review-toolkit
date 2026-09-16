@@ -710,7 +710,7 @@ def analyze_access(
         r"\b(locked|verrouill[ée]|bloqu[ée])\b", re.IGNORECASE
     )
     if "account_status" in df.columns:
-        status_lower = df["account_status"].astype(str).str.strip()
+        status_lower = df["account_status"].astype(str).fillna("").str.strip()
         df["is_locked"] = status_lower.apply(lambda s: bool(LOCKED_MARKERS_RE.search(s)))
         is_active_status = df["account_status"].apply(_is_active_account)
         df["is_dormant"] = df["is_dormant"] & is_active_status
@@ -760,7 +760,15 @@ def analyze_access(
 
     privileged_from_role = pd.Series(False, index=df.index)
     if "role" in df.columns:
-        role_lower = df["role"].astype(str).str.strip().str.lower()
+        # .astype(str) seul ne suffit PAS à garantir une vraie chaîne pour
+        # chaque ligne : avec le nouveau type dédié "str" de pandas 3.0,
+        # une valeur manquante (NaN) reste un float même après
+        # .astype(str) (résultat "nan" typé float, pas la chaîne "nan"
+        # comme dans les versions précédentes de pandas) — .fillna("")
+        # après coup comble ce trou, sans quoi une colonne 'role'
+        # partiellement vide fait planter la recherche regex qui suit
+        # avec "expected string or bytes-like object, got 'float'".
+        role_lower = df["role"].astype(str).fillna("").str.strip().str.lower()
         privileged_from_role = role_lower.apply(
             lambda r: bool(_PRIVILEGED_ROLE_RE.search(r))
         )

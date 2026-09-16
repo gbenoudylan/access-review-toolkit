@@ -1212,3 +1212,29 @@ def test_duplicate_detection_normalizes_system_case_too():
     result_diff = analyze_access(different_system_df)
     assert result_diff["is_duplicate_account"].tolist() == [False, False]
     print("OK - test_duplicate_detection_normalizes_system_case_too")
+
+
+def test_role_and_status_with_nan_do_not_crash_pandas3_str_gotcha():
+    """
+    Vrai bug trouvé en conditions réelles (utilisateur) : "Erreur
+    inattendue : expected string or bytes-like object, got 'float'".
+
+    Piège de pandas 3.0 : .astype(str) seul ne garantit PAS une vraie
+    chaîne pour chaque ligne — une valeur manquante (NaN) dans une
+    colonne autrement numérique reste un float même après .astype(str)
+    (résultat 'nan' typé float, pas la chaîne "nan" comme dans les
+    versions précédentes de pandas). Une recherche regex directe sur
+    cette valeur plante alors avec TypeError. Corrigé avec .fillna("")
+    après .astype(str), dans les deux endroits touchés : la détection
+    de rôle privilégié (colonne 'role') et la détection de compte
+    verrouillé (colonne 'account_status').
+    """
+    df = pd.DataFrame({
+        "username": ["u1", "u2", "u3"], "system": ["AD"] * 3,
+        "account_status": [1, None, "Active"],
+        "role": [1, None, 3],
+    })
+    result = analyze_access(df)  # ne doit pas lever d'exception
+    assert result["is_privileged_flag"].tolist() == [False, False, False]
+    assert result["is_locked"].tolist() == [False, False, False]
+    print("OK - test_role_and_status_with_nan_do_not_crash_pandas3_str_gotcha")
