@@ -237,8 +237,8 @@ def standardize_columns(
             seen[key] = seen.get(key, 0) + 1
             new_labels.append(col if seen[key] == 1 else f"{col}__dup{seen[key]}")
         logger.info(
-            f"Colonnes brutes en double détectées (même libellé exact) : "
-            f"renommées temporairement par position avant fusion."
+            "Colonnes brutes en double détectées (même libellé exact) : "
+            "renommées temporairement par position avant fusion."
         )
         df = df.copy()
         df.columns = new_labels
@@ -625,14 +625,26 @@ def _read_txt(
     raw_blocks = [b for b in re.split(r"\n\s*\n", raw_text.strip()) if b.strip()]
     if len(raw_blocks) >= 2:
         named_blocks = {}
+        skipped_preamble = False
         for i, block in enumerate(raw_blocks, 1):
             block_lines = [l for l in block.splitlines() if l.strip()]
             block_df = _try_delimited(block_lines, column_mapping)
             if block_df is None:
                 block_df = _try_fixed_width(block_lines, column_mapping)
             if block_df is None:
+                # Un bloc d'une seule ligne qui ne ressemble à aucun
+                # format tabulaire connu est très probablement une ligne
+                # de titre/préambule ("Export du 16/09/2026 - Revue
+                # d'accès") plutôt qu'un vrai bloc de données — l'ignorer
+                # comme du bruit plutôt que d'abandonner toute la lecture
+                # multi-blocs à cause de lui. Un bloc de PLUSIEURS lignes
+                # qui échoue reste, lui, un vrai signal d'échec : ce
+                # n'est probablement pas un simple titre.
+                if len(block_lines) <= 1:
+                    skipped_preamble = True
+                    continue
                 named_blocks = {}
-                break  # un bloc ne correspond à aucune des 2 stratégies -> on abandonne cette voie
+                break  # un bloc de plusieurs lignes ne correspond à aucune des 2 stratégies -> on abandonne cette voie
             header_row_idx = _detect_header_row(block_df, column_mapping)
             standardized = block_df.iloc[header_row_idx + 1:].copy()
             standardized.columns = block_df.iloc[header_row_idx]
@@ -641,6 +653,8 @@ def _read_txt(
             named_blocks[f"Bloc {i}"] = standardized
 
         if named_blocks:
+            if skipped_preamble:
+                logger.info("Ligne(s) isolée(s) ignorée(s) comme préambule (titre, date d'export...).")
             logger.info(f"Fichier texte interprété comme {len(named_blocks)} bloc(s) tabulaire(s) distinct(s).")
             result = _merge_or_stack_named_tables(named_blocks, None, allow_name_as_system=False)
             return result, True

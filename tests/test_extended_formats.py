@@ -1272,3 +1272,48 @@ def test_forget_custom_column_mapping_allows_correction():
 
     store_path.unlink()
     print("OK - test_forget_custom_column_mapping_allows_correction")
+
+
+def test_txt_with_title_line_before_header_not_treated_as_failed_block():
+    """
+    Vrai bug signalé par l'utilisateur ("un fichier .txt ne marchait
+    pas") : une ligne de titre/préambule ("Export du 16/09/2026 - Revue
+    d'accès") suivie d'une ligne vide puis des vraies données faisait
+    échouer TOUTE la lecture multi-blocs, puisque le titre (une seule
+    ligne, sans structure tabulaire) ne correspond à aucun format
+    reconnu. Corrigé : un bloc d'UNE SEULE ligne qui échoue est ignoré
+    comme préambule plutôt que de faire abandonner toute la lecture —
+    un bloc de PLUSIEURS lignes qui échoue reste, lui, un vrai signal
+    d'échec (non-régression vérifiée séparément).
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = (
+        "Export du 16/09/2026 - Revue d'acces\n\n"
+        "username\tsystem\taccount_status\nu1\tAD\tActive\nu2\tSAP\tDisabled\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+    df = load_file(path, default_system="Test")
+    assert len(df) == 2
+    assert df["username"].tolist() == ["u1", "u2"]
+    print("OK - test_txt_with_title_line_before_header_not_treated_as_failed_block")
+
+
+def test_txt_legitimate_multi_block_still_works():
+    """Non-régression : un vrai fichier multi-blocs (deux tableaux
+    distincts séparés par une ligne vide, chacun avec plusieurs lignes
+    de données réelles) doit continuer à être fusionné correctement."""
+    import tempfile
+    from ingestion.ingest import load_file
+
+    content = "username\tsystem\nu1\tAD\nu2\tSAP\n\nusername\trole\nu1\tAdmin\nu2\tUser\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+    df = load_file(path, default_system="Test")
+    assert len(df) == 2
+    assert "role" in df.columns and "system" in df.columns
+    print("OK - test_txt_legitimate_multi_block_still_works")

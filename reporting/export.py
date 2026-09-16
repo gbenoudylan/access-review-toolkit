@@ -1718,16 +1718,12 @@ def generate_pdf_report(
     available_width = doc.pagesize[0] - doc.leftMargin - doc.rightMargin
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("TitleCustom", parent=styles["Title"], fontSize=18, spaceAfter=4, fontName=DEFAULT_FONT_BOLD)
-    subtitle_style = ParagraphStyle("Subtitle", parent=styles["Normal"], fontSize=10, textColor=colors.grey, fontName=DEFAULT_FONT)
     section_style = ParagraphStyle("SectionH", parent=styles["Heading2"], spaceBefore=14, spaceAfter=6, fontName=DEFAULT_FONT_BOLD)
     system_style = ParagraphStyle(
         "SystemH", parent=styles["Heading3"], textColor=colors.HexColor("#1F2937"),
         spaceBefore=12, spaceAfter=4, fontName=DEFAULT_FONT_BOLD,
     )
     note_style = ParagraphStyle("Note", parent=styles["Normal"], fontSize=8.5, textColor=colors.grey, spaceAfter=10, fontName=DEFAULT_FONT)
-    exception_style = ParagraphStyle(
-        "Exception", parent=styles["Normal"], fontSize=9.5, spaceBefore=8, spaceAfter=2, fontName=DEFAULT_FONT,
-    )
     action_style = ParagraphStyle(
         "ActionText", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#374151"), spaceAfter=4, fontName=DEFAULT_FONT,
     )
