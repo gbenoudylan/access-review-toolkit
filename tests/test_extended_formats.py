@@ -1080,3 +1080,113 @@ def test_data_quality_duplicate_username_detection_is_case_insensitive():
     report2 = compute_data_quality_report(different_accounts)
     assert report2["issues"]["duplicate_usernames"] == 0
     print("OK - test_data_quality_duplicate_username_detection_is_case_insensitive")
+
+
+def test_wso2_style_identity_export_columns_recognized():
+    """
+    Vrai fichier réel (export IAM type WSO2 Identity Server, avec des
+    colonnes préfixées 'identity/...') fourni par l'utilisateur pour
+    vérification. Deux trouvailles critiques :
+
+    1. Le caractère '/' n'était pas traité comme séparateur dans la
+       normalisation des noms de colonnes, faisant échouer TOUTE colonne
+       de la forme 'identity/xxx' — notamment 'identity/lastLoginTime'
+       et 'identity/lastPasswordUpdateTime', désactivant silencieusement
+       la détection de dormance ET le contrôle d'âge des mots de passe.
+    2. 'givenname' (LDAP : prénom seul) était listé par erreur comme
+       variante de full_name plutôt que de first_name — un prénom seul
+       ('Jean') pouvait ainsi écraser silencieusement un nom complet
+       correct ('Jean Dupont') provenant d'une autre colonne.
+    """
+    import csv
+    import tempfile
+    from ingestion.ingest import load_file
+    from analysis.access_review import analyze_access
+
+    headers = [
+        "id", "username", "emailaddress", "givenname", "lastname", "status", "created",
+        "linemanageremail", "identity/accountState",
+        "identity/lastLoginTime", "identity/lastPasswordUpdateTime",
+        "mobile", "fullname", "roles",
+    ]
+    row = [
+        "12345", "jdupont", "jean.dupont@mtn.ci", "Jean", "Dupont", "ACTIVE", "2024-01-15",
+        "manager@mtn.ci", "ACTIVE",
+        "2026-09-01T10:30:00Z", "2026-06-01T08:00:00Z",
+        "+225 07 00 00 00", "Jean Dupont", "Standard User",
+    ]
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="") as tmp:
+        writer = csv.writer(tmp)
+        writer.writerow(headers)
+        writer.writerow(row)
+        path = tmp.name
+
+    df = load_file(path, default_system="Test")
+    assert df.loc[0, "full_name"] == "Jean Dupont"  # pas juste 'Jean' (bug givenname corrigé)
+    assert df.loc[0, "last_login_date"] == "2026-09-01T10:30:00Z"
+    assert df.loc[0, "password_last_set"] == "2026-06-01T08:00:00Z"
+    assert df.loc[0, "email"] == "jean.dupont@mtn.ci"
+    assert df.loc[0, "manager"] == "manager@mtn.ci"
+
+    result = analyze_access(df)
+    # La dormance et l'âge du mot de passe doivent être calculables
+    # (pas None), preuve que les colonnes sont bien exploitées, pas
+    # seulement présentes sous le bon nom.
+    assert result.loc[0, "days_since_last_login"] is not None
+    print("OK - test_wso2_style_identity_export_columns_recognized")
+
+
+def test_slash_in_column_name_treated_as_separator():
+    """Le caractère '/' doit être traité comme un séparateur dans la
+    normalisation des noms de colonnes, au même titre que '_' et '-' —
+    sans quoi toute colonne de la forme 'namespace/champ' (convention
+    courante des exports IAM type WSO2) ne serait jamais reconnue."""
+    from ingestion.ingest import _normalize
+    assert _normalize("identity/lastLoginTime") == _normalize("identity lastLoginTime")
+
+
+def test_custom_column_mapping_persists_across_files():
+    """
+    Fonctionnalité demandée explicitement : aucune liste de variantes ne
+    peut prévoir à l'avance tous les noms de colonnes qu'un futur export
+    utilisera. Une correction manuelle enregistrée une fois (via
+    save_custom_column_mapping, ce que fait le dashboard) doit être
+    reconnue automatiquement sur tout futur fichier portant EXACTEMENT
+    le même nom de colonne — vérifié de bout en bout : enregistrement
+    d'une correspondance, puis chargement d'un fichier DIFFÉRENT (autres
+    données) qui doit la reconnaître sans aucune intervention.
+    """
+    import tempfile
+    from pathlib import Path
+    from ingestion.ingest import load_file
+    from ingestion.custom_column_mappings import (
+        save_custom_column_mapping, load_custom_column_mappings,
+    )
+
+    store_path = Path(tempfile.gettempdir()) / f"test_learned_mapping_{tempfile.mktemp()[-8:]}.json"
+    if store_path.exists():
+        store_path.unlink()
+
+    # Première fois : colonne non reconnue, correction manuelle simulée.
+    content1 = "username,system,custom_field_xyz\nu1,AD,2026-01-01\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp1:
+        tmp1.write(content1)
+        path1 = tmp1.name
+    df1 = load_file(path1, default_system="Test")
+    assert "custom_field_xyz" in df1.attrs.get("unmapped_columns", [])
+    save_custom_column_mapping("custom_field_xyz", "last_login_date", store_path=store_path)
+
+    # Deuxième fichier, données différentes, MÊME nom de colonne : doit
+    # être reconnu automatiquement, sans qu'on repasse par une correction.
+    content2 = "username,system,custom_field_xyz\nu2,SAP,2026-08-15\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp2:
+        tmp2.write(content2)
+        path2 = tmp2.name
+    learned = load_custom_column_mappings(store_path=store_path)
+    df2 = load_file(path2, default_system="Test", custom_mappings=learned)
+    assert "last_login_date" in df2.columns
+    assert df2.loc[0, "last_login_date"] == "2026-08-15"
+    assert "custom_field_xyz" not in df2.attrs.get("unmapped_columns", [])
+
+    store_path.unlink()
+    print("OK - test_custom_column_mapping_persists_across_files")

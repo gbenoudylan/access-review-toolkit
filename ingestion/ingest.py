@@ -102,7 +102,7 @@ def _detect_encoding(path: Path) -> str:
 
 
 def _normalize(text: str) -> str:
-    return str(text).strip().lower().replace("_", " ").replace("-", " ")
+    return str(text).strip().lower().replace("_", " ").replace("-", " ").replace("/", " ")
 
 
 def _score_header_row(row: pd.Series, column_mapping: dict = None) -> int:
@@ -132,9 +132,21 @@ def _detect_header_row(raw: pd.DataFrame, column_mapping: dict = None, max_scan_
     return best_row
 
 
-def _match_column(col_name: str, column_mapping: dict = None, threshold: int = 85) -> str | None:
-    column_mapping = column_mapping or COLUMN_MAPPING
+def _match_column(
+    col_name: str, column_mapping: dict = None, threshold: int = 85,
+    custom_mappings: dict = None,
+) -> str | None:
     col_norm = _normalize(col_name)
+
+    # Correspondances apprises manuellement (dashboard) en priorité
+    # absolue : une correction explicitement confirmée par un humain est
+    # plus fiable que n'importe quelle correspondance automatique, floue
+    # ou non — et c'est justement ce qui permet à l'outil de s'adapter à
+    # des noms de colonnes jamais vus, sans toucher au code.
+    if custom_mappings and col_norm in custom_mappings:
+        return custom_mappings[col_norm]
+
+    column_mapping = column_mapping or COLUMN_MAPPING
 
     for standard_name, variants in column_mapping.items():
         if col_norm in [_normalize(v) for v in variants]:
@@ -183,7 +195,9 @@ def _synthesize_full_name(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def standardize_columns(df: pd.DataFrame, column_mapping: dict = None) -> pd.DataFrame:
+def standardize_columns(
+    df: pd.DataFrame, column_mapping: dict = None, custom_mappings: dict = None,
+) -> pd.DataFrame:
     """
     Renomme les colonnes reconnues vers leur nom standard.
 
@@ -196,6 +210,14 @@ def standardize_columns(df: pd.DataFrame, column_mapping: dict = None) -> pd.Dat
     dupliqués). On fusionne donc ces cas : la première colonne rencontrée
     fait foi, complétée par les valeurs non vides de la seconde là où elle
     a des trous, puis la seconde est supprimée.
+
+    `custom_mappings` : correspondances apprises manuellement via le
+    dashboard (colonne normalisée -> champ standard), prioritaires sur
+    la reconnaissance automatique — voir _match_column.
+
+    Les colonnes finalement non reconnues sont conservées dans
+    df.attrs["unmapped_columns"] (pas seulement journalisées) pour que
+    l'appelant (dashboard) puisse proposer une correction manuelle.
     """
     rename_map, unmatched = {}, []
     claimed_by: dict[str, str] = {}  # nom standard -> colonne originale déjà utilisée
@@ -225,7 +247,7 @@ def standardize_columns(df: pd.DataFrame, column_mapping: dict = None) -> pd.Dat
         # Retire le suffixe temporaire ('__dupN') avant reconnaissance,
         # sans quoi il empêche le fuzzy matching de reconnaître la colonne.
         lookup_name = re.sub(r"__dup\d+$", "", str(col))
-        matched = _match_column(lookup_name, column_mapping)
+        matched = _match_column(lookup_name, column_mapping, custom_mappings=custom_mappings)
         if not matched:
             unmatched.append(col)
             continue
@@ -276,7 +298,9 @@ def standardize_columns(df: pd.DataFrame, column_mapping: dict = None) -> pd.Dat
 
     if unmatched:
         logger.info(f"Colonnes non reconnues (ignorées) : {unmatched}")
-    return df.rename(columns=rename_map)
+    result = df.rename(columns=rename_map)
+    result.attrs["unmapped_columns"] = unmatched
+    return result
 
 
 def validate_required_fields(df: pd.DataFrame, required_fields: list = None) -> None:
@@ -542,7 +566,9 @@ def _try_key_value_blocks(raw_text: str, column_mapping: dict = None) -> pd.Data
     return df
 
 
-def _read_txt(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, bool]:
+def _read_txt(
+    path: Path, column_mapping: dict = None, custom_mappings: dict = None,
+) -> tuple[pd.DataFrame, bool]:
     """
     Lit un fichier .txt en essayant plusieurs interprétations dans l'ordre
     de fiabilité décroissante, jusqu'à ce que l'une d'elles produise un
@@ -579,7 +605,7 @@ def _read_txt(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, bo
             standardized = block_df.iloc[header_row_idx + 1:].copy()
             standardized.columns = block_df.iloc[header_row_idx]
             standardized = standardized.dropna(how="all").reset_index(drop=True)
-            standardized = standardize_columns(standardized, column_mapping)
+            standardized = standardize_columns(standardized, column_mapping, custom_mappings=custom_mappings)
             named_blocks[f"Bloc {i}"] = standardized
 
         if named_blocks:
@@ -613,7 +639,9 @@ def _read_txt(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, bo
     )
 
 
-def _read_docx(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, bool]:
+def _read_docx(
+    path: Path, column_mapping: dict = None, custom_mappings: dict = None,
+) -> tuple[pd.DataFrame, bool]:
     """
     Lit un fichier Word. Essaie d'abord d'y trouver un tableau ; si aucun
     tableau n'est présent, retombe sur les mêmes stratégies de lecture de
@@ -654,7 +682,7 @@ def _read_docx(path: Path, column_mapping: dict = None) -> tuple[pd.DataFrame, b
             table_df = table_df_raw.iloc[header_row_idx + 1:].copy()
             table_df.columns = table_df_raw.iloc[header_row_idx]
             table_df = table_df.dropna(how="all").reset_index(drop=True)
-            table_df = standardize_columns(table_df, column_mapping)
+            table_df = standardize_columns(table_df, column_mapping, custom_mappings=custom_mappings)
             table_dfs[f"Table {idx}"] = table_df
 
         if table_dfs:
@@ -855,7 +883,9 @@ def _read_ldif(path: Path) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def _read_pdf(path: Path, column_mapping: dict = None) -> pd.DataFrame:
+def _read_pdf(
+    path: Path, column_mapping: dict = None, custom_mappings: dict = None,
+) -> pd.DataFrame:
     """
     Extrait un ou plusieurs tableaux depuis un PDF, sur l'ensemble de ses
     pages, en distinguant deux situations bien différentes plutôt que de
@@ -951,7 +981,7 @@ def _read_pdf(path: Path, column_mapping: dict = None) -> pd.DataFrame:
         if not group["rows"]:
             continue
         group_df = pd.DataFrame(group["rows"], columns=group["columns"])
-        group_df = standardize_columns(group_df, column_mapping)
+        group_df = standardize_columns(group_df, column_mapping, custom_mappings=custom_mappings)
         key = f"Tableau {i}"
         if key in named_tables:
             named_tables[key] = pd.concat([named_tables[key], group_df], ignore_index=True)
@@ -976,7 +1006,9 @@ SUPPORTED_EXTENSIONS = [
 ]
 
 
-def _read_image_ocr(path: Path, column_mapping: dict = None) -> pd.DataFrame:
+def _read_image_ocr(
+    path: Path, column_mapping: dict = None, custom_mappings: dict = None,
+) -> pd.DataFrame:
     """
     Extrait un tableau depuis une image (capture d'écran, photo) par
     reconnaissance optique de caractères (OCR).
@@ -1030,7 +1062,7 @@ def _read_image_ocr(path: Path, column_mapping: dict = None) -> pd.DataFrame:
     result = df.iloc[header_row_idx + 1:].copy()
     result.columns = df.iloc[header_row_idx]
     result = result.dropna(how="all").reset_index(drop=True)
-    result = standardize_columns(result, column_mapping)
+    result = standardize_columns(result, column_mapping, custom_mappings=custom_mappings)
     result["_ocr_source"] = True
 
     logger.warning(
@@ -1222,6 +1254,7 @@ def _merge_or_stack_named_tables(
 
 def _read_excel_all_sheets(
     path: Path, column_mapping: dict = None, default_system: str | None = None,
+    custom_mappings: dict = None,
 ) -> pd.DataFrame:
     """
     Lit TOUTES les feuilles d'un classeur Excel, pas seulement la première,
@@ -1313,7 +1346,7 @@ def _read_excel_all_sheets(
         sheet_df = raw.iloc[header_row_idx + 1:].copy()
         sheet_df.columns = raw.iloc[header_row_idx]
         sheet_df = sheet_df.dropna(how="all").reset_index(drop=True)
-        sheet_df = standardize_columns(sheet_df, column_mapping)
+        sheet_df = standardize_columns(sheet_df, column_mapping, custom_mappings=custom_mappings)
         sheet_dfs[str(sheet_name)] = sheet_df
 
     if not sheet_dfs:
@@ -1325,6 +1358,7 @@ def _read_excel_all_sheets(
 def _load_single_file(
     path: Path, column_mapping: dict = None, required_fields: list = None,
     default_system: str | None = None, _defer_finalize: bool = False,
+    custom_mappings: dict = None,
 ) -> pd.DataFrame:
     """
     Charge un unique fichier (tous formats sauf .zip) et retourne un
@@ -1342,7 +1376,7 @@ def _load_single_file(
     suffix = path.suffix.lower()
 
     if suffix in [".xlsx", ".xls"]:
-        df = _read_excel_all_sheets(path, column_mapping, default_system)
+        df = _read_excel_all_sheets(path, column_mapping, default_system, custom_mappings=custom_mappings)
         df = _synthesize_full_name(df)
         if _defer_finalize:
             return df
@@ -1356,9 +1390,9 @@ def _load_single_file(
     elif suffix == ".csv":
         raw = _read_ragged_csv(path)
     elif suffix == ".docx":
-        raw, header_already_named = _read_docx(path, column_mapping)
+        raw, header_already_named = _read_docx(path, column_mapping, custom_mappings=custom_mappings)
     elif suffix == ".txt":
-        raw, header_already_named = _read_txt(path, column_mapping)
+        raw, header_already_named = _read_txt(path, column_mapping, custom_mappings=custom_mappings)
     elif suffix == ".json":
         raw = _read_json(path)
         header_already_named = True
@@ -1371,10 +1405,10 @@ def _load_single_file(
         raw = _read_ldif(path)
         header_already_named = True
     elif suffix == ".pdf":
-        raw = _read_pdf(path, column_mapping)
+        raw = _read_pdf(path, column_mapping, custom_mappings=custom_mappings)
         header_already_named = True
     elif suffix in [".jpeg", ".jpg", ".png"]:
-        raw = _read_image_ocr(path, column_mapping)
+        raw = _read_image_ocr(path, column_mapping, custom_mappings=custom_mappings)
         header_already_named = True
     else:
         raise IngestionError(
@@ -1395,7 +1429,7 @@ def _load_single_file(
         df.columns = raw.iloc[header_row_idx]
         df = df.dropna(how="all").reset_index(drop=True)
 
-    df = standardize_columns(df, column_mapping)
+    df = standardize_columns(df, column_mapping, custom_mappings=custom_mappings)
     df = _synthesize_full_name(df)
 
     if _defer_finalize:
@@ -1423,7 +1457,7 @@ def _load_single_file(
 
 def _read_zip(
     path: Path, column_mapping: dict = None, required_fields: list = None,
-    default_system: str | None = None,
+    default_system: str | None = None, custom_mappings: dict = None,
 ) -> pd.DataFrame:
     """
     Extrait une archive ZIP et traite chaque fichier supporté qu'elle
@@ -1465,7 +1499,10 @@ def _read_zip(
 
         for f in candidate_files:
             try:
-                df = _load_single_file(f, column_mapping, required_fields, _defer_finalize=True)
+                df = _load_single_file(
+                    f, column_mapping, required_fields, _defer_finalize=True,
+                    custom_mappings=custom_mappings,
+                )
                 named_dfs[f.stem] = df
             except IngestionError as e:
                 skipped.append((f.name, str(e)))
@@ -1488,7 +1525,9 @@ def _read_zip(
     return combined
 
 
-def load_file(path: str | Path, default_system: str | None = None) -> pd.DataFrame:
+def load_file(
+    path: str | Path, default_system: str | None = None, custom_mappings: dict = None,
+) -> pd.DataFrame:
     """
     Point d'entrée standard : charge un fichier d'export IAM/accès, avec
     le référentiel de colonnes par défaut (config/column_mapping.py).
@@ -1505,9 +1544,9 @@ def load_file(path: str | Path, default_system: str | None = None) -> pd.DataFra
 
     if path.suffix.lower() == ".zip":
         logger.info(f"Lecture de l'archive : {path.name}")
-        return _read_zip(path, default_system=default_system)
+        return _read_zip(path, default_system=default_system, custom_mappings=custom_mappings)
 
-    return _load_single_file(path, default_system=default_system)
+    return _load_single_file(path, default_system=default_system, custom_mappings=custom_mappings)
 
 
 def load_file_with_mapping(

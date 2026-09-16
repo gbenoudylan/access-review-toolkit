@@ -28,7 +28,7 @@ COLUMN_MAPPING = {
     "full_name": [
         "full_name", "fullname", "nom_complet", "nom", "name", "display_name",
         "nom prenom", "employee_name",
-        "displayname", "givenname", "sn", "cn",  # LDAP
+        "displayname", "sn", "cn",  # LDAP
         "display name",  # variante espacée (export AD)
     ],
     "first_name": [
@@ -37,6 +37,9 @@ COLUMN_MAPPING = {
         # deux sont recombinés automatiquement en full_name à l'ingestion
         # (voir _synthesize_full_name dans ingestion/ingest.py).
         "first_name", "prenom", "prénom", "first name", "given name",
+        "givenname",  # LDAP/IAM (WSO2 notamment) — corrige un vrai bug :
+        # listé par erreur comme variante de full_name ("prénom" seul y
+        # était fusionné à tort avec le nom complet, écrasant celui-ci).
     ],
     "last_name": [
         "last_name", "nom_famille", "last name", "surname", "family name",
@@ -44,6 +47,7 @@ COLUMN_MAPPING = {
     "email": [
         "email", "e-mail", "mail", "adresse_email", "adresse mail",
         "email address",  # variante espacée
+        "emailaddress",  # variante sans espace/underscore (export IAM type WSO2)
     ],
     "phone": [
         "phone", "telephone", "téléphone", "mobile", "phone number", "numero de telephone",
@@ -59,6 +63,8 @@ COLUMN_MAPPING = {
     "manager": [
         "manager", "manager_name", "responsable", "n+1", "superieur",
         "reporting_manager", "owner",
+        "linemanageremail",  # export IAM type WSO2 (adresse mail du n+1,
+        # pas un nom, mais reste le bon signal "qui est le responsable")
     ],
     "system": [
         "system", "application", "systeme", "app", "target_system",
@@ -79,6 +85,7 @@ COLUMN_MAPPING = {
         "account_enabled", "statut_compte", "statut compte", "etat du compte",
         "useraccountcontrol",  # LDAP (décodé au parsing LDIF, voir ingestion)
         "accountstatus",  # variante sans espace
+        "identity accountstate",  # export IAM type WSO2 ('identity/accountState')
     ],
     "is_privileged": [
         "is_privileged", "privileged", "admin", "is_admin", "compte_privilegie",
@@ -90,6 +97,9 @@ COLUMN_MAPPING = {
         "lastlogontimestamp", "whenchanged",  # LDAP
         "lastlogondate",  # variante sans espace
         "when changed",  # variante espacée — même écart fuzzy que "when created"
+        "identity lastlogintime",  # export IAM type WSO2 ('identity/lastLoginTime') —
+        # critique : sans cette variante, la détection de dormance est
+        # silencieusement désactivée sur ce type d'export.
     ],
     "account_created_date": [
         "account_created_date", "date_creation", "created_date", "creation_date",
@@ -117,6 +127,10 @@ COLUMN_MAPPING = {
         "last password reset date", "password reset date",  # variantes espacées
         "passwordlastset",  # variante sans espace
         "last password change date", "password change date", "last password change",
+        "identity lastpasswordupdatetime",  # export IAM type WSO2
+        # ('identity/lastPasswordUpdateTime') — critique : sans cette
+        # variante, le contrôle d'âge des mots de passe est
+        # silencieusement désactivé sur ce type d'export.
     ],
     "password_expiry_date": [
         "password_expiry_date", "password expiry date", "expiration_mdp",

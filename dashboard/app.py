@@ -19,6 +19,9 @@ import pandas as pd
 import streamlit as st
 
 from ingestion.ingest import load_file, IngestionError, compute_data_quality_report
+from ingestion.custom_column_mappings import (
+    load_custom_column_mappings, save_custom_column_mapping, forget_custom_column_mapping,
+)
 from analysis.access_review import analyze_access, summarize
 from analysis.hr_crossref import cross_reference_with_hr, load_transferred_employees, flag_transferred_but_still_active
 from analysis.sod_detection import detect_sod_conflicts, load_custom_sod_matrix
@@ -47,12 +50,19 @@ def run_pipeline(
     extraction_date: str = None,
     transfer_file_bytes: bytes = None, transfer_filename: str = None,
     transfer_sheet_name: str = None,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, list]:
     suffix = Path(filename).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
-    df = load_file(tmp_path, default_system=default_system or None)
+    # Correspondances de colonnes apprises manuellement lors d'une
+    # session précédente (voir section "Colonnes non reconnues" plus
+    # bas) : chargées à chaque analyse pour que l'outil reste utilisable
+    # sans intervention même quand les noms de colonnes changent d'un
+    # export à l'autre.
+    custom_mappings = load_custom_column_mappings()
+    df = load_file(tmp_path, default_system=default_system or None, custom_mappings=custom_mappings)
+    unmapped_columns = list(df.attrs.get("unmapped_columns", []))
 
     if hr_file_bytes is not None:
         hr_suffix = Path(hr_filename).suffix
@@ -96,7 +106,7 @@ def run_pipeline(
         except (ValueError, KeyError) as e:
             logging.getLogger("dashboard").warning(f"Fichier de mutations ignoré : {e}")
 
-    return df
+    return df, unmapped_columns
 
 
 def main():
@@ -209,7 +219,7 @@ def main():
                 hr_name = hr_uploaded_file.name if hr_uploaded_file else None
                 transfer_bytes = transfer_uploaded_file.getvalue() if transfer_uploaded_file else None
                 transfer_name = transfer_uploaded_file.name if transfer_uploaded_file else None
-                df = run_pipeline(
+                df, unmapped_columns = run_pipeline(
                     uploaded_file.getvalue(), uploaded_file.name, hr_bytes, hr_name,
                     default_system=default_system,
                     dormant_threshold_days=dormant_threshold_days,
@@ -223,7 +233,7 @@ def main():
         elif use_sample:
             sample_path = Path(__file__).parent.parent / "data" / "export_test_A.csv"
             with st.spinner("Traitement du fichier d'exemple..."):
-                df = run_pipeline(
+                df, unmapped_columns = run_pipeline(
                     sample_path.read_bytes(), sample_path.name,
                     dormant_threshold_days=dormant_threshold_days,
                     password_stale_threshold_days=password_stale_threshold_days,
@@ -243,6 +253,58 @@ def main():
     if df is None:
         st.info("⬅️ Importez un fichier ou cochez 'Utiliser un fichier d'exemple' pour commencer.")
         return
+
+    # Colonnes non reconnues automatiquement : l'outil ne peut jamais
+    # prévoir à l'avance tous les noms de colonnes que d'autres systèmes
+    # utiliseront à l'avenir — plutôt que de les ignorer silencieusement,
+    # on laisse l'utilisateur les associer lui-même à un champ standard,
+    # sans toucher au code. La correction est mémorisée (fichier séparé,
+    # voir ingestion/custom_column_mappings.py) : au prochain fichier
+    # portant exactement le même nom de colonne, elle s'applique
+    # automatiquement.
+    STANDARD_FIELDS_FOR_MAPPING = [
+        "username", "full_name", "first_name", "last_name", "email", "phone",
+        "department", "job_title", "manager", "system", "role", "description",
+        "account_status", "is_privileged", "last_login_date", "account_created_date",
+        "account_expiry_date", "employee_status", "password_last_set",
+        "password_expiry_date", "password_status",
+    ]
+    if unmapped_columns:
+        important_missing = [
+            f for f in ("last_login_date", "password_last_set", "account_status", "full_name")
+            if f not in df.columns
+        ]
+        with st.expander(
+            f"Colonnes non reconnues ({len(unmapped_columns)}) — à associer manuellement si besoin",
+            expanded=bool(important_missing),
+        ):
+            st.caption(
+                "Ces colonnes du fichier n'ont pas été reconnues automatiquement et sont "
+                "actuellement ignorées. Si l'une d'elles correspond en fait à un champ "
+                "important (ex. dernière connexion, mot de passe...), associe-la ci-dessous — "
+                "la correction sera mémorisée pour les prochains fichiers portant ce même nom "
+                "de colonne, sans qu'il soit nécessaire de la refaire."
+            )
+            if important_missing:
+                st.warning(
+                    "Champs importants absents suite à cette non-reconnaissance : "
+                    + ", ".join(important_missing)
+                )
+            assignments = {}
+            for col in unmapped_columns:
+                choice = st.selectbox(
+                    f"'{col}' correspond à :",
+                    options=["Ignorer"] + STANDARD_FIELDS_FOR_MAPPING,
+                    key=f"colmap_{col}",
+                )
+                if choice != "Ignorer":
+                    assignments[col] = choice
+            if assignments and st.button("Enregistrer ces correspondances et relancer l'analyse"):
+                for raw_col, standard_field in assignments.items():
+                    save_custom_column_mapping(raw_col, standard_field)
+                st.cache_data.clear()
+                st.success(f"{len(assignments)} correspondance(s) enregistrée(s). Relance en cours...")
+                st.rerun()
 
     df = attach_review_status(df, store_path=DECISIONS_STORE_PATH)
     summary = summarize(df)
