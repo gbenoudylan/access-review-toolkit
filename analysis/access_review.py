@@ -836,14 +836,19 @@ def analyze_access(
         # but no information that would allow the holder to be positively
         # identified" — un nom de compte générique (admin, support,
         # service...) en est le cas type. Restreint aux comptes ACTIFS
-        # (la définition du contrôle le précise explicitement) quand le
-        # statut est disponible ; sans lui, retient quand même le signal
-        # nominatif plutôt que de le perdre (mieux vaut signaler un
-        # compte finalement inactif que d'en laisser passer un vraiment
-        # orphelin).
+        # (la définition du contrôle le précise explicitement) — mais
+        # seulement quand le statut est CONNU et confirme explicitement
+        # que le compte n'est pas actif. Un statut vide/inconnu ne doit
+        # PAS faire disparaître le signal : on ne sait pas si le compte
+        # est actif ou non, donc mieux vaut le signaler par prudence
+        # (pire cas) que le laisser passer silencieusement — même
+        # principe déjà appliqué au mot de passe non renseigné et à la
+        # date de connexion illisible ailleurs dans ce module.
         is_generic_name = df["username"].apply(_is_orphaned_account_name)
         if "account_status" in df.columns:
-            df["is_orphaned_account"] = is_generic_name & df["account_status"].apply(_is_active_account)
+            status_str = df["account_status"].astype(str).fillna("").str.strip()
+            is_confirmed_inactive = (status_str != "") & ~df["account_status"].apply(_is_active_account)
+            df["is_orphaned_account"] = is_generic_name & ~is_confirmed_inactive
         else:
             df["is_orphaned_account"] = is_generic_name
     else:

@@ -1243,3 +1243,32 @@ def test_boolean_inversion_leaves_unrecognized_values_unchanged():
     df = load_file(path, default_system="Test", custom_mappings=custom)
     assert df.loc[0, "account_status"] == "Unknown"
     print("OK - test_boolean_inversion_leaves_unrecognized_values_unchanged")
+
+
+def test_forget_custom_column_mapping_allows_correction():
+    """
+    Fonctionnalité demandée explicitement : une correspondance apprise
+    par erreur (mauvaise colonne associée à un champ standard) doit
+    pouvoir être retirée, pour que la colonne réapparaisse comme "non
+    reconnue" et puisse être réassignée correctement — sans ça, une
+    erreur de correction reste bloquée indéfiniment, appliquée à
+    chaque nouveau fichier.
+    """
+    import tempfile
+    from pathlib import Path
+    from ingestion.custom_column_mappings import (
+        save_custom_column_mapping, load_custom_column_mappings, forget_custom_column_mapping,
+    )
+
+    store_path = Path(tempfile.gettempdir()) / f"test_forget_{tempfile.mktemp()[-8:]}.json"
+    if store_path.exists():
+        store_path.unlink()
+
+    save_custom_column_mapping("wrong_column", "last_login_date", store_path=store_path)
+    assert "wrong column" in load_custom_column_mappings(store_path=store_path)
+
+    forget_custom_column_mapping("wrong_column", store_path=store_path)
+    assert "wrong column" not in load_custom_column_mappings(store_path=store_path)
+
+    store_path.unlink()
+    print("OK - test_forget_custom_column_mapping_allows_correction")

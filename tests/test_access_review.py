@@ -1238,3 +1238,30 @@ def test_role_and_status_with_nan_do_not_crash_pandas3_str_gotcha():
     assert result["is_privileged_flag"].tolist() == [False, False, False]
     assert result["is_locked"].tolist() == [False, False, False]
     print("OK - test_role_and_status_with_nan_do_not_crash_pandas3_str_gotcha")
+
+
+def test_orphaned_account_not_excluded_by_blank_status():
+    """
+    Vrai bug trouvé en conditions réelles (utilisateur) : des comptes au
+    nom clairement générique (dcbsadmin, drmadmin, domadmin...)
+    n'étaient jamais signalés comme orphelins alors que le nom seul les
+    détectait correctement. Cause : un statut VIDE (colonne présente
+    mais sans valeur) était traité comme "pas actif", excluant le
+    signal — alors qu'un statut inconnu ne permet justement pas
+    d'affirmer que le compte n'est PAS actif. Corrigé : seul un statut
+    CONNU et explicitement non-actif (ex. 'Disabled') exclut désormais
+    le signal ; un statut vide/inconnu le conserve, par prudence.
+    """
+    usernames = ["dcbsadmin", "dclmAdminSso", "dttAdminUser", "dclmAdminUser",
+                 "admin", "drmadmin", "domadmin"]
+    df = pd.DataFrame({
+        "username": usernames, "system": ["AD"] * 7, "account_status": [""] * 7,
+    })
+    result = analyze_access(df)
+    assert result["is_orphaned_account"].all()
+
+    # Un statut confirmé non-actif doit toujours exclure correctement.
+    df2 = pd.DataFrame({"username": ["admin"], "system": ["AD"], "account_status": ["Disabled"]})
+    result2 = analyze_access(df2)
+    assert result2["is_orphaned_account"].iloc[0] == False
+    print("OK - test_orphaned_account_not_excluded_by_blank_status")

@@ -336,6 +336,32 @@ def main():
                 st.success(f"{len(assignments)} correspondance(s) enregistrée(s). Relance en cours...")
                 st.rerun()
 
+    # Gestion des correspondances DÉJÀ apprises : une fois qu'une colonne
+    # est associée (bien ou mal), elle disparaît de la liste "non
+    # reconnues" ci-dessus puisqu'elle est désormais reconnue — sans
+    # cette section, aucun moyen de revenir en arrière ou de corriger
+    # une association faite par erreur (ex. mauvaise colonne assignée à
+    # 'last_login_date').
+    all_learned = load_custom_column_mappings()
+    if all_learned:
+        with st.expander(f"Correspondances déjà apprises ({len(all_learned)}) — modifier si besoin"):
+            st.caption(
+                "Colonnes déjà associées manuellement lors d'une session précédente, "
+                "appliquées automatiquement à ce fichier. Retire une correspondance si "
+                "elle est incorrecte — la colonne réapparaîtra dans la section "
+                "'Colonnes non reconnues' ci-dessus pour être réassignée."
+            )
+            for raw_col_norm, target_field in list(all_learned.items()):
+                display_field = target_field.replace("__inverted_bool", " (inversé)")
+                col_a, col_b = st.columns([4, 1])
+                with col_a:
+                    st.write(f"**{raw_col_norm}** → {display_field}")
+                with col_b:
+                    if st.button("Retirer", key=f"forget_{raw_col_norm}"):
+                        forget_custom_column_mapping(raw_col_norm)
+                        st.cache_data.clear()
+                        st.rerun()
+
     df = attach_review_status(df, store_path=DECISIONS_STORE_PATH)
     summary = summarize(df)
     workflow_summary = review_summary(df)
