@@ -102,7 +102,10 @@ def _normalize_name_bag(name) -> tuple:
 
 
 
-def cross_reference_with_hr(iam_df: pd.DataFrame, hr_df_raw_path: str = None, hr_df: pd.DataFrame = None) -> pd.DataFrame:
+def cross_reference_with_hr(
+    iam_df: pd.DataFrame, hr_df_raw_path: str = None, hr_df: pd.DataFrame = None,
+    custom_mappings: dict = None,
+) -> pd.DataFrame:
     """
     Enrichit iam_df avec le statut RH réel provenant d'un export RH, en les
     rapprochant par nom d'utilisateur (colonne 'username' côté IAM).
@@ -127,7 +130,7 @@ def cross_reference_with_hr(iam_df: pd.DataFrame, hr_df_raw_path: str = None, hr
         if hr_df_raw_path is None:
             raise ValueError("Fournir soit hr_df_raw_path, soit hr_df.")
         from ingestion.ingest import load_file_with_mapping
-        hr_df = load_file_with_mapping(hr_df_raw_path, HR_COLUMN_MAPPING, HR_REQUIRED_FIELDS)
+        hr_df = load_file_with_mapping(hr_df_raw_path, HR_COLUMN_MAPPING, HR_REQUIRED_FIELDS, custom_mappings=custom_mappings)
 
     has_hr_username = "hr_username" in hr_df.columns and hr_df["hr_username"].notna().any()
     has_hr_name = "full_name" in hr_df.columns and hr_df["full_name"].notna().any()
@@ -231,14 +234,27 @@ def cross_reference_with_hr(iam_df: pd.DataFrame, hr_df_raw_path: str = None, hr
     return iam_df
 
 
-def _find_column(columns, candidates: list[str]) -> str | None:
+def _find_column(
+    columns, candidates: list[str], custom_mappings: dict = None, target_field: str = None,
+) -> str | None:
     """Trouve la première colonne dont le nom normalisé (espaces/casse/
     accents) correspond à l'un des candidats — tolérant aux variations
     d'écriture réelles ('Nom & Prénoms' / 'Nom et Prénoms' / 'Noms &
-    Prénoms'...)."""
+    Prénoms'...).
+
+    `custom_mappings`/`target_field` : correspondance apprise
+    manuellement (voir ingestion/custom_column_mappings.py), prioritaire
+    sur les candidats codés en dur — c'est ce qui permet à cette
+    reconnaissance de continuer à s'adapter à de nouveaux intitulés
+    jamais vus, sans avoir à modifier le code."""
     def _norm(s):
         s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode("ascii")
         return re.sub(r"[^a-z]+", " ", s.lower()).strip()
+
+    if custom_mappings and target_field:
+        for col in columns:
+            if custom_mappings.get(_norm(col)) == target_field:
+                return col
 
     normalized_candidates = [_norm(c) for c in candidates]
     for col in columns:
@@ -261,7 +277,19 @@ _TRANSFER_NEW_DEPT_COLUMNS = ["nouvelle direction", "nouveau departement", "new 
 _TRANSFER_SHEET_NAME_HINTS = ["affectation", "mutation", "transfert", "transfer"]
 
 
-def load_transferred_employees(file_path, sheet_name: str | None = None) -> pd.DataFrame:
+class TransferNameColumnNotFoundError(ValueError):
+    """Levée par load_transferred_employees quand aucune colonne de nom
+    n'a pu être identifiée sur la feuille — porte la liste des colonnes
+    brutes (raw_columns) pour que l'appelant (dashboard) puisse proposer
+    une correction manuelle plutôt que de simplement échouer."""
+    def __init__(self, message: str, raw_columns: list[str]):
+        super().__init__(message)
+        self.raw_columns = raw_columns
+
+
+def load_transferred_employees(
+    file_path, sheet_name: str | None = None, custom_mappings: dict = None,
+) -> pd.DataFrame:
     """
     Charge la liste des employés transférés/mutés depuis un fichier RH de
     mouvements de personnel — typiquement un classeur à plusieurs
@@ -277,9 +305,20 @@ def load_transferred_employees(file_path, sheet_name: str | None = None) -> pd.D
     par avance l'intitulé exact (qui varie d'une entreprise à l'autre,
     ex. 'Affectation/Mutation 2026').
 
+    `custom_mappings` : correspondances apprises manuellement (voir
+    ingestion/custom_column_mappings.py), prioritaires sur les
+    intitulés codés en dur (_TRANSFER_NAME_COLUMNS, etc.) — magasin
+    séparé de celui de l'export d'accès principal (data/
+    custom_transfer_column_mappings.json), champs visés :
+    'transfer_full_name', 'transfer_old_department',
+    'transfer_new_department'.
+
     Retourne un DataFrame avec les colonnes 'full_name' (toujours),
     'old_department' et 'new_department' (si les colonnes correspondantes
-    ont été trouvées dans la feuille).
+    ont été trouvées dans la feuille). Le DataFrame porte aussi
+    result.attrs["raw_columns"] (toutes les colonnes brutes de la
+    feuille) pour permettre une correction manuelle même quand aucune
+    colonne de nom n'est reconnue (voir TransferNameColumnNotFoundError).
     """
     import openpyxl
 
@@ -342,24 +381,34 @@ def load_transferred_employees(file_path, sheet_name: str | None = None) -> pd.D
     data_rows = rows[header_row_idx + 1:]
     raw_df = pd.DataFrame(data_rows, columns=headers)
 
-    name_col = _find_column(raw_df.columns, _TRANSFER_NAME_COLUMNS)
+    name_col = _find_column(
+        raw_df.columns, _TRANSFER_NAME_COLUMNS, custom_mappings=custom_mappings, target_field="transfer_full_name",
+    )
     if name_col is None:
-        raise ValueError(
+        raise TransferNameColumnNotFoundError(
             f"Aucune colonne de nom reconnue sur la feuille '{sheet_name}' parmi "
-            f"{list(raw_df.columns)} — attendu une colonne type 'Nom & Prénoms'."
+            f"{list(raw_df.columns)} — attendu une colonne type 'Nom & Prénoms'.",
+            raw_columns=list(raw_df.columns),
         )
 
     result = pd.DataFrame({"full_name": raw_df[name_col].astype(str).str.strip()})
     result = result[result["full_name"].str.len() > 0]
 
-    old_col = _find_column(raw_df.columns, _TRANSFER_OLD_DEPT_COLUMNS)
-    new_col = _find_column(raw_df.columns, _TRANSFER_NEW_DEPT_COLUMNS)
+    old_col = _find_column(
+        raw_df.columns, _TRANSFER_OLD_DEPT_COLUMNS, custom_mappings=custom_mappings, target_field="transfer_old_department",
+    )
+    new_col = _find_column(
+        raw_df.columns, _TRANSFER_NEW_DEPT_COLUMNS, custom_mappings=custom_mappings, target_field="transfer_new_department",
+    )
     if old_col:
         result["old_department"] = raw_df.loc[result.index, old_col]
     if new_col:
         result["new_department"] = raw_df.loc[result.index, new_col]
 
-    return result.reset_index(drop=True)
+    result = result.reset_index(drop=True)
+    result.attrs["raw_columns"] = list(raw_df.columns)
+    result.attrs["matched_columns"] = [c for c in (name_col, old_col, new_col) if c]
+    return result
 
 
 def flag_transferred_but_still_active(iam_df: pd.DataFrame, transferred_df: pd.DataFrame) -> pd.DataFrame:

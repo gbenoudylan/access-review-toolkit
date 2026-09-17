@@ -1317,3 +1317,102 @@ def test_txt_legitimate_multi_block_still_works():
     assert len(df) == 2
     assert "role" in df.columns and "system" in df.columns
     print("OK - test_txt_legitimate_multi_block_still_works")
+
+
+def test_hr_file_supports_custom_column_mappings_like_main_file():
+    """
+    Fonctionnalité demandée explicitement (« le deuxième fichier ») :
+    le fichier RH (croisement) doit bénéficier du même mécanisme de
+    correction manuelle de colonnes que le fichier d'accès principal —
+    magasin de correspondances SÉPARÉ (custom_hr_column_mappings.json),
+    puisque les champs standard visés (hr_username, hr_employee_status)
+    diffèrent entièrement de ceux de l'export d'accès (last_login_date,
+    account_status...). Vérifié de bout en bout : colonne non reconnue,
+    correction enregistrée, puis reconnaissance automatique sur un
+    DEUXIÈME fichier différent portant la même colonne.
+    """
+    import tempfile
+    from pathlib import Path
+    from ingestion.ingest import load_file_with_mapping
+    from ingestion.custom_column_mappings import save_custom_column_mapping, load_custom_column_mappings
+    from analysis.hr_crossref import HR_COLUMN_MAPPING, HR_REQUIRED_FIELDS
+
+    store_path = Path(tempfile.gettempdir()) / f"test_hr_custom_map_{tempfile.mktemp()[-8:]}.json"
+    if store_path.exists():
+        store_path.unlink()
+
+    content1 = "username,mystere_rh_column\nu1,Actif\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp1:
+        tmp1.write(content1)
+        path1 = tmp1.name
+    df1 = load_file_with_mapping(path1, HR_COLUMN_MAPPING, HR_REQUIRED_FIELDS)
+    assert "mystere_rh_column" in df1.attrs.get("unmapped_columns", [])
+
+    save_custom_column_mapping("mystere_rh_column", "hr_employee_status", store_path=store_path)
+
+    content2 = "username,mystere_rh_column\nu2,Parti\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp2:
+        tmp2.write(content2)
+        path2 = tmp2.name
+    learned = load_custom_column_mappings(store_path=store_path)
+    df2 = load_file_with_mapping(path2, HR_COLUMN_MAPPING, HR_REQUIRED_FIELDS, custom_mappings=learned)
+    assert "hr_employee_status" in df2.columns
+    assert df2.loc[0, "hr_employee_status"] == "Parti"
+    print("OK - test_hr_file_supports_custom_column_mappings_like_main_file")
+
+
+def test_previous_review_file_shares_custom_mappings_with_main_file():
+    """
+    Fonctionnalité demandée explicitement (« et le fichier d'ancienne
+    revue ») : le fichier de comparaison (revue précédente) doit lui
+    aussi bénéficier de la correction manuelle de colonnes — même
+    magasin que le fichier principal, puisque c'est exactement le même
+    format d'export, pas un domaine différent comme le fichier RH.
+    Une correspondance apprise sur l'un doit s'appliquer à l'autre.
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+    from ingestion.custom_column_mappings import save_custom_column_mapping
+
+    store = tempfile.mktemp(suffix=".json")
+    save_custom_column_mapping("mystere_ancienne_colonne", "account_created_date", store_path=store)
+
+    from ingestion.custom_column_mappings import load_custom_column_mappings
+    learned = load_custom_column_mappings(store_path=store)
+
+    content = "username,system,mystere_ancienne_colonne\nu1,AD,2026-01-01\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+    df = load_file(path, default_system="Test", custom_mappings=learned)
+    assert "account_created_date" in df.columns
+    assert df.loc[0, "account_created_date"] == "2026-01-01"
+    print("OK - test_previous_review_file_shares_custom_mappings_with_main_file")
+
+
+def test_transfer_learned_mapping_can_be_removed():
+    """
+    Vrai manque trouvé en poussant la fiabilité au maximum : la section
+    de gestion "déjà apprises" existait pour le fichier principal et le
+    fichier RH, mais pas pour le fichier de transferts — une mauvaise
+    correspondance enregistrée par erreur pour ce domaine n'avait aucun
+    moyen d'être retirée. Corrigé (interface dashboard) et vérifié ici
+    sur le mécanisme sous-jacent : la même fonction générique
+    forget_custom_column_mapping fonctionne pour ce magasin séparé.
+    """
+    import tempfile
+    from pathlib import Path
+    from ingestion.custom_column_mappings import (
+        save_custom_column_mapping, load_custom_column_mappings, forget_custom_column_mapping,
+    )
+
+    store = Path(tempfile.gettempdir()) / f"test_transfer_forget_{tempfile.mktemp()[-8:]}.json"
+    if store.exists():
+        store.unlink()
+
+    save_custom_column_mapping("nom_test", "transfer_full_name", store_path=store)
+    assert "nom test" in load_custom_column_mappings(store_path=store)
+
+    forget_custom_column_mapping("nom_test", store_path=store)
+    assert "nom test" not in load_custom_column_mappings(store_path=store)
+    print("OK - test_transfer_learned_mapping_can_be_removed")

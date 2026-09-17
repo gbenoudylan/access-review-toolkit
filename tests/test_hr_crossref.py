@@ -351,3 +351,41 @@ def test_hr_crossref_duplicate_row_not_treated_as_homonym():
     result2 = cross_reference_with_hr(iam_df, hr_df_raw_path=path2)
     assert "Ambigu" in result2.loc[0, "employee_status"]
     print("OK - test_hr_crossref_duplicate_row_not_treated_as_homonym")
+
+
+def test_transfer_file_supports_custom_column_mappings():
+    """
+    Fonctionnalité demandée explicitement (« la totale ») : le fichier
+    de mouvements RH (transferts/mutations) doit lui aussi bénéficier
+    de la correction manuelle de colonnes — magasin SÉPARÉ des deux
+    autres (custom_transfer_column_mappings.json), champs propres à ce
+    domaine (transfer_full_name, transfer_old_department,
+    transfer_new_department). Contrairement aux deux autres fichiers,
+    l'absence de colonne de nom reconnue levait auparavant directement
+    une erreur sans offrir de correction — désormais TransferNameColumn
+    NotFoundError porte la liste des colonnes brutes pour permettre
+    cette correction.
+    """
+    import openpyxl
+    import tempfile
+    from analysis.hr_crossref import load_transferred_employees, TransferNameColumnNotFoundError
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Affectation-Mutation 2026"
+    ws.append(["Nom_Inconnu_Colonne", "Ancienne Direction", "nouvelle Direction"])
+    ws.append(["Jean Dupont", "IT", "Finance"])
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    wb.save(path)
+
+    try:
+        load_transferred_employees(path)
+        assert False, "aurait dû lever TransferNameColumnNotFoundError"
+    except TransferNameColumnNotFoundError as e:
+        assert "Nom_Inconnu_Colonne" in e.raw_columns
+
+    custom = {"nom inconnu colonne": "transfer_full_name"}
+    result = load_transferred_employees(path, custom_mappings=custom)
+    assert result["full_name"].tolist() == ["Jean Dupont"]
+    print("OK - test_transfer_file_supports_custom_column_mappings")

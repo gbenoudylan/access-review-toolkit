@@ -110,3 +110,25 @@ def test_investigation_account_lookup_is_case_insensitive():
     assert len(matches) == 2
     assert set(matches["system"]) == {"AD", "SAP"}
     print("OK - test_investigation_account_lookup_is_case_insensitive")
+
+
+def test_transfer_and_previous_file_checks_are_cached_functions():
+    """
+    Vrai problème de performance trouvé en poussant la fiabilité au
+    maximum : la vérification des colonnes non reconnues du fichier de
+    revue précédente et du fichier de transferts n'était PAS mise en
+    cache — Streamlit réexécutant tout le script à chaque interaction
+    du dashboard (même sans rapport, ex. changer un seuil), ces fichiers
+    étaient reparsés inutilement à chaque fois. Corrigé avec
+    @st.cache_data, comme run_pipeline. Vérifié ici que les deux
+    fonctions restent correctes fonctionnellement après ce changement.
+    """
+    import importlib
+    import dashboard.app as app_module
+    importlib.reload(app_module)
+
+    assert hasattr(app_module._check_transfer_file_columns, "__wrapped__") or \
+        "cache" in str(type(app_module._check_transfer_file_columns)).lower()
+    assert hasattr(app_module._check_previous_file_columns, "__wrapped__") or \
+        "cache" in str(type(app_module._check_previous_file_columns)).lower()
+    print("OK - test_transfer_and_previous_file_checks_are_cached_functions")

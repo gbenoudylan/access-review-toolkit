@@ -1597,13 +1597,23 @@ def load_file(
 
 def load_file_with_mapping(
     path: str | Path, column_mapping: dict, required_fields: list,
-    default_system: str | None = None,
+    default_system: str | None = None, custom_mappings: dict = None,
 ) -> pd.DataFrame:
     """
     Variante de load_file() pour un domaine différent de celui des exports
     d'accès (ex. un export RH), avec son propre référentiel de colonnes et
     ses propres champs obligatoires. Réutilise exactement la même logique
     de lecture universelle (tous formats, détection d'en-tête, etc.).
+
+    `custom_mappings` : correspondances apprises manuellement (voir
+    ingestion/custom_column_mappings.py) — à charger depuis un magasin
+    SÉPARÉ de celui de l'export d'accès principal, puisque les champs
+    standard visés diffèrent entièrement (hr_username, hr_employee_status...
+    vs last_login_date, account_status...) : une même colonne source
+    ('Statut', par exemple) pourrait légitimement correspondre à des
+    champs différents selon qu'elle vient d'un export d'accès ou d'un
+    export RH — les mélanger ferait courir le risque qu'une correction
+    apprise pour l'un s'applique à tort à l'autre.
     """
     path = Path(path)
     if not path.exists():
@@ -1611,9 +1621,9 @@ def load_file_with_mapping(
 
     if path.suffix.lower() == ".zip":
         logger.info(f"Lecture de l'archive : {path.name}")
-        return _read_zip(path, column_mapping, required_fields, default_system=default_system)
+        return _read_zip(path, column_mapping, required_fields, default_system=default_system, custom_mappings=custom_mappings)
 
-    return _load_single_file(path, column_mapping, required_fields, default_system=default_system)
+    return _load_single_file(path, column_mapping, required_fields, default_system=default_system, custom_mappings=custom_mappings)
 
 
 if __name__ == "__main__":
