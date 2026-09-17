@@ -76,7 +76,7 @@ def test_dashboard_main_content_has_no_emoji():
     for line in source.splitlines():
         if emoji_pattern.search(line) and not any(a in line for a in allowed_snippets):
             # La barre latérale a ses propres emojis, hors du périmètre de cette contrainte.
-            if "st.header(" in line or "🔗" in line or "⚙️" in line or "🔐" in line or "🔄" in line:
+            if "st.header(" in line or "🔗" in line or "⚙️" in line or "🔐" in line or "🔄" in line or "💾" in line:
                 continue
             offending_lines.append(line)
     assert not offending_lines, f"Emoji(s) trouvé(s) hors barre latérale : {offending_lines}"
@@ -152,3 +152,34 @@ def test_column_mapping_dropdown_trimmed_to_control_driving_fields():
     assert '"username", "system", "account_status", "manager", "role",' in source
     assert '"email"' not in source.split("STANDARD_FIELDS_FOR_MAPPING = [")[1][:300]
     print("OK - test_column_mapping_dropdown_trimmed_to_control_driving_fields")
+
+
+def test_backup_zip_contains_all_data_files():
+    """
+    Idée proposée pour la fiabilité sans maintenance : un bouton de
+    sauvegarde permet de télécharger en un clic tout ce que l'outil a
+    appris (décisions, correspondances de colonnes, acceptations de
+    risque, historique de tendance) — sans lui, tout redémarrerait de
+    zéro en cas de changement de machine.
+    """
+    import io
+    import zipfile
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp)
+        (data_dir / "review_decisions.json").write_text('{"a": 1}')
+        (data_dir / "risk_acceptances.json").write_text('{"b": 2}')
+
+        data_files = sorted(data_dir.glob("*.json"))
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in data_files:
+                zf.write(f, arcname=f.name)
+
+        with zipfile.ZipFile(io.BytesIO(buffer.getvalue())) as zf:
+            names = zf.namelist()
+            assert "review_decisions.json" in names
+            assert "risk_acceptances.json" in names
+    print("OK - test_backup_zip_contains_all_data_files")

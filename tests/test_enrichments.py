@@ -305,3 +305,24 @@ def test_role_splitting_preserves_comma_in_role_name_when_semicolon_present():
     result = detect_sod_conflicts(df, conflicts=[("Payment Creator", "Payment Validator")])
     assert result.loc[0, "sod_conflict"] == False
     print("OK - test_role_splitting_preserves_comma_in_role_name_when_semicolon_present")
+
+
+def test_split_roles_newline_separated_cell():
+    """
+    Vrai bug trouvé sur un export réel (Oracle EBS, MTN) : une cellule
+    Excel listant plusieurs rôles d'un même compte, un par ligne
+    (Alt+Entrée) — motif très courant pour ce type d'export. Sans
+    reconnaître le retour à la ligne comme séparateur, tous les rôles
+    fusionnaient en une seule chaîne informe, désactivant
+    silencieusement toute détection de conflit SoD pour ce fichier. Le
+    retour à la ligne est maintenant prioritaire (un nom de rôle n'en
+    contient jamais légitimement), avant même le point-virgule.
+    """
+    from analysis.sod_detection import _split_roles
+    raw = "System Administrator\nMTN_AP - Responsable\nInventory"
+    result = _split_roles(raw)
+    assert result == ["System Administrator", "MTN_AP - Responsable", "Inventory"]
+    # Le comportement existant (point-virgule et virgule) doit rester intact.
+    assert _split_roles("Manager, Finance Department") == ["Manager", " Finance Department"]
+    assert _split_roles("Role A; Role B") == ["Role A", " Role B"]
+    print("OK - test_split_roles_newline_separated_cell")

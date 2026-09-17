@@ -343,10 +343,25 @@ def standardize_columns(
     return result
 
 
-def validate_required_fields(df: pd.DataFrame, required_fields: list = None) -> None:
+def validate_required_fields(
+    df: pd.DataFrame, required_fields: list = None, raise_on_missing: bool = True,
+) -> None:
+    """
+    `raise_on_missing=False` (utilisé par le dashboard) : au lieu de
+    lever une exception qui interromprait tout — y compris l'affichage
+    de l'interface de correction manuelle des colonnes — attache la
+    liste des champs manquants à df.attrs["missing_required_fields"] et
+    laisse l'appelant décider quoi faire. Corrige un vrai défaut
+    signalé : un fichier dont AUCUNE colonne n'est reconnaissable
+    (même pas l'identifiant) provoquait un plantage complet plutôt que
+    de laisser l'utilisateur associer les colonnes lui-même.
+    """
     required_fields = required_fields if required_fields is not None else REQUIRED_FIELDS
     missing = [f for f in required_fields if f not in df.columns]
     if missing:
+        if not raise_on_missing:
+            df.attrs["missing_required_fields"] = missing
+            return
         raise IngestionError(
             f"Champs obligatoires manquants après mapping : {missing}. "
             f"Colonnes disponibles : {list(df.columns)}. "
@@ -1412,7 +1427,7 @@ def _read_excel_all_sheets(
 def _load_single_file(
     path: Path, column_mapping: dict = None, required_fields: list = None,
     default_system: str | None = None, _defer_finalize: bool = False,
-    custom_mappings: dict = None,
+    custom_mappings: dict = None, raise_on_missing_required: bool = True,
 ) -> pd.DataFrame:
     """
     Charge un unique fichier (tous formats sauf .zip) et retourne un
@@ -1438,7 +1453,7 @@ def _load_single_file(
         if "system" not in df.columns and "system" in effective_required:
             resolved_system = default_system or path.stem
             df["system"] = resolved_system
-        validate_required_fields(df, required_fields)
+        validate_required_fields(df, required_fields, raise_on_missing=raise_on_missing_required)
         logger.info(f"Ingestion réussie : {len(df)} lignes, colonnes finales : {list(df.columns)}")
         return df
     elif suffix == ".csv":
@@ -1503,7 +1518,7 @@ def _load_single_file(
         df["system"] = resolved_system
         logger.info(f"Colonne 'system' absente du fichier : valeur par défaut appliquée ('{resolved_system}').")
 
-    validate_required_fields(df, required_fields)
+    validate_required_fields(df, required_fields, raise_on_missing=raise_on_missing_required)
 
     logger.info(f"Ingestion réussie : {len(df)} lignes, colonnes finales : {list(df.columns)}")
     return df
@@ -1512,6 +1527,7 @@ def _load_single_file(
 def _read_zip(
     path: Path, column_mapping: dict = None, required_fields: list = None,
     default_system: str | None = None, custom_mappings: dict = None,
+    raise_on_missing_required: bool = True,
 ) -> pd.DataFrame:
     """
     Extrait une archive ZIP et traite chaque fichier supporté qu'elle
@@ -1575,12 +1591,13 @@ def _read_zip(
     if "system" not in combined.columns and "system" in effective_required:
         resolved_system = default_system or path.stem
         combined["system"] = resolved_system
-    validate_required_fields(combined, required_fields)
+    validate_required_fields(combined, required_fields, raise_on_missing=raise_on_missing_required)
     return combined
 
 
 def load_file(
     path: str | Path, default_system: str | None = None, custom_mappings: dict = None,
+    raise_on_missing_required: bool = True,
 ) -> pd.DataFrame:
     """
     Point d'entrée standard : charge un fichier d'export IAM/accès, avec
@@ -1591,6 +1608,15 @@ def load_file(
     d'un seul système). Sans valeur fournie, le nom du fichier sert de
     repli automatique — la fonction ne lève jamais d'erreur pour ce seul
     motif.
+
+    `raise_on_missing_required=False` (utilisé par le dashboard) : si un
+    champ obligatoire (ex. 'username') reste introuvable après
+    reconnaissance automatique — y compris quand AUCUNE colonne du
+    fichier n'a été reconnue — ne lève pas d'exception bloquante.
+    Retourne le DataFrame tel quel (colonnes non renommées conservées),
+    avec df.attrs["missing_required_fields"] renseigné, pour que
+    l'appelant puisse proposer une correction manuelle plutôt que de
+    planter purement et simplement.
     """
     path = Path(path)
     if not path.exists():
@@ -1598,9 +1624,15 @@ def load_file(
 
     if path.suffix.lower() == ".zip":
         logger.info(f"Lecture de l'archive : {path.name}")
-        return _read_zip(path, default_system=default_system, custom_mappings=custom_mappings)
+        return _read_zip(
+            path, default_system=default_system, custom_mappings=custom_mappings,
+            raise_on_missing_required=raise_on_missing_required,
+        )
 
-    return _load_single_file(path, default_system=default_system, custom_mappings=custom_mappings)
+    return _load_single_file(
+        path, default_system=default_system, custom_mappings=custom_mappings,
+        raise_on_missing_required=raise_on_missing_required,
+    )
 
 
 def load_file_with_mapping(

@@ -88,16 +88,49 @@ def _translate_french_month(text_value: str) -> str:
     return _FRENCH_MONTH_RE.sub(lambda m: _FRENCH_MONTHS[m.group(1).lower()], text_value)
 
 
+def _tokenize_status_value(value: str) -> set:
+    """
+    Découpe une valeur de statut en mots-clés individuels sur tout
+    séparateur non alphanumérique — 'Y-Active' -> {'y', 'active'},
+    'N-inactive' -> {'n', 'inactive'}. Nécessaire pour un vrai format
+    d'export rencontré (Oracle EBS, MTN) où le statut combine un code
+    lettre et un mot descriptif dans la même valeur ('Y-Active' /
+    'N-inactive'), qu'une simple égalité de chaîne entière ne
+    reconnaît jamais. ATTENTION au piège : 'N-inactive' contient
+    'active' comme SOUS-CHAÎNE ('inactive'.find('active') réussit),
+    donc la comparaison doit se faire par MOT ENTIER (jeton), jamais
+    par recherche de sous-chaîne, sous peine de classer 'inactive'
+    comme actif à tort.
+    """
+    return set(re.split(r"[^a-z0-9]+", str(value).strip().lower())) - {""}
+
+
+_NEGATION_TOKENS = {"not", "non", "no", "sans"}
+
+
 def _is_active_account(value) -> bool:
     if value is None:
         return False
-    return str(value).strip().lower() in ACTIVE_STATUS_VALUES
+    normalized = str(value).strip().lower()
+    if normalized in ACTIVE_STATUS_VALUES:
+        return True
+    tokens = _tokenize_status_value(value)
+    if tokens & _NEGATION_TOKENS:
+        # Garde contre un faux positif : 'Not Active' ou 'Non Actif'
+        # contient le mot 'active' mais signifie précisément l'inverse —
+        # une négation explicite l'emporte toujours sur la présence du
+        # mot-clé positif.
+        return False
+    return bool(tokens & ACTIVE_STATUS_VALUES)
 
 
 def _is_terminated_employee(value) -> bool:
     if value is None:
         return False
-    return str(value).strip().lower() in TERMINATED_STATUS_VALUES
+    normalized = str(value).strip().lower()
+    if normalized in TERMINATED_STATUS_VALUES:
+        return True
+    return bool(_tokenize_status_value(value) & TERMINATED_STATUS_VALUES)
 
 
 def _is_privileged(value) -> bool:

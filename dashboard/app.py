@@ -8,6 +8,8 @@ Lancement :
 from __future__ import annotations
 import logging
 import sys
+import io
+import zipfile
 import tempfile
 from datetime import datetime
 from io import BytesIO
@@ -81,9 +83,23 @@ def run_pipeline(
     # sans intervention même quand les noms de colonnes changent d'un
     # export à l'autre.
     custom_mappings = load_custom_column_mappings()
-    df = load_file(tmp_path, default_system=default_system or None, custom_mappings=custom_mappings)
+    df = load_file(
+        tmp_path, default_system=default_system or None, custom_mappings=custom_mappings,
+        raise_on_missing_required=False,
+    )
     unmapped_columns = list(df.attrs.get("unmapped_columns", []))
     full_column_mapping = dict(df.attrs.get("full_column_mapping", {}))
+    missing_required = list(df.attrs.get("missing_required_fields", []))
+    if missing_required:
+        # Un champ obligatoire (ex. 'username') reste introuvable même
+        # après reconnaissance automatique — possiblement parce
+        # qu'AUCUNE colonne du fichier n'a pu être reconnue. Plutôt que
+        # de planter (comme c'était le cas avant), on s'arrête ici :
+        # l'appelant (dashboard) détecte missing_required_fields et
+        # affiche l'interface de correction des colonnes plutôt que de
+        # tenter une analyse impossible sans identifiant.
+        df.attrs["missing_required_fields"] = missing_required
+        return df, unmapped_columns, [], full_column_mapping, {}
 
     if hr_file_bytes is not None:
         hr_suffix = Path(hr_filename).suffix
@@ -186,47 +202,87 @@ def _check_previous_file_columns(file_bytes: bytes, filename: str, custom_mappin
         return [], str(e), {}
 
 
-def _render_full_mapping_review(
+def _render_column_mapping_ui(
     title: str, raw_columns: list, full_mapping: dict, standard_fields: list,
-    store_path, key_prefix: str,
+    store_path, key_prefix: str, missing_required: list = None,
+    important_missing: list = None, important_empty: list = None,
+    support_inversion: bool = False,
 ) -> None:
     """
-    Vue complète et optionnelle de TOUTES les correspondances de
-    colonnes d'un fichier — pas seulement celles restées sans
-    correspondance. Demandée explicitement : une colonne reconnue
-    automatiquement peut l'être À TORT (silencieusement, sans qu'aucune
-    alerte ne se déclenche puisque ce n'est pas un échec) — cette vue
-    donne la visibilité et le contrôle complets, sans pour autant
-    imposer une étape obligatoire à chaque import (repliée par défaut,
-    n'ajoute aucune friction pour qui fait confiance à la détection
-    automatique).
+    Interface UNIQUE et fusionnée pour la correspondance des colonnes
+    d'un fichier — remplace ce qui était auparavant deux sections
+    séparées ("colonnes non reconnues" et "voir toutes les
+    correspondances"), source de confusion. Montre TOUJOURS l'ensemble
+    des colonnes du fichier avec leur correspondance actuelle
+    (« Ignorée » si aucune), modifiable pour n'importe laquelle — pas
+    seulement celles en échec, puisqu'une colonne reconnue
+    automatiquement peut l'être À TORT sans qu'aucune alerte ne se
+    déclenche.
+
+    Dépliée par défaut si quelque chose d'important nécessite
+    attention (champ obligatoire manquant, champ important absent ou
+    vide) ; repliée sinon, pour ne jamais imposer d'étape à chaque
+    import quand la détection automatique s'est bien passée.
     """
     if not raw_columns:
         return
-    with st.expander(f"Voir toutes les correspondances de colonnes ({len(raw_columns)}) — {title}"):
+    missing_required = missing_required or []
+    important_missing = important_missing or []
+    important_empty = important_empty or []
+    needs_attention = bool(missing_required or important_missing or important_empty)
+
+    with st.expander(
+        f"Correspondances de colonnes ({len(raw_columns)}) — {title}",
+        expanded=needs_attention,
+    ):
+        if missing_required:
+            st.error(
+                "Champ(s) indispensable(s) introuvable(s), même après reconnaissance "
+                "automatique — l'analyse ne peut pas continuer sans eux : "
+                + ", ".join(missing_required) + ". Associe la bonne colonne ci-dessous."
+            )
+        if important_missing:
+            st.warning("Champs importants absents : " + ", ".join(important_missing))
+        if important_empty:
+            st.warning(
+                "Champs importants présents mais entièrement VIDES (une autre colonne du "
+                "fichier contient peut-être la vraie donnée, ex. un indicateur "
+                "vrai/faux comme 'identity/accountDisabled' au lieu de 'status') : "
+                + ", ".join(important_empty)
+            )
         st.caption(
-            "Chaque colonne du fichier et le champ auquel elle correspond actuellement. "
-            "Change n'importe laquelle si elle te semble incorrecte, même reconnue "
-            "automatiquement — la correction sera mémorisée pour les prochains fichiers "
-            "portant ce même nom de colonne."
+            "Chaque colonne du fichier et le champ auquel elle correspond. Change "
+            "n'importe laquelle si elle te semble incorrecte, même déjà reconnue "
+            "automatiquement — la correction est mémorisée pour tout prochain fichier "
+            "portant ce même nom de colonne, sans qu'il soit nécessaire de la refaire."
         )
         options = ["Ignorée"] + standard_fields
-        review_assignments = {}
+        review_assignments, invert_choices = {}, {}
         for col in raw_columns:
             current = full_mapping.get(col)
             default_idx = options.index(current) if current in options else 0
             choice = st.selectbox(
                 f"'{col}' correspond à :", options=options, index=default_idx,
-                key=f"{key_prefix}_review_{col}",
+                key=f"{key_prefix}_map_{col}",
             )
             if choice != (current or "Ignorée"):
                 review_assignments[col] = choice
-        if review_assignments and st.button("Enregistrer ces changements", key=f"{key_prefix}_review_save"):
+            if support_inversion and choice == "account_status":
+                invert_choices[col] = st.checkbox(
+                    f"'{col}' est un indicateur inversé (ex. 'accountDisabled' : "
+                    f"vrai = compte désactivé, PAS actif) plutôt qu'un statut direct",
+                    key=f"{key_prefix}_invert_{col}",
+                )
+        if review_assignments and st.button("Enregistrer ces correspondances et relancer l'analyse", key=f"{key_prefix}_map_save"):
             for raw_col, standard_field in review_assignments.items():
                 if standard_field == "Ignorée":
                     forget_custom_column_mapping(raw_col, store_path=store_path)
                 else:
-                    save_custom_column_mapping(raw_col, standard_field, store_path=store_path)
+                    target = (
+                        f"{standard_field}__inverted_bool"
+                        if invert_choices.get(raw_col) else standard_field
+                    )
+                    save_custom_column_mapping(raw_col, target, store_path=store_path)
             st.cache_data.clear()
             st.success(f"{len(review_assignments)} correspondance(s) mise(s) à jour. Relance en cours...")
             st.rerun()
@@ -240,6 +296,31 @@ def main():
     )
 
     with st.sidebar:
+        with st.expander("💾 Sauvegarde des données de l'outil"):
+            st.caption(
+                "Tout ce que l'outil a appris ou enregistré (décisions de revue, "
+                "correspondances de colonnes apprises, acceptations de risque, "
+                "historique de tendance) vit dans quelques fichiers sur cette "
+                "machine — rien n'est envoyé ailleurs. Télécharge une sauvegarde "
+                "de temps en temps, surtout avant de changer de machine : sans "
+                "elle, tout redémarrerait de zéro."
+            )
+            data_dir = Path(__file__).parent.parent / "data"
+            data_files = sorted(data_dir.glob("*.json")) if data_dir.exists() else []
+            if data_files:
+                backup_buffer = io.BytesIO()
+                with zipfile.ZipFile(backup_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f in data_files:
+                        zf.write(f, arcname=f.name)
+                st.download_button(
+                    f"Télécharger une sauvegarde ({len(data_files)} fichier(s))",
+                    data=backup_buffer.getvalue(),
+                    file_name=f"sauvegarde_access_review_{datetime.now().strftime('%Y%m%d')}.zip",
+                    mime="application/zip",
+                )
+            else:
+                st.caption("Rien à sauvegarder pour l'instant — aucune donnée enregistrée.")
+
         st.header("📁 Import")
         uploaded_file = st.file_uploader(
             "Export d'accès (tous formats supportés)",
@@ -319,32 +400,10 @@ def main():
             TRANSFER_STANDARD_FIELDS = [
                 "transfer_full_name", "transfer_old_department", "transfer_new_department",
             ]
-            if not transfer_name_found:
-                st.warning(
-                    "Aucune colonne de nom reconnue sur cette feuille — indispensable pour "
-                    "rapprocher les employés transférés des comptes IAM. Associe la bonne "
-                    "colonne ci-dessous."
-                )
-            if transfer_still_unmapped:
-                transfer_assignments = {}
-                for col in transfer_still_unmapped:
-                    choice = st.selectbox(
-                        f"'{col}' correspond à :",
-                        options=["Ignorer"] + TRANSFER_STANDARD_FIELDS,
-                        key=f"transfercolmap_{col}",
-                    )
-                    if choice != "Ignorer":
-                        transfer_assignments[col] = choice
-                if transfer_assignments and st.button("Enregistrer ces correspondances (transferts)"):
-                    for raw_col, standard_field in transfer_assignments.items():
-                        save_custom_column_mapping(raw_col, standard_field, store_path=TRANSFER_CUSTOM_MAPPING_STORE_PATH)
-                    st.cache_data.clear()
-                    st.success(f"{len(transfer_assignments)} correspondance(s) enregistrée(s). Relance en cours...")
-                    st.rerun()
-
-            _render_full_mapping_review(
+            _render_column_mapping_ui(
                 "fichier de transferts", list(transfer_full_mapping.keys()) + transfer_still_unmapped,
                 transfer_full_mapping, TRANSFER_STANDARD_FIELDS, TRANSFER_CUSTOM_MAPPING_STORE_PATH, "transfer",
+                missing_required=[] if transfer_name_found else ["transfer_full_name"],
             )
 
         st.divider()
@@ -423,24 +482,32 @@ def main():
         st.info("⬅️ Importez un fichier ou cochez 'Utiliser un fichier d'exemple' pour commencer.")
         return
 
-    # Colonnes non reconnues automatiquement : l'outil ne peut jamais
-    # prévoir à l'avance tous les noms de colonnes que d'autres systèmes
-    # utiliseront à l'avenir — plutôt que de les ignorer silencieusement,
-    # on laisse l'utilisateur les associer lui-même à un champ standard,
-    # sans toucher au code. La correction est mémorisée (fichier séparé,
-    # voir ingestion/custom_column_mappings.py) : au prochain fichier
-    # portant exactement le même nom de colonne, elle s'applique
-    # automatiquement.
+    # Recentré sur les champs qui pilotent réellement un contrôle (ou
+    # sont indispensables à l'identification) — demande explicite de ne
+    # pas noyer le menu avec des champs purement informatifs (nom
+    # complet, email, téléphone, poste...) qu'aucun contrôle n'utilise
+    # directement.
     STANDARD_FIELDS_FOR_MAPPING = [
-        # Recentré sur les champs qui pilotent réellement un contrôle (ou
-        # sont indispensables à l'identification) — demande explicite de
-        # ne pas noyer le menu avec des champs purement informatifs
-        # (nom complet, email, téléphone, poste...) qu'aucun contrôle
-        # n'utilise directement.
         "username", "system", "account_status", "manager", "role",
         "is_privileged", "last_login_date", "account_created_date",
         "employee_status", "password_last_set",
     ]
+    missing_required = list(df.attrs.get("missing_required_fields", []))
+    all_main_raw_columns = list(full_column_mapping.keys()) + unmapped_columns
+
+    if missing_required:
+        # Un champ indispensable (ex. 'username') reste introuvable même
+        # après reconnaissance automatique — possiblement parce qu'AUCUNE
+        # colonne du fichier n'a pu être reconnue. Corrige un vrai défaut
+        # signalé : ceci plantait auparavant plutôt que de laisser
+        # l'utilisateur associer les colonnes lui-même. On s'arrête ici,
+        # avant toute tentative d'analyse impossible sans identifiant.
+        _render_column_mapping_ui(
+            "fichier principal", all_main_raw_columns, full_column_mapping,
+            STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "main",
+            missing_required=missing_required, support_inversion=True,
+        )
+        return
 
     def _is_effectively_empty(series) -> bool:
         return series.isna().all() or (series.astype(str).str.strip().isin(["", "nan", "none"])).all()
@@ -457,60 +524,12 @@ def main():
         f for f in important_check_fields
         if f in df.columns and f not in important_missing and _is_effectively_empty(df[f])
     ]
-    important_needing_attention = important_missing + important_empty
 
-    if unmapped_columns or important_empty:
-        with st.expander(
-            f"Colonnes non reconnues ou champs vides ({len(unmapped_columns)}) — "
-            f"à associer manuellement si besoin",
-            expanded=bool(important_needing_attention),
-        ):
-            st.caption(
-                "Ces colonnes du fichier n'ont pas été reconnues automatiquement et sont "
-                "actuellement ignorées. Si l'une d'elles correspond en fait à un champ "
-                "important (ex. dernière connexion, mot de passe...), associe-la ci-dessous — "
-                "la correction sera mémorisée pour les prochains fichiers portant ce même nom "
-                "de colonne, sans qu'il soit nécessaire de la refaire."
-            )
-            if important_missing:
-                st.warning("Champs importants absents : " + ", ".join(important_missing))
-            if important_empty:
-                st.warning(
-                    "Champs importants présents mais entièrement VIDES (une autre colonne du "
-                    "fichier contient peut-être la vraie donnée, ex. un indicateur "
-                    "vrai/faux comme 'identity/accountDisabled' au lieu de 'status') : "
-                    + ", ".join(important_empty)
-                )
-            assignments = {}
-            invert_choices = {}
-            for col in unmapped_columns:
-                choice = st.selectbox(
-                    f"'{col}' correspond à :",
-                    options=["Ignorer"] + STANDARD_FIELDS_FOR_MAPPING,
-                    key=f"colmap_{col}",
-                )
-                if choice != "Ignorer":
-                    assignments[col] = choice
-                    if choice == "account_status":
-                        invert_choices[col] = st.checkbox(
-                            f"'{col}' est un indicateur inversé (ex. 'accountDisabled' : "
-                            f"vrai = compte désactivé, PAS actif) plutôt qu'un statut direct",
-                            key=f"invert_{col}",
-                        )
-            if assignments and st.button("Enregistrer ces correspondances et relancer l'analyse"):
-                for raw_col, standard_field in assignments.items():
-                    target = (
-                        f"{standard_field}__inverted_bool"
-                        if invert_choices.get(raw_col) else standard_field
-                    )
-                    save_custom_column_mapping(raw_col, target)
-                st.cache_data.clear()
-                st.success(f"{len(assignments)} correspondance(s) enregistrée(s). Relance en cours...")
-                st.rerun()
-
-    _render_full_mapping_review(
-        "fichier principal", list(full_column_mapping.keys()) + unmapped_columns,
-        full_column_mapping, STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "main",
+    _render_column_mapping_ui(
+        "fichier principal", all_main_raw_columns, full_column_mapping,
+        STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "main",
+        important_missing=important_missing, important_empty=important_empty,
+        support_inversion=True,
     )
 
     # Même mécanisme que ci-dessus, mais pour le fichier RH (croisement) —
@@ -524,34 +543,7 @@ def main():
         # ce fichier précisément, pas juste informatif.
         "hr_username", "hr_employee_status", "full_name",
     ]
-    if hr_unmapped_columns:
-        with st.expander(
-            f"Colonnes RH non reconnues ({len(hr_unmapped_columns)}) — à associer manuellement si besoin",
-            expanded=True,
-        ):
-            st.caption(
-                "Ces colonnes du fichier RH n'ont pas été reconnues automatiquement et sont "
-                "actuellement ignorées. Associe-les ci-dessous si l'une correspond à un champ "
-                "important — la correction sera mémorisée pour les prochains fichiers RH "
-                "portant ce même nom de colonne."
-            )
-            hr_assignments = {}
-            for col in hr_unmapped_columns:
-                choice = st.selectbox(
-                    f"'{col}' correspond à :",
-                    options=["Ignorer"] + HR_STANDARD_FIELDS_FOR_MAPPING,
-                    key=f"hr_colmap_{col}",
-                )
-                if choice != "Ignorer":
-                    hr_assignments[col] = choice
-            if hr_assignments and st.button("Enregistrer ces correspondances RH et relancer l'analyse"):
-                for raw_col, standard_field in hr_assignments.items():
-                    save_custom_column_mapping(raw_col, standard_field, store_path=HR_CUSTOM_MAPPING_STORE_PATH)
-                st.cache_data.clear()
-                st.success(f"{len(hr_assignments)} correspondance(s) RH enregistrée(s). Relance en cours...")
-                st.rerun()
-
-    _render_full_mapping_review(
+    _render_column_mapping_ui(
         "fichier RH", list(hr_full_column_mapping.keys()) + hr_unmapped_columns,
         hr_full_column_mapping, HR_STANDARD_FIELDS_FOR_MAPPING, HR_CUSTOM_MAPPING_STORE_PATH, "hr",
     )
@@ -1070,31 +1062,10 @@ def main():
             )
             if prev_check_error:
                 st.warning(f"Revue précédente illisible pour l'instant : {prev_check_error}")
-            if prev_check_unmapped:
-                st.caption(
-                    "Colonnes non reconnues dans ce fichier de revue précédente — même magasin "
-                    "de correspondances que le fichier principal, la correction s'appliquera "
-                    "aussi bien à l'un qu'à l'autre."
-                )
-                prev_assignments = {}
-                for col in prev_check_unmapped:
-                    choice = st.selectbox(
-                        f"'{col}' correspond à :",
-                        options=["Ignorer"] + STANDARD_FIELDS_FOR_MAPPING,
-                        key=f"prevcolmap_{col}",
-                    )
-                    if choice != "Ignorer":
-                        prev_assignments[col] = choice
-                if prev_assignments and st.button("Enregistrer ces correspondances (revue précédente)"):
-                    for raw_col, standard_field in prev_assignments.items():
-                        save_custom_column_mapping(raw_col, standard_field)
-                    st.cache_data.clear()
-                    st.success(f"{len(prev_assignments)} correspondance(s) enregistrée(s). Relance en cours...")
-                    st.rerun()
-
-            _render_full_mapping_review(
+            _render_column_mapping_ui(
                 "revue précédente", list(prev_full_mapping.keys()) + prev_check_unmapped,
                 prev_full_mapping, STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "prevreview",
+                support_inversion=True,
             )
 
     with st.expander("En-tête du document officiel — optionnel"):

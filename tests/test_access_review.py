@@ -1266,3 +1266,27 @@ def test_orphaned_account_not_excluded_by_blank_status():
     result2 = analyze_access(df2)
     assert result2["is_orphaned_account"].iloc[0] == False
     print("OK - test_orphaned_account_not_excluded_by_blank_status")
+
+
+def test_status_values_combining_letter_code_and_word_recognized():
+    """
+    Vrai bug trouvé sur un export réel (Oracle EBS, MTN) : le statut
+    combine un code lettre et un mot descriptif dans la même valeur
+    ('Y-Active', 'N-inactive') — une égalité de chaîne entière ne
+    reconnaissait ni l'un ni l'autre, classant à tort TOUS les comptes
+    actifs comme inactifs. Corrigé par comparaison au niveau du mot
+    (jeton), avec un piège à éviter explicitement : 'N-inactive'
+    contient 'active' comme SOUS-CHAÎNE ('inactive'), donc la
+    comparaison doit se faire par mot entier, jamais par recherche de
+    sous-chaîne, sous peine de classer 'inactive' comme actif.
+    """
+    from analysis.access_review import _is_active_account, _is_terminated_employee
+    assert _is_active_account("Y-Active") == True
+    assert _is_active_account("N-inactive") == False
+    assert _is_terminated_employee("N-inactive") == True
+    assert _is_terminated_employee("Y-Active") == False
+    # Négation explicite : 'Not Active' contient le mot 'active' mais
+    # signifie l'inverse — la négation doit l'emporter.
+    assert _is_active_account("Not Active") == False
+    assert _is_active_account("Non Actif") == False
+    print("OK - test_status_values_combining_letter_code_and_word_recognized")

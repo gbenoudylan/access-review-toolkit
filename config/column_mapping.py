@@ -71,10 +71,11 @@ COLUMN_MAPPING = {
         "resource", "ressource",
     ],
     "role": [
-        "role", "permission", "access_level", "niveau_acces", "droit",
+        "role", "permission", "permissions", "access_level", "niveau_acces", "droit",
         "droits", "group", "groupe", "profil",
         "memberof",  # LDAP : groupes d'appartenance
         "assigned user roles", "user roles", "assigned roles",  # variantes espacées
+        "user rights", "user rights permissions", "rights",  # export Oracle EBS type MTN
     ],
     "description": [
         "description", "job_description", "job description", "account_description",

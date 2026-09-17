@@ -1,15 +1,24 @@
-pandas>=2.0
-openpyxl>=3.1
-rapidfuzz>=3.0
-streamlit>=1.30
-reportlab>=4.0
-python-docx>=1.1
-lxml>=5.0
-html5lib>=1.1
-beautifulsoup4>=4.12
-pdfplumber>=0.11
-pytesseract>=0.3
-Pillow>=10.0
+pandas>=2.0,<4.0
+openpyxl>=3.1,<4.0
+rapidfuzz>=3.0,<4.0
+streamlit>=1.30,<2.0
+reportlab>=4.0,<5.0
+python-docx>=1.1,<2.0
+lxml>=5.0,<7.0
+html5lib>=1.1,<2.0
+beautifulsoup4>=4.12,<5.0
+pdfplumber>=0.11,<1.0
+pytesseract>=0.3,<1.0
+Pillow>=10.0,<13.0
+# Versions plafonnées (pas seulement un minimum) : une montée de version
+# majeure d'une dépendance peut casser silencieusement l'outil sans que
+# personne ne s'en aperçoive avant longtemps — déjà vécu concrètement
+# cette année avec un changement de comportement de pandas 3.0 sur la
+# conversion .astype(str) des valeurs manquantes. Le plafond n'empêche
+# pas de mettre à jour : il force juste à le faire consciemment (relire
+# les notes de version, relancer `pytest tests/`) plutôt que sans y
+# penser via un simple `pip install -r requirements.txt` qui embarquerait
+# une version jamais testée avec cet outil.
 # pytesseract nécessite aussi le binaire système 'tesseract-ocr' (pas
 # installable via pip) : sur Debian/Ubuntu, `apt install tesseract-ocr` ;
 # sur macOS, `brew install tesseract`. Sans ce binaire, la lecture de

@@ -97,17 +97,28 @@ def _split_roles(raw_roles: str) -> list[str]:
     """
     Découpe un champ 'role' multi-valué en rôles individuels.
 
-    Point-virgule prioritaire sur la virgule : un nom de rôle métier peut
-    légitimement contenir une virgule ('Manager, Finance Department',
-    'Analyst, Level 2') — convertir systématiquement ';' en ',' avant de
-    découper (comportement précédent) détruisait cette distinction et
-    coupait un rôle UNIQUE en deux fragments, pouvant déclencher un faux
-    conflit SoD si ces fragments correspondaient par coïncidence à une
-    paire de la matrice. Si au moins un point-virgule est présent, on
-    découpe UNIQUEMENT sur celui-ci (les virgules éventuelles restent
-    alors partie du nom de rôle) ; sinon, on découpe sur la virgule,
-    seul séparateur disponible.
+    Priorité, du séparateur le plus sûr au moins sûr :
+    1. Retour à la ligne — un nom de rôle métier ne contient
+       pratiquement jamais de saut de ligne littéral, contrairement à
+       une virgule ('Manager, Finance Department') ; c'est le motif
+       rencontré dans un vrai export (Oracle EBS, MTN) où une cellule
+       Excel liste un rôle par ligne (Alt+Entrée) pour un même compte —
+       sans ce découpage, tous les rôles d'un utilisateur fusionnaient
+       en une seule chaîne informe, désactivant silencieusement toute
+       détection de conflit SoD pour ce fichier.
+    2. Point-virgule — si présent (et pas de retour à la ligne), il
+       prime sur la virgule : un nom de rôle métier peut légitimement
+       contenir une virgule ('Manager, Finance Department', 'Analyst,
+       Level 2') — convertir systématiquement ';' en ',' avant de
+       découper détruirait cette distinction et couperait un rôle
+       UNIQUE en deux fragments, pouvant déclencher un faux conflit SoD
+       si ces fragments correspondaient par coïncidence à une paire de
+       la matrice.
+    3. Virgule — seul séparateur restant si aucun des deux précédents
+       n'est présent.
     """
+    if "\n" in raw_roles:
+        return raw_roles.split("\n")
     if ";" in raw_roles:
         return raw_roles.split(";")
     return raw_roles.split(",")
