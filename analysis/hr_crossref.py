@@ -408,6 +408,13 @@ def load_transferred_employees(
     result = result.reset_index(drop=True)
     result.attrs["raw_columns"] = list(raw_df.columns)
     result.attrs["matched_columns"] = [c for c in (name_col, old_col, new_col) if c]
+    result.attrs["full_column_mapping"] = {
+        c: field for c, field in (
+            (name_col, "transfer_full_name"),
+            (old_col, "transfer_old_department"),
+            (new_col, "transfer_new_department"),
+        ) if c
+    }
     return result
 
 

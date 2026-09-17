@@ -1416,3 +1416,40 @@ def test_transfer_learned_mapping_can_be_removed():
     forget_custom_column_mapping("nom_test", store_path=store)
     assert "nom test" not in load_custom_column_mappings(store_path=store)
     print("OK - test_transfer_learned_mapping_can_be_removed")
+
+
+def test_full_column_mapping_exposed_for_review_and_override():
+    """
+    Fonctionnalité demandée explicitement : une colonne reconnue
+    automatiquement peut l'être À TORT, silencieusement, sans qu'aucune
+    alerte ne se déclenche (ce n'est pas un échec, donc invisible dans
+    la liste des colonnes non reconnues). standardize_columns expose
+    désormais df.attrs["full_column_mapping"] (colonne brute -> champ
+    reconnu) pour TOUTES les colonnes reconnues, pas seulement les
+    échecs — donnant la visibilité complète nécessaire pour vérifier ou
+    corriger même une correspondance apparemment correcte.
+    """
+    import tempfile
+    from ingestion.ingest import load_file
+    from ingestion.custom_column_mappings import save_custom_column_mapping, load_custom_column_mappings
+
+    content = "username,system,account_status\nu1,AD,Active\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        path = tmp.name
+
+    df = load_file(path, default_system="Test")
+    full_mapping = df.attrs.get("full_column_mapping", {})
+    assert full_mapping.get("username") == "username"
+    assert full_mapping.get("system") == "system"
+    assert full_mapping.get("account_status") == "account_status"
+
+    # Une correction manuelle sur une colonne DÉJÀ correctement reconnue
+    # doit s'appliquer normalement, comme n'importe quelle correction.
+    store = tempfile.mktemp(suffix=".json")
+    save_custom_column_mapping("system", "department", store_path=store)
+    learned = load_custom_column_mappings(store_path=store)
+    df2 = load_file(path, default_system="Test", custom_mappings=learned)
+    assert "department" in df2.columns
+    assert df2.loc[0, "department"] == "AD"
+    print("OK - test_full_column_mapping_exposed_for_review_and_override")

@@ -132,3 +132,23 @@ def test_transfer_and_previous_file_checks_are_cached_functions():
     assert hasattr(app_module._check_previous_file_columns, "__wrapped__") or \
         "cache" in str(type(app_module._check_previous_file_columns)).lower()
     print("OK - test_transfer_and_previous_file_checks_are_cached_functions")
+
+
+def test_column_mapping_dropdown_trimmed_to_control_driving_fields():
+    """
+    Demande explicite : le menu déroulant de correction de colonnes ne
+    doit proposer que les champs qui pilotent réellement un contrôle
+    (username, system, statut, dates, manager, rôle...), pas les champs
+    purement informatifs (nom complet, email, téléphone, poste...) —
+    pour ne pas noyer l'utilisateur dans une liste trop longue face à
+    ce qui compte vraiment.
+    """
+    import importlib
+    import dashboard.app as app_module
+    importlib.reload(app_module)
+    import inspect
+
+    source = inspect.getsource(app_module.main)
+    assert '"username", "system", "account_status", "manager", "role",' in source
+    assert '"email"' not in source.split("STANDARD_FIELDS_FOR_MAPPING = [")[1][:300]
+    print("OK - test_column_mapping_dropdown_trimmed_to_control_driving_fields")

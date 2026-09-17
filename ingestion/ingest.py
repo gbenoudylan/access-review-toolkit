@@ -220,6 +220,12 @@ def standardize_columns(
     l'appelant (dashboard) puisse proposer une correction manuelle.
     """
     rename_map, unmatched = {}, []
+    # Correspondance COMPLÈTE (colonne brute -> champ reconnu), pas
+    # seulement les échecs — pour la vue "toutes les correspondances"
+    # du dashboard, qui permet de vérifier/corriger même une colonne
+    # reconnue automatiquement (potentiellement à tort), pas seulement
+    # celles restées sans correspondance.
+    full_column_mapping = {}
     claimed_by: dict[str, str] = {}  # nom standard -> colonne originale déjà utilisée
 
     # Deux colonnes brutes peuvent porter EXACTEMENT le même libellé (pas
@@ -254,6 +260,7 @@ def standardize_columns(
         if not matched:
             unmatched.append(col)
             continue
+        full_column_mapping[col] = matched.replace("__inverted_bool", "")
         # Correction manuelle avec inversion de polarité (dashboard) :
         # certains champs sources sont des booléens de sens OPPOSÉ au
         # champ standard visé (ex. 'identity/accountDisabled' — true
@@ -332,6 +339,7 @@ def standardize_columns(
         logger.info(f"Colonnes non reconnues (ignorées) : {unmatched}")
     result = df.rename(columns=rename_map)
     result.attrs["unmapped_columns"] = unmatched
+    result.attrs["full_column_mapping"] = full_column_mapping
     return result
 
 

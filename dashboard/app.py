@@ -21,6 +21,7 @@ import streamlit as st
 from ingestion.ingest import load_file, load_file_with_mapping, IngestionError, compute_data_quality_report
 from ingestion.custom_column_mappings import (
     load_custom_column_mappings, save_custom_column_mapping, forget_custom_column_mapping,
+    DEFAULT_STORE_PATH as MAIN_CUSTOM_MAPPING_STORE_PATH,
 )
 from analysis.access_review import analyze_access, summarize
 from analysis.hr_crossref import (
@@ -69,7 +70,7 @@ def run_pipeline(
     extraction_date: str = None,
     transfer_file_bytes: bytes = None, transfer_filename: str = None,
     transfer_sheet_name: str = None,
-) -> tuple[pd.DataFrame, list, list]:
+) -> tuple[pd.DataFrame, list, list, dict, dict]:
     suffix = Path(filename).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(file_bytes)
@@ -82,6 +83,7 @@ def run_pipeline(
     custom_mappings = load_custom_column_mappings()
     df = load_file(tmp_path, default_system=default_system or None, custom_mappings=custom_mappings)
     unmapped_columns = list(df.attrs.get("unmapped_columns", []))
+    full_column_mapping = dict(df.attrs.get("full_column_mapping", {}))
 
     if hr_file_bytes is not None:
         hr_suffix = Path(hr_filename).suffix
@@ -98,9 +100,11 @@ def run_pipeline(
             hr_tmp_path, HR_COLUMN_MAPPING, HR_REQUIRED_FIELDS, custom_mappings=hr_custom_mappings,
         )
         hr_unmapped_columns = list(hr_df_raw.attrs.get("unmapped_columns", []))
+        hr_full_column_mapping = dict(hr_df_raw.attrs.get("full_column_mapping", {}))
         df = cross_reference_with_hr(df, hr_df=hr_df_raw)
     else:
         hr_unmapped_columns = []
+        hr_full_column_mapping = {}
 
     # Date d'extraction comme référence pour tous les calculs d'ancienneté :
     # une revue peut porter sur un fichier extrait il y a plusieurs semaines,
@@ -140,7 +144,7 @@ def run_pipeline(
         except (ValueError, KeyError) as e:
             logging.getLogger("dashboard").warning(f"Fichier de mutations ignoré : {e}")
 
-    return df, unmapped_columns, hr_unmapped_columns
+    return df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping
 
 
 @st.cache_data(show_spinner=False)
@@ -158,11 +162,12 @@ def _check_transfer_file_columns(file_bytes: bytes, filename: str, sheet_name: s
         result = load_transferred_employees(tmp_path, sheet_name=sheet_name or None, custom_mappings=custom_mappings)
         raw_columns = result.attrs.get("raw_columns", [])
         matched = result.attrs.get("matched_columns", [])
-        return list(raw_columns), [c for c in raw_columns if c not in matched], True, None
+        full_mapping = dict(result.attrs.get("full_column_mapping", {}))
+        return list(raw_columns), [c for c in raw_columns if c not in matched], True, None, full_mapping
     except TransferNameColumnNotFoundError as e:
-        return list(e.raw_columns), list(e.raw_columns), False, None
+        return list(e.raw_columns), list(e.raw_columns), False, None, {}
     except ValueError as e:
-        return [], [], True, str(e)
+        return [], [], True, str(e), {}
 
 
 @st.cache_data(show_spinner=False)
@@ -176,9 +181,55 @@ def _check_previous_file_columns(file_bytes: bytes, filename: str, custom_mappin
         tmp_path = tmp.name
     try:
         df = load_file(tmp_path, default_system=None, custom_mappings=custom_mappings)
-        return list(df.attrs.get("unmapped_columns", [])), None
+        return list(df.attrs.get("unmapped_columns", [])), None, dict(df.attrs.get("full_column_mapping", {}))
     except IngestionError as e:
-        return [], str(e)
+        return [], str(e), {}
+
+
+def _render_full_mapping_review(
+    title: str, raw_columns: list, full_mapping: dict, standard_fields: list,
+    store_path, key_prefix: str,
+) -> None:
+    """
+    Vue complète et optionnelle de TOUTES les correspondances de
+    colonnes d'un fichier — pas seulement celles restées sans
+    correspondance. Demandée explicitement : une colonne reconnue
+    automatiquement peut l'être À TORT (silencieusement, sans qu'aucune
+    alerte ne se déclenche puisque ce n'est pas un échec) — cette vue
+    donne la visibilité et le contrôle complets, sans pour autant
+    imposer une étape obligatoire à chaque import (repliée par défaut,
+    n'ajoute aucune friction pour qui fait confiance à la détection
+    automatique).
+    """
+    if not raw_columns:
+        return
+    with st.expander(f"Voir toutes les correspondances de colonnes ({len(raw_columns)}) — {title}"):
+        st.caption(
+            "Chaque colonne du fichier et le champ auquel elle correspond actuellement. "
+            "Change n'importe laquelle si elle te semble incorrecte, même reconnue "
+            "automatiquement — la correction sera mémorisée pour les prochains fichiers "
+            "portant ce même nom de colonne."
+        )
+        options = ["Ignorée"] + standard_fields
+        review_assignments = {}
+        for col in raw_columns:
+            current = full_mapping.get(col)
+            default_idx = options.index(current) if current in options else 0
+            choice = st.selectbox(
+                f"'{col}' correspond à :", options=options, index=default_idx,
+                key=f"{key_prefix}_review_{col}",
+            )
+            if choice != (current or "Ignorée"):
+                review_assignments[col] = choice
+        if review_assignments and st.button("Enregistrer ces changements", key=f"{key_prefix}_review_save"):
+            for raw_col, standard_field in review_assignments.items():
+                if standard_field == "Ignorée":
+                    forget_custom_column_mapping(raw_col, store_path=store_path)
+                else:
+                    save_custom_column_mapping(raw_col, standard_field, store_path=store_path)
+            st.cache_data.clear()
+            st.success(f"{len(review_assignments)} correspondance(s) mise(s) à jour. Relance en cours...")
+            st.rerun()
 
 
 def main():
@@ -256,7 +307,7 @@ def main():
             # les champs visés n'ont de raison de coïncider avec ceux de
             # l'export d'accès ou du fichier RH de statut employé.
             transfer_custom_mappings_check = load_custom_column_mappings(store_path=TRANSFER_CUSTOM_MAPPING_STORE_PATH)
-            transfer_raw_columns, transfer_still_unmapped, transfer_name_found, transfer_check_error = (
+            transfer_raw_columns, transfer_still_unmapped, transfer_name_found, transfer_check_error, transfer_full_mapping = (
                 _check_transfer_file_columns(
                     transfer_uploaded_file.getvalue(), transfer_uploaded_file.name,
                     transfer_sheet_name or "", transfer_custom_mappings_check,
@@ -265,6 +316,9 @@ def main():
             if transfer_check_error:
                 st.warning(f"Fichier de mutations illisible pour l'instant : {transfer_check_error}")
 
+            TRANSFER_STANDARD_FIELDS = [
+                "transfer_full_name", "transfer_old_department", "transfer_new_department",
+            ]
             if not transfer_name_found:
                 st.warning(
                     "Aucune colonne de nom reconnue sur cette feuille — indispensable pour "
@@ -272,9 +326,6 @@ def main():
                     "colonne ci-dessous."
                 )
             if transfer_still_unmapped:
-                TRANSFER_STANDARD_FIELDS = [
-                    "transfer_full_name", "transfer_old_department", "transfer_new_department",
-                ]
                 transfer_assignments = {}
                 for col in transfer_still_unmapped:
                     choice = st.selectbox(
@@ -290,6 +341,11 @@ def main():
                     st.cache_data.clear()
                     st.success(f"{len(transfer_assignments)} correspondance(s) enregistrée(s). Relance en cours...")
                     st.rerun()
+
+            _render_full_mapping_review(
+                "fichier de transferts", list(transfer_full_mapping.keys()) + transfer_still_unmapped,
+                transfer_full_mapping, TRANSFER_STANDARD_FIELDS, TRANSFER_CUSTOM_MAPPING_STORE_PATH, "transfer",
+            )
 
         st.divider()
         st.subheader("⚙️ Seuils des contrôles")
@@ -332,7 +388,7 @@ def main():
                 hr_name = hr_uploaded_file.name if hr_uploaded_file else None
                 transfer_bytes = transfer_uploaded_file.getvalue() if transfer_uploaded_file else None
                 transfer_name = transfer_uploaded_file.name if transfer_uploaded_file else None
-                df, unmapped_columns, hr_unmapped_columns = run_pipeline(
+                df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping = run_pipeline(
                     uploaded_file.getvalue(), uploaded_file.name, hr_bytes, hr_name,
                     default_system=default_system,
                     dormant_threshold_days=dormant_threshold_days,
@@ -346,7 +402,7 @@ def main():
         elif use_sample:
             sample_path = Path(__file__).parent.parent / "data" / "export_test_A.csv"
             with st.spinner("Traitement du fichier d'exemple..."):
-                df, unmapped_columns, hr_unmapped_columns = run_pipeline(
+                df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping = run_pipeline(
                     sample_path.read_bytes(), sample_path.name,
                     dormant_threshold_days=dormant_threshold_days,
                     password_stale_threshold_days=password_stale_threshold_days,
@@ -376,11 +432,14 @@ def main():
     # portant exactement le même nom de colonne, elle s'applique
     # automatiquement.
     STANDARD_FIELDS_FOR_MAPPING = [
-        "username", "full_name", "first_name", "last_name", "email", "phone",
-        "department", "job_title", "manager", "system", "role", "description",
-        "account_status", "is_privileged", "last_login_date", "account_created_date",
-        "account_expiry_date", "employee_status", "password_last_set",
-        "password_expiry_date", "password_status",
+        # Recentré sur les champs qui pilotent réellement un contrôle (ou
+        # sont indispensables à l'identification) — demande explicite de
+        # ne pas noyer le menu avec des champs purement informatifs
+        # (nom complet, email, téléphone, poste...) qu'aucun contrôle
+        # n'utilise directement.
+        "username", "system", "account_status", "manager", "role",
+        "is_privileged", "last_login_date", "account_created_date",
+        "employee_status", "password_last_set",
     ]
 
     def _is_effectively_empty(series) -> bool:
@@ -392,7 +451,7 @@ def main():
     # la vraie donnée) doit être traité comme un manque au même titre
     # qu'une colonne jamais reconnue : sinon, personne ne s'aperçoit
     # jamais que la vraie donnée existe ailleurs dans le fichier.
-    important_check_fields = ("last_login_date", "password_last_set", "account_status", "full_name")
+    important_check_fields = ("last_login_date", "password_last_set", "account_status")
     important_missing = [f for f in important_check_fields if f not in df.columns]
     important_empty = [
         f for f in important_check_fields
@@ -449,13 +508,21 @@ def main():
                 st.success(f"{len(assignments)} correspondance(s) enregistrée(s). Relance en cours...")
                 st.rerun()
 
+    _render_full_mapping_review(
+        "fichier principal", list(full_column_mapping.keys()) + unmapped_columns,
+        full_column_mapping, STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "main",
+    )
+
     # Même mécanisme que ci-dessus, mais pour le fichier RH (croisement) —
     # magasin de correspondances SÉPARÉ (HR_CUSTOM_MAPPING_STORE_PATH),
     # puisque les champs standard visés (hr_username, hr_employee_status...)
     # n'ont rien à voir avec ceux de l'export d'accès principal.
     HR_STANDARD_FIELDS_FOR_MAPPING = [
-        "hr_username", "hr_employee_status", "hr_department",
-        "first_name", "last_name", "full_name",
+        # full_name conservé ici (contrairement au fichier principal) :
+        # c'est le mécanisme de rapprochement PRINCIPAL avec l'IAM quand
+        # aucun identifiant technique commun n'existe — primordial pour
+        # ce fichier précisément, pas juste informatif.
+        "hr_username", "hr_employee_status", "full_name",
     ]
     if hr_unmapped_columns:
         with st.expander(
@@ -483,6 +550,11 @@ def main():
                 st.cache_data.clear()
                 st.success(f"{len(hr_assignments)} correspondance(s) RH enregistrée(s). Relance en cours...")
                 st.rerun()
+
+    _render_full_mapping_review(
+        "fichier RH", list(hr_full_column_mapping.keys()) + hr_unmapped_columns,
+        hr_full_column_mapping, HR_STANDARD_FIELDS_FOR_MAPPING, HR_CUSTOM_MAPPING_STORE_PATH, "hr",
+    )
 
     # Gestion des correspondances DÉJÀ apprises : une fois qu'une colonne
     # est associée (bien ou mal), elle disparaît de la liste "non
@@ -993,7 +1065,7 @@ def main():
         # avoir cliqué sur "Générer", trop tard pour corriger sereinement.
         if previous_file is not None:
             prev_check_mappings = load_custom_column_mappings()
-            prev_check_unmapped, prev_check_error = _check_previous_file_columns(
+            prev_check_unmapped, prev_check_error, prev_full_mapping = _check_previous_file_columns(
                 previous_file.getvalue(), previous_file.name, prev_check_mappings,
             )
             if prev_check_error:
@@ -1019,6 +1091,11 @@ def main():
                     st.cache_data.clear()
                     st.success(f"{len(prev_assignments)} correspondance(s) enregistrée(s). Relance en cours...")
                     st.rerun()
+
+            _render_full_mapping_review(
+                "revue précédente", list(prev_full_mapping.keys()) + prev_check_unmapped,
+                prev_full_mapping, STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "prevreview",
+            )
 
     with st.expander("En-tête du document officiel — optionnel"):
         header_col1, header_col2 = st.columns(2)
