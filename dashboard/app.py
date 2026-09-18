@@ -233,7 +233,13 @@ def _check_previous_file_columns(file_bytes: bytes, filename: str, custom_mappin
         tmp.write(file_bytes)
         tmp_path = tmp.name
     try:
-        df = load_file(tmp_path, default_system=None, custom_mappings=custom_mappings)
+        df = load_file(
+            tmp_path, default_system=None, custom_mappings=custom_mappings,
+            raise_on_missing_required=False,
+        )
+        ingestion_error = df.attrs.get("ingestion_error")
+        if ingestion_error:
+            return [], ingestion_error, {}
         return list(df.attrs.get("unmapped_columns", [])), None, dict(df.attrs.get("full_column_mapping", {}))
     except IngestionError as e:
         return [], str(e), {}
