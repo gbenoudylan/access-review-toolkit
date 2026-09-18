@@ -92,6 +92,11 @@ COLUMN_MAPPING = {
         "is_privileged", "privileged", "admin", "is_admin", "compte_privilegie",
         "acces_privilegie", "sudo privileges", "sudo", "root access",  # exports serveurs Linux/Unix
     ],
+    "is_locked": [
+        "is_locked", "locked", "account_locked", "verrouille", "verrouillé",
+        "lock_status", "lockout_status", "lockedout", "locked_out",
+        "account_lockout", "is_lockedout",
+    ],
     "last_login_date": [
         "last_login_date", "last_login", "derniere_connexion",
         "date_derniere_connexion", "last_logon",

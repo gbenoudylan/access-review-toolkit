@@ -544,7 +544,7 @@ def main():
     # complet, email, téléphone, poste...) qu'aucun contrôle n'utilise
     # directement.
     STANDARD_FIELDS_FOR_MAPPING = [
-        "username", "system", "account_status", "manager", "role",
+        "username", "system", "account_status", "is_locked", "manager", "role",
         "is_privileged", "last_login_date", "account_created_date",
         "employee_status", "password_last_set",
     ]

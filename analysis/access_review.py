@@ -32,14 +32,30 @@ PASSWORD_STALE_THRESHOLD_DAYS = 90  # standard interne MTN : 90 jours pour les c
 RECENTLY_CREATED_THRESHOLD_DAYS = 90  # fenêtre du contrôle 10 "Accounts created"
 
 ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "y", "true", "1", "open"}
+
+# Valeurs de statut "verrouillé" — traitées comme actives pour l'audit
+# (le compte existe, ses rôles sont toujours là, il peut être déverrouillé)
+# mais distinctes des vraies valeurs actives : is_locked sera True.
+# Intentionnellement séparées d'ACTIVE_STATUS_VALUES et de
+# TERMINATED_STATUS_VALUES pour que la logique de résolution puisse
+# les reconnaître et les traiter différemment.
+LOCKED_STATUS_VALUES = {"locked", "verrouillé", "verrouille"}
 TERMINATED_STATUS_VALUES = {
     "terminated", "termine", "terminé", "parti", "departed", "left",
     "inactive", "inactif", "resigned", "démissionné",
     "retired", "retraité", "leaver", "ex-employee", "former employee",
     "fired", "dismissed", "licencié", "licencie", "no longer employed",
     "not employed", "separated", "redundant",
-    "locked", "verrouillé", "disabled", "désactivé", "desactive",
+    "disabled", "désactivé", "desactive",
     "suspended", "suspendu", "blocked", "bloqué", "expired", "expiré",
+    # NB : "locked" / "verrouillé" est intentionnellement ABSENT de cette
+    # liste — un compte verrouillé n'est PAS inactif pour un audit : il
+    # peut être déverrouillé à tout moment, ses rôles sont toujours actifs
+    # (conflits SoD, accès privilégiés), et s'il appartient à un employé
+    # parti c'est une anomalie critique même verrouillé. Il est traité
+    # comme potentiellement actif (pire cas) et signalé séparément via la
+    # colonne is_locked. L'auditeur peut le mapper manuellement vers
+    # 'inactive' dans le dashboard s'il veut l'exclure explicitement.
 }
 PRIVILEGED_VALUES = {"oui", "yes", "y", "true", "1", "admin", "administrateur"}
 NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais", "no expiry", "does not expire"}
@@ -699,11 +715,29 @@ def analyze_access(
     LOCKED_MARKERS_RE = re.compile(
         r"\b(locked|verrouill[ée]|bloqu[ée])\b", re.IGNORECASE
     )
+    # Source 1 : détection via les valeurs de account_status (ex. "Locked")
     if "account_status" in df.columns:
         status_lower = df["account_status"].astype(str).fillna("").str.strip()
-        df["is_locked"] = status_lower.apply(lambda s: bool(LOCKED_MARKERS_RE.search(s)))
+        is_locked_from_status = status_lower.apply(lambda s: bool(LOCKED_MARKERS_RE.search(s)))
+    else:
+        is_locked_from_status = pd.Series(False, index=df.index)
 
-        # Résolution du statut avec prise en charge des valeurs inconnues :
+    # Source 2 : colonne dédiée is_locked (ex. "LOCKED" = Yes/No)
+    # Cas fréquent : un fichier a DEUX colonnes liées au statut —
+    # "STATUS" = Active/Inactive et "LOCKED" = Yes/No — les deux sont
+    # combinées. La colonne peut être mappée manuellement dans le dashboard.
+    if "is_locked" in df.columns:
+        is_locked_from_col = df["is_locked"].apply(
+            lambda v: str(v).strip().lower() in {
+                "yes", "true", "1", "oui", "locked", "verrouillé", "verrouille", "y"
+            }
+        )
+    else:
+        is_locked_from_col = pd.Series(False, index=df.index)
+
+    df["is_locked"] = is_locked_from_status | is_locked_from_col
+
+    if "account_status" in df.columns:
         # 1. D'abord les mappings appris manuellement (mémorisés via le dashboard)
         # 2. Ensuite la reconnaissance automatique (liste ACTIVE_STATUS_VALUES +
         #    tokenisation pour les formats composés ex. 'Y-Active')
@@ -723,8 +757,14 @@ def analyze_access(
                     return custom_status_mappings[key] == "active", False
             if _is_active_account(val):
                 return True, False
-            norm = str(val).strip().lower()
+            # Valeur verrouillée : active pour l'audit (le compte existe,
+            # ses rôles sont là) mais is_locked sera True via LOCKED_MARKERS_RE
             tokens = _tokenize_status_value(val)
+            if tokens & LOCKED_STATUS_VALUES:
+                return True, False
+            norm = str(val).strip().lower()
+            if norm in LOCKED_STATUS_VALUES:
+                return True, False
             if norm in TERMINATED_STATUS_VALUES or (tokens & TERMINATED_STATUS_VALUES):
                 return False, False
             if not norm or norm in ("nan", "none", ""):
