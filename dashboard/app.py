@@ -110,7 +110,7 @@ def run_pipeline(
         return empty_df, [], [], {}, {}, []
     unmapped_columns = list(df.attrs.get("unmapped_columns", []))
     full_column_mapping = dict(df.attrs.get("full_column_mapping", {}))
-    missing_required = list(df.attrs.get("missing_required_fields", []))
+    missing_required = list(df.attrs.get("missing_required_fields") or [])
     if missing_required:
         # Un champ obligatoire (ex. 'username') reste introuvable même
         # après reconnaissance automatique — possiblement parce
@@ -548,7 +548,7 @@ def main():
         "is_privileged", "last_login_date", "account_created_date",
         "employee_status", "password_last_set",
     ]
-    missing_required = list(df.attrs.get("missing_required_fields", []))
+    missing_required = list(df.attrs.get("missing_required_fields") or [])
     all_main_raw_columns = list(full_column_mapping.keys()) + unmapped_columns
 
     if missing_required:
