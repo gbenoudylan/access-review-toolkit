@@ -76,7 +76,7 @@ def run_pipeline(
     dormant_threshold_days: int = 90,
     password_stale_threshold_days: int = 90,
     never_used_threshold_days: int = 30,
-    sod_conflicts: list = None,
+    sod_conflicts: tuple = None,
     extraction_date: str = None,
     transfer_file_bytes: bytes = None, transfer_filename: str = None,
     transfer_sheet_name: str = None,
@@ -276,7 +276,7 @@ def _render_column_mapping_ui(
 
     with st.expander(
         f"Correspondances de colonnes ({len(raw_columns)}) — {title}",
-        expanded=needs_attention,
+        expanded=True,
     ):
         if missing_required:
             st.error(
@@ -499,7 +499,7 @@ def main():
                     dormant_threshold_days=dormant_threshold_days,
                     password_stale_threshold_days=password_stale_threshold_days,
                     never_used_threshold_days=never_used_threshold_days,
-                    sod_conflicts=sod_conflicts,
+                    sod_conflicts=tuple(sod_conflicts) if sod_conflicts else None,
                     extraction_date=extraction_date.strftime('%Y-%m-%d'),
                     transfer_file_bytes=transfer_bytes, transfer_filename=transfer_name,
                     transfer_sheet_name=transfer_sheet_name or None,
@@ -512,7 +512,7 @@ def main():
                     dormant_threshold_days=dormant_threshold_days,
                     password_stale_threshold_days=password_stale_threshold_days,
                     never_used_threshold_days=never_used_threshold_days,
-                    sod_conflicts=sod_conflicts,
+                    sod_conflicts=tuple(sod_conflicts) if sod_conflicts else None,
                     extraction_date=extraction_date.strftime('%Y-%m-%d'),
                 )
     except IngestionError as e:
