@@ -149,8 +149,8 @@ def test_column_mapping_dropdown_trimmed_to_control_driving_fields():
     import inspect
 
     source = inspect.getsource(app_module.main)
-    assert '"username", "system", "account_status", "is_locked", "manager", "role",' in source
-    assert '"email"' not in source.split("STANDARD_FIELDS_FOR_MAPPING = [")[1][:300]
+    assert '"username", "system", "account_status", "is_locked",' in source
+    assert '"email"' not in source.split("STANDARD_FIELDS_FOR_MAPPING = [")[1][:200]
     print("OK - test_column_mapping_dropdown_trimmed_to_control_driving_fields")
 
 

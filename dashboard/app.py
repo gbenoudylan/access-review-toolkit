@@ -395,28 +395,14 @@ def main():
         if uploaded_file is None:
             use_sample = st.checkbox("Utiliser un fichier d'exemple", value=True)
 
-        st.divider()
-        st.subheader("🔗 Croisement RH (optionnel)")
-        hr_uploaded_file = st.file_uploader(
-            "Export RH — source de vérité sur qui est employé",
-            type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml",
-                  "html", "htm", "ldif", "pdf", "jpeg", "jpg", "png", "zip"],
-            help="Corrige le statut RH réel des comptes, notamment pour les "
-                 "exports LDAP/AD qui ne contiennent pas nativement cette "
-                 "information. La source RH fait autorité sur le statut employé.",
-        )
-
+        # ── Comptes transférés/mutés ─────────────────────────────────────────
         st.divider()
         st.subheader("🔄 Comptes transférés/mutés (optionnel)")
         transfer_uploaded_file = st.file_uploader(
             "Fichier RH de mouvements (feuille Affectation/Mutation)",
             type=["xlsx", "xls"],
-            help="Classeur RH multi-feuilles où seule la feuille de "
-                 "mutation/affectation est utilisée (colonnes attendues : "
-                 "'Nom & Prénoms', 'Ancienne Direction', 'Nouvelle "
-                 "Direction'). La RH n'y fournit que des noms — les comptes "
-                 "correspondants sont reconnus par nom dans les systèmes, "
-                 "et ceux encore actifs sont signalés (contrôle 18).",
+            help="Classeur RH multi-feuilles : seule la feuille "
+                 "mutation/affectation est utilisée.",
         )
         transfer_sheet_name = None
         if transfer_uploaded_file is not None:
@@ -426,12 +412,6 @@ def main():
                 help="Laisser vide : la première feuille dont le nom contient "
                      "'affectation', 'mutation' ou 'transfert' est utilisée.",
             )
-            # Vérifié dès l'upload (comme pour les deux autres fichiers) —
-            # magasin de correspondances séparé, propre à ce domaine
-            # (transfer_full_name, transfer_old_department,
-            # transfer_new_department), puisque ni les noms de colonnes ni
-            # les champs visés n'ont de raison de coïncider avec ceux de
-            # l'export d'accès ou du fichier RH de statut employé.
             transfer_custom_mappings_check = load_custom_column_mappings(store_path=TRANSFER_CUSTOM_MAPPING_STORE_PATH)
             transfer_raw_columns, transfer_still_unmapped, transfer_name_found, transfer_check_error, transfer_full_mapping = (
                 _check_transfer_file_columns(
@@ -441,7 +421,7 @@ def main():
             )
             if transfer_check_error:
                 st.error(
-                    f"**Fichier de mouvements RH illisible** — il sera ignoré pour ce cycle. "
+                    f"**Fichier de mouvements illisible** — il sera ignoré. "
                     f"Cause : {transfer_check_error}"
                 )
             else:
@@ -454,6 +434,14 @@ def main():
                     missing_required=[] if transfer_name_found else ["transfer_full_name"],
                 )
 
+        # ── RH et SoD : fonctionnalités conservées, non exposées pour l'instant ──
+        # Les modules analysis/hr_crossref.py et analysis/sod_detection.py
+        # restent intacts et appelables depuis le code — le dashboard ne les
+        # propose pas pour simplifier l'interface dans un premier temps.
+        hr_uploaded_file = None          # pas de section RH dans l'UI
+        sod_conflicts = None             # pas de section SoD dans l'UI
+
+        # ── Seuils des contrôles ─────────────────────────────────────────────
         st.divider()
         st.subheader("⚙️ Seuils des contrôles")
         dormant_threshold_days = st.number_input(
@@ -462,30 +450,12 @@ def main():
         )
         password_stale_threshold_days = st.number_input(
             "Seuil d'ancienneté du mot de passe (jours)", min_value=1, value=90, step=15,
-            help="Un mot de passe est considéré périmé au-delà de ce nombre de jours (comptes de service exclus).",
+            help="Un mot de passe est considéré périmé au-delà de ce nombre de jours.",
         )
         never_used_threshold_days = st.number_input(
             "Seuil 'jamais utilisé' (jours depuis création)", min_value=1, value=30, step=5,
-            help="Un compte jamais connecté n'est signalé qu'après ce délai depuis sa création "
-                 "(laisse le temps à un nouveau compte d'être utilisé pour la première fois).",
+            help="Un compte jamais connecté n'est signalé qu'après ce délai depuis sa création.",
         )
-
-        st.divider()
-        st.subheader("🔐 Matrice SoD personnalisée (optionnel)")
-        sod_matrix_file = st.file_uploader(
-            "Fichier à 2 colonnes : rôle 1, rôle 2 (paires incompatibles)",
-            type=["csv", "xlsx", "xls"],
-            help="Sans fichier, une matrice générique par défaut est utilisée (conflits classiques "
-                 "finance/achats/IT). Chaque entreprise a sa propre liste de rôles incompatibles — "
-                 "fournissez la vôtre pour l'appliquer sans modifier le code.",
-        )
-        sod_conflicts = None
-        if sod_matrix_file is not None:
-            try:
-                sod_conflicts = load_custom_sod_matrix(sod_matrix_file.getvalue(), sod_matrix_file.name)
-                st.success(f"{len(sod_conflicts)} paire(s) de rôles incompatibles chargée(s).")
-            except Exception as e:
-                st.warning(f"Matrice SoD ignorée (erreur de lecture) : {e}")
 
     df, error = None, None
     try:
@@ -546,9 +516,8 @@ def main():
     # complet, email, téléphone, poste...) qu'aucun contrôle n'utilise
     # directement.
     STANDARD_FIELDS_FOR_MAPPING = [
-        "username", "system", "account_status", "is_locked", "manager", "role",
-        "is_privileged", "last_login_date", "account_created_date",
-        "employee_status", "password_last_set",
+        "username", "system", "account_status", "is_locked",
+        "last_login_date", "account_created_date", "password_last_set",
     ]
     missing_required = list(df.attrs.get("missing_required_fields") or [])
     # full_column_mapping vient du tuple de retour de run_pipeline.
@@ -666,75 +635,16 @@ def main():
                         st.cache_data.clear()
                         st.rerun()
 
-    # Rôles SoD — mapping manuel pour les abréviations que le fuzzy rate
-    all_roles_learned = load_custom_role_mappings(store_path=ROLE_CUSTOM_MAPPING_STORE_PATH)
-    if all_roles_learned:
-        with st.expander(f"Équivalences de rôles SoD apprises ({len(all_roles_learned)}) — modifier si besoin"):
-            st.caption(
-                "Ces équivalences sont prioritaires sur le fuzzy matching automatique — "
-                "utiles quand un nom de rôle varie trop pour être rapproché automatiquement "
-                "('AP Resp' → 'MTN_AP - Responsable')."
-            )
-            for raw_role, std_role in list(all_roles_learned.items()):
-                col_a, col_b = st.columns([4, 1])
-                with col_a:
-                    st.write(f"**{raw_role}** → {std_role}")
-                with col_b:
-                    if st.button("Retirer", key=f"role_forget_{raw_role}"):
-                        forget_custom_role_mapping(raw_role, store_path=ROLE_CUSTOM_MAPPING_STORE_PATH)
-                        st.cache_data.clear()
-                        st.rerun()
-    with st.expander("Ajouter une équivalence de rôle SoD manuellement"):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            new_raw_role = st.text_input("Nom du rôle dans le fichier", key="new_role_src",
-                                          placeholder="ex. AP Resp")
-        with col_b:
-            new_std_role = st.text_input("Nom standard dans la matrice SoD", key="new_role_tgt",
-                                          placeholder="ex. MTN_AP - Responsable")
-        if st.button("Ajouter cette équivalence") and new_raw_role and new_std_role:
-            save_custom_role_mapping(new_raw_role, new_std_role, store_path=ROLE_CUSTOM_MAPPING_STORE_PATH)
-            st.cache_data.clear()
-            st.rerun()
+    # Rôles SoD masqués (interface non exposée pour l'instant).
 
-    # Même mécanisme que ci-dessus, mais pour le fichier RH (croisement) —
-    # magasin de correspondances SÉPARÉ (HR_CUSTOM_MAPPING_STORE_PATH),
-    # puisque les champs standard visés (hr_username, hr_employee_status...)
-    # n'ont rien à voir avec ceux de l'export d'accès principal.
-    HR_STANDARD_FIELDS_FOR_MAPPING = [
-        # full_name conservé ici (contrairement au fichier principal) :
-        # c'est le mécanisme de rapprochement PRINCIPAL avec l'IAM quand
-        # aucun identifiant technique commun n'existe — primordial pour
-        # ce fichier précisément, pas juste informatif.
-        "hr_username", "hr_employee_status", "full_name",
-    ]
-    hr_error = df.attrs.get("hr_ingestion_error") if hasattr(df, "attrs") else None
-    if hr_error:
-        st.error(
-            f"**Fichier RH illisible** — il sera ignoré pour ce cycle. "
-            f"Cause : {hr_error}"
-        )
-    else:
-        _render_column_mapping_ui(
-            "fichier RH", list(hr_full_column_mapping.keys()) + hr_unmapped_columns,
-            hr_full_column_mapping, HR_STANDARD_FIELDS_FOR_MAPPING, HR_CUSTOM_MAPPING_STORE_PATH, "hr",
-        )
+    # Section RH masquée (interface non exposée pour l'instant — fonctionnalités
+    # intactes dans le code, prêtes à être réactivées).
 
-    # Gestion des correspondances DÉJÀ apprises : une fois qu'une colonne
-    # est associée (bien ou mal), elle disparaît de la liste "non
-    # reconnues" ci-dessus puisqu'elle est désormais reconnue — sans
-    # cette section, aucun moyen de revenir en arrière ou de corriger
-    # une association faite par erreur (ex. mauvaise colonne assignée à
-    # 'last_login_date').
+    # Correspondances colonnes déjà apprises (fichier principal)
     all_learned = load_custom_column_mappings()
     if all_learned:
         with st.expander(f"Correspondances déjà apprises ({len(all_learned)}) — modifier si besoin"):
-            st.caption(
-                "Colonnes déjà associées manuellement lors d'une session précédente, "
-                "appliquées automatiquement à ce fichier. Retire une correspondance si "
-                "elle est incorrecte — la colonne réapparaîtra dans la section "
-                "'Colonnes non reconnues' ci-dessus pour être réassignée."
-            )
+            st.caption("Colonnes déjà associées manuellement. Retire si incorrecte.")
             for raw_col_norm, target_field in list(all_learned.items()):
                 display_field = target_field.replace("__inverted_bool", " (inversé)")
                 col_a, col_b = st.columns([4, 1])
@@ -743,24 +653,6 @@ def main():
                 with col_b:
                     if st.button("Retirer", key=f"forget_{raw_col_norm}"):
                         forget_custom_column_mapping(raw_col_norm)
-                        st.cache_data.clear()
-                        st.rerun()
-
-    hr_all_learned = load_custom_column_mappings(store_path=HR_CUSTOM_MAPPING_STORE_PATH)
-    if hr_all_learned:
-        with st.expander(f"Correspondances RH déjà apprises ({len(hr_all_learned)}) — modifier si besoin"):
-            st.caption(
-                "Colonnes du fichier RH déjà associées manuellement lors d'une session "
-                "précédente. Retire une correspondance si elle est incorrecte — la colonne "
-                "réapparaîtra dans la section 'Colonnes RH non reconnues' pour être réassignée."
-            )
-            for raw_col_norm, target_field in list(hr_all_learned.items()):
-                col_a, col_b = st.columns([4, 1])
-                with col_a:
-                    st.write(f"**{raw_col_norm}** → {target_field}")
-                with col_b:
-                    if st.button("Retirer", key=f"hr_forget_{raw_col_norm}"):
-                        forget_custom_column_mapping(raw_col_norm, store_path=HR_CUSTOM_MAPPING_STORE_PATH)
                         st.cache_data.clear()
                         st.rerun()
 
@@ -786,7 +678,6 @@ def main():
     df = attach_review_status(df, store_path=DECISIONS_STORE_PATH)
     summary = summarize(df)
     workflow_summary = review_summary(df)
-    n_sod_conflicts = int(df["sod_conflict"].sum()) if "sod_conflict" in df.columns else 0
 
     quality_report = compute_data_quality_report(df)
     with st.expander(
@@ -833,13 +724,11 @@ def main():
             )
 
     st.subheader("Vue d'ensemble")
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Comptes analysés", summary["total_accounts"])
-    col2.metric("Partis, accès actif", summary["terminated_but_active"])
-    col3.metric("Comptes dormants", summary["dormant_accounts"])
-    col4.metric("Conflits SoD", n_sod_conflicts)
-    col5.metric("Revue traitée", f"{workflow_summary.get('taux_traitement', 0)}%")
-    col6.metric("Privilégié, MDP permanent", summary["privileged_non_expiring_password"])
+    col2.metric("Comptes dormants", summary["dormant_accounts"])
+    col3.metric("Revue traitée", f"{workflow_summary.get('taux_traitement', 0)}%")
+    col4.metric("MDP périmé / non-expirant", summary.get("password_stale", 0))
 
     st.divider()
 
