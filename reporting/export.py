@@ -1338,12 +1338,17 @@ def generate_word_report(
 
     doc.add_heading("Baseline evidence of the review", level=2)
     doc.add_paragraph("Data source: Email or automated reception")
-    doc.add_paragraph(f"Date of extraction: {datetime.now().strftime('%d/%m/%Y')}")
-    doc.add_paragraph(f"Review date: {datetime.now().strftime('%d/%m/%Y')}")
+    extraction_date_display = (
+        datetime.strptime(current_extraction_date, "%Y-%m-%d").strftime("%d/%m/%Y")
+        if current_extraction_date else datetime.now().strftime("%d/%m/%Y")
+    )
+    review_date_display = datetime.now().strftime("%d/%m/%Y")
+    doc.add_paragraph(f"Date of extraction: {extraction_date_display}")
+    doc.add_paragraph(f"Review date: {review_date_display}")
 
     _docx_add_table(doc, [
         ["Version", "Created / Edited", "By", "Comment"],
-        [document_version, datetime.now().strftime("%d/%m/%Y"), editor or "[SYSTEM OWNER FULL NAME]", "N/A"],
+        [document_version, extraction_date_display, editor or "[SYSTEM OWNER FULL NAME]", "N/A"],
     ])
     doc.add_paragraph()
     _docx_add_table(doc, [
@@ -1850,13 +1855,17 @@ def generate_pdf_report(
     elements.append(Spacer(1, 0.3 * cm))
     elements.append(Paragraph("Baseline evidence of the review", section_style))
     elements.append(Paragraph("Data source: Email or automated reception", note_style))
-    elements.append(Paragraph(f"Date of extraction: {datetime.now().strftime('%d/%m/%Y')}", note_style))
+    extraction_date_display_pdf = (
+        datetime.strptime(current_extraction_date, "%Y-%m-%d").strftime("%d/%m/%Y")
+        if current_extraction_date else datetime.now().strftime("%d/%m/%Y")
+    )
+    elements.append(Paragraph(f"Date of extraction: {extraction_date_display_pdf}", note_style))
     elements.append(Paragraph(f"Review date: {datetime.now().strftime('%d/%m/%Y')}", note_style))
     elements.append(Spacer(1, 0.4 * cm))
 
     version_data = [
         ["Version", "Created / Edited", "By", "Comment"],
-        [document_version, datetime.now().strftime("%d/%m/%Y"), editor or "[SYSTEM OWNER FULL NAME]", "N/A"],
+        [document_version, extraction_date_display_pdf, editor or "[SYSTEM OWNER FULL NAME]", "N/A"],
     ]
     version_table = Table(version_data, colWidths=[available_width * w for w in (0.12, 0.2, 0.44, 0.24)])
     version_table.setStyle(TableStyle([
