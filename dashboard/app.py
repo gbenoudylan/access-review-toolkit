@@ -91,10 +91,23 @@ def run_pipeline(
     # sans intervention même quand les noms de colonnes changent d'un
     # export à l'autre.
     custom_mappings = load_custom_column_mappings()
-    df = load_file(
-        tmp_path, default_system=default_system or None, custom_mappings=custom_mappings,
-        raise_on_missing_required=False,
-    )
+    try:
+        df = load_file(
+            tmp_path, default_system=default_system or None, custom_mappings=custom_mappings,
+            raise_on_missing_required=False,
+        )
+    except IngestionError as e:
+        # Fichier vide, illisible, ou structure non exploitable — on retourne
+        # un DataFrame vide annoté avec le message d'erreur pour que le
+        # dashboard puisse l'afficher proprement plutôt que de planter.
+        pass
+        empty_df = pd.DataFrame()
+        empty_df.attrs["ingestion_error"] = str(e)
+        empty_df.attrs["unmapped_columns"] = []
+        empty_df.attrs["full_column_mapping"] = {}
+        empty_df.attrs["missing_required_fields"] = []
+        empty_df.attrs["unknown_status_values"] = []
+        return empty_df, [], [], {}, {}, []
     unmapped_columns = list(df.attrs.get("unmapped_columns", []))
     full_column_mapping = dict(df.attrs.get("full_column_mapping", {}))
     missing_required = list(df.attrs.get("missing_required_fields", []))
@@ -107,7 +120,7 @@ def run_pipeline(
         # affiche l'interface de correction des colonnes plutôt que de
         # tenter une analyse impossible sans identifiant.
         df.attrs["missing_required_fields"] = missing_required
-        return df, unmapped_columns, [], full_column_mapping, {}
+        return df, unmapped_columns, [], full_column_mapping, {}, []
 
     if hr_file_bytes is not None:
         hr_suffix = Path(hr_filename).suffix
@@ -496,6 +509,16 @@ def main():
         return
     if df is None:
         st.info("⬅️ Importez un fichier ou cochez 'Utiliser un fichier d'exemple' pour commencer.")
+        return
+
+    ingestion_error = df.attrs.get("ingestion_error") if hasattr(df, "attrs") else None
+    if ingestion_error:
+        st.error(
+            f"**Le fichier n'a pas pu être lu.** Cause : {ingestion_error}\n\n"
+            "Vérifie que le fichier n'est pas vide, qu'il contient au moins "
+            "une ligne d'en-tête et une ligne de données, et qu'il est dans "
+            "un format supporté (CSV, Excel, Word, PDF, LDIF...)."
+        )
         return
 
     # Recentré sur les champs qui pilotent réellement un contrôle (ou
