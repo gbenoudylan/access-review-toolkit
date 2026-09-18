@@ -267,17 +267,19 @@ def _render_column_mapping_ui(
     vide) ; repliée sinon, pour ne jamais imposer d'étape à chaque
     import quand la détection automatique s'est bien passée.
     """
-    if not raw_columns:
-        return
+    # Plus de garde "if not raw_columns: return" — on affiche TOUJOURS
+    # la section, même vide, pour que l'utilisateur voie qu'elle existe.
     missing_required = missing_required or []
     important_missing = important_missing or []
     important_empty = important_empty or []
-    needs_attention = bool(missing_required or important_missing or important_empty)
 
     with st.expander(
         f"Correspondances de colonnes ({len(raw_columns)}) — {title}",
         expanded=True,
     ):
+        if not raw_columns:
+            st.caption("Aucune colonne détectée dans ce fichier.")
+            return
         if missing_required:
             st.error(
                 "Champ(s) indispensable(s) introuvable(s), même après reconnaissance "
@@ -549,7 +551,20 @@ def main():
         "employee_status", "password_last_set",
     ]
     missing_required = list(df.attrs.get("missing_required_fields") or [])
-    all_main_raw_columns = list(full_column_mapping.keys()) + unmapped_columns
+    # full_column_mapping vient du tuple de retour de run_pipeline.
+    # Si pour n'importe quelle raison il est vide (cache, sérialisation...),
+    # on se rabat sur les colonnes actuelles du df pour que la section
+    # de correspondances s'affiche TOUJOURS — c'est l'objectif demandé.
+    if not full_column_mapping and not unmapped_columns:
+        # Reconstituer depuis les colonnes du df analysé : chaque colonne
+        # standard présente est mappée à elle-même (nom déjà normalisé).
+        full_column_mapping = {col: col for col in df.columns if col not in ("system",)}
+    all_main_raw_columns = list(full_column_mapping.keys()) + [
+        c for c in unmapped_columns if c not in full_column_mapping
+    ]
+    # Toujours au moins les colonnes du df si tout le reste est vide
+    if not all_main_raw_columns:
+        all_main_raw_columns = list(df.columns)
 
     if missing_required:
         # Un champ indispensable (ex. 'username') reste introuvable même
