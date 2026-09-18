@@ -38,6 +38,8 @@ TERMINATED_STATUS_VALUES = {
     "retired", "retraité", "leaver", "ex-employee", "former employee",
     "fired", "dismissed", "licencié", "licencie", "no longer employed",
     "not employed", "separated", "redundant",
+    "locked", "verrouillé", "disabled", "désactivé", "desactive",
+    "suspended", "suspendu", "blocked", "bloqué", "expired", "expiré",
 }
 PRIVILEGED_VALUES = {"oui", "yes", "y", "true", "1", "admin", "administrateur"}
 NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais", "no expiry", "does not expire"}
@@ -532,6 +534,7 @@ def analyze_access(
     never_used_threshold_days: int = 30,
     recently_created_threshold_days: int = RECENTLY_CREATED_THRESHOLD_DAYS,
     reference_datetime: datetime | None = None,
+    custom_status_mappings: dict | None = None,
 ) -> pd.DataFrame:
     """
     Analyse un DataFrame standardisé (sortie du module d'ingestion) et
@@ -699,11 +702,55 @@ def analyze_access(
     if "account_status" in df.columns:
         status_lower = df["account_status"].astype(str).fillna("").str.strip()
         df["is_locked"] = status_lower.apply(lambda s: bool(LOCKED_MARKERS_RE.search(s)))
-        is_active_status = df["account_status"].apply(_is_active_account)
+
+        # Résolution du statut avec prise en charge des valeurs inconnues :
+        # 1. D'abord les mappings appris manuellement (mémorisés via le dashboard)
+        # 2. Ensuite la reconnaissance automatique (liste ACTIVE_STATUS_VALUES +
+        #    tokenisation pour les formats composés ex. 'Y-Active')
+        # 3. Si toujours inconnu → PIRE CAS = traité comme POTENTIELLEMENT ACTIF
+        #    Raison : un compte dont on ne sait pas s'il est actif ou non doit
+        #    être contrôlé plutôt qu'ignoré — la direction inverse (le traiter
+        #    comme inactif) ferait passer des comptes actifs à travers les mailles
+        #    sans jamais être revus. Résultat annoté dans la colonne 'status_resolved'
+        #    pour que le dashboard puisse afficher les valeurs inconnues et proposer
+        #    de les mapper manuellement.
+        def _resolve_with_custom(val) -> tuple[bool, bool]:
+            """Retourne (is_active, is_unknown)."""
+            from ingestion.custom_status_mappings import _normalize as _norm_status
+            if custom_status_mappings:
+                key = _norm_status(str(val))
+                if key in custom_status_mappings:
+                    return custom_status_mappings[key] == "active", False
+            if _is_active_account(val):
+                return True, False
+            norm = str(val).strip().lower()
+            tokens = _tokenize_status_value(val)
+            if norm in TERMINATED_STATUS_VALUES or (tokens & TERMINATED_STATUS_VALUES):
+                return False, False
+            if not norm or norm in ("nan", "none", ""):
+                return False, False
+            # Vraiment inconnue → pire cas (potentiellement actif)
+            return True, True
+
+        resolved = df["account_status"].apply(_resolve_with_custom)
+        is_active_status = resolved.apply(lambda x: x[0])
+        is_unknown_status = resolved.apply(lambda x: x[1])
+        df["status_is_unknown"] = is_unknown_status
+        # Collecte des valeurs inconnues distinctes pour le dashboard
+        unknown_vals = df.loc[is_unknown_status, "account_status"].astype(str).str.strip().unique().tolist()
+        df.attrs["unknown_status_values"] = unknown_vals
+        if unknown_vals:
+            logger.warning(
+                f"Valeurs de statut non reconnues, traitées comme POTENTIELLEMENT ACTIVES "
+                f"(pire cas audit) : {unknown_vals}. Associez-les dans le dashboard pour "
+                f"affiner l'analyse."
+            )
         df["is_dormant"] = df["is_dormant"] & is_active_status
         df["is_never_used"] = df["is_never_used"] & is_active_status
     else:
         df["is_locked"] = False
+        df["status_is_unknown"] = False
+        df.attrs["unknown_status_values"] = []
 
     if "account_status" in df.columns and "employee_status" in df.columns:
         df["is_terminated_but_active"] = df.apply(

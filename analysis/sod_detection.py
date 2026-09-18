@@ -125,19 +125,24 @@ def _split_roles(raw_roles: str) -> list[str]:
 
 
 def detect_sod_conflicts(
-    df: pd.DataFrame, conflicts: list[tuple[str, str]] = None
+    df: pd.DataFrame, conflicts: list[tuple[str, str]] = None,
+    fuzzy_threshold: int = 88,
+    custom_role_mappings: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """
     Détecte, pour chaque utilisateur, s'il cumule des rôles en conflit.
 
-    Fonctionne à partir de la colonne 'role', qui peut contenir plusieurs
-    rôles séparés par une virgule ou un point-virgule pour un même compte
-    (cas fréquent : un utilisateur avec plusieurs accès sur un même
-    système, ou plusieurs lignes par utilisateur dans l'export source).
+    `fuzzy_threshold` (défaut 88 %) : seuil de similarité pour la
+    correspondance approximative des noms de rôles — permet de détecter
+    'SysAdmin' comme équivalent à 'System Administrator' même quand le
+    nom exact varie selon l'OPCO ou le système source. Valeurs hautes
+    (> 90) : très précis, rate les variantes courtes ; valeurs basses
+    (< 80) : plus permissif mais risque de faux positifs.
 
-    Ajoute deux colonnes :
-        - sod_conflict : True si un conflit est détecté
-        - sod_conflict_detail : description du conflit trouvé (ou vide)
+    `custom_role_mappings` : correspondances apprises manuellement,
+    prioritaires sur le fuzzy — ex. {'AP Resp': 'MTN_AP - Responsable'}.
+    Chargées depuis custom_role_mappings.json via le dashboard si une
+    correspondance approximative a raté ou est ambiguë.
     """
     conflicts = conflicts or DEFAULT_SOD_CONFLICTS
     df = df.copy()
@@ -167,23 +172,64 @@ def detect_sod_conflicts(
         return str(u).strip().lower()
 
     roles_per_user: dict[str, set[str]] = {}
+    roles_raw_per_user: dict[str, list[str]] = {}  # forme originale pour fuzzy
     for _, row in df.iterrows():
         user = _norm_user(row["username"])
         raw_roles = str(row["role"]) if pd.notna(row["role"]) else ""
+        user_raw_roles = []
         for r in _split_roles(raw_roles):
-            r_norm = _normalize(r)
-            if r_norm:
-                roles_per_user.setdefault(user, set()).add(r_norm)
+            r_strip = r.strip()
+            if not r_strip:
+                continue
+            # Mapping manuel d'abord (prioritaire sur fuzzy)
+            resolved = r_strip
+            if custom_role_mappings:
+                r_norm_key = _normalize(r_strip)
+                for src, tgt in custom_role_mappings.items():
+                    if _normalize(src) == r_norm_key:
+                        resolved = tgt
+                        break
+            roles_per_user.setdefault(user, set()).add(_normalize(resolved))
+            user_raw_roles.append(resolved)
+        roles_raw_per_user[user] = user_raw_roles
+
+    # Les deux niveaux de matching (exact + fuzzy) sont maintenant
+    # intégrés directement dans la boucle ci-dessous.
 
     conflict_by_user: dict[str, str] = {}
-    for user, roles in roles_per_user.items():
+    for user, roles_norm in roles_per_user.items():
+        user_raw = roles_raw_per_user.get(user, [])
         for role_a, role_b in conflicts:
-            role_a_norm, role_b_norm = _normalize(role_a), _normalize(role_b)
-            has_a = any(role_a_norm in r for r in roles)
-            has_b = any(role_b_norm in r for r in roles)
+            role_a_norm = _normalize(role_a)
+            role_b_norm = _normalize(role_b)
+            # Niveau 1 : correspondance exacte normalisée
+            has_a_exact = any(role_a_norm in r for r in roles_norm)
+            has_b_exact = any(role_b_norm in r for r in roles_norm)
+            # Niveau 2 : fuzzy sur les formes brutes si pas d'exact
+            has_a = has_a_exact
+            has_b = has_b_exact
+            if (not has_a or not has_b) and fuzzy_threshold and fuzzy_threshold < 100 and user_raw:
+                try:
+                    from rapidfuzz import fuzz, process
+                    if not has_a:
+                        best_a = process.extractOne(
+                            role_a, user_raw,
+                            scorer=fuzz.token_sort_ratio,
+                            score_cutoff=fuzzy_threshold,
+                        )
+                        has_a = best_a is not None
+                    if not has_b:
+                        best_b = process.extractOne(
+                            role_b, user_raw,
+                            scorer=fuzz.token_sort_ratio,
+                            score_cutoff=fuzzy_threshold,
+                        )
+                        has_b = best_b is not None
+                except ImportError:
+                    pass
             if has_a and has_b:
                 conflict_by_user[user] = f"{role_a} + {role_b}"
-                break  # un conflit détecté suffit à flaguer l'utilisateur
+                break
 
     df["sod_conflict"] = df["username"].map(lambda u: _norm_user(u) in conflict_by_user)
     df["sod_conflict_detail"] = df["username"].map(lambda u: conflict_by_user.get(_norm_user(u), ""))

@@ -25,6 +25,12 @@ from ingestion.custom_column_mappings import (
     load_custom_column_mappings, save_custom_column_mapping, forget_custom_column_mapping,
     DEFAULT_STORE_PATH as MAIN_CUSTOM_MAPPING_STORE_PATH,
 )
+from ingestion.custom_status_mappings import (
+    load_custom_status_mappings, save_custom_status_mapping, forget_custom_status_mapping,
+)
+from ingestion.custom_role_mappings import (
+    load_custom_role_mappings, save_custom_role_mapping, forget_custom_role_mapping,
+)
 from analysis.access_review import analyze_access, summarize
 from analysis.hr_crossref import (
     cross_reference_with_hr, load_transferred_employees, flag_transferred_but_still_active,
@@ -46,6 +52,8 @@ st.set_page_config(page_title="Access Review Toolkit", page_icon="🔐", layout=
 RISK_ORDER = ["Critique", "Élevé", "Moyen", "Faible"]
 DECISIONS_STORE_PATH = Path(__file__).parent.parent / "data" / "review_decisions.json"
 RISK_ACCEPTANCE_STORE_PATH = Path(__file__).parent.parent / "data" / "risk_acceptances.json"
+STATUS_CUSTOM_MAPPING_STORE_PATH = Path(__file__).parent.parent / "data" / "custom_status_mappings.json"
+ROLE_CUSTOM_MAPPING_STORE_PATH = Path(__file__).parent.parent / "data" / "custom_role_mappings.json"
 # Magasin SÉPARÉ de celui de l'export d'accès principal : les champs
 # standard visés diffèrent entièrement (hr_username, hr_employee_status...
 # vs last_login_date, account_status...) — une même colonne source
@@ -72,7 +80,7 @@ def run_pipeline(
     extraction_date: str = None,
     transfer_file_bytes: bytes = None, transfer_filename: str = None,
     transfer_sheet_name: str = None,
-) -> tuple[pd.DataFrame, list, list, dict, dict]:
+) -> tuple[pd.DataFrame, list, list, dict, dict, list]:
     suffix = Path(filename).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(file_bytes)
@@ -129,14 +137,21 @@ def run_pipeline(
     # qu'à la vraie date de la photo des données).
     reference_dt = datetime.strptime(extraction_date, "%Y-%m-%d") if extraction_date else None
 
+    status_custom_mappings = load_custom_status_mappings(store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
+    role_custom_mappings = load_custom_role_mappings(store_path=ROLE_CUSTOM_MAPPING_STORE_PATH)
+
     df = analyze_access(
         df,
         dormant_threshold_days=dormant_threshold_days,
         password_stale_threshold_days=password_stale_threshold_days,
         never_used_threshold_days=never_used_threshold_days,
         reference_datetime=reference_dt,
+        custom_status_mappings=status_custom_mappings if status_custom_mappings else None,
     )
-    df = detect_sod_conflicts(df, conflicts=sod_conflicts)
+    df = detect_sod_conflicts(
+        df, conflicts=sod_conflicts,
+        custom_role_mappings=role_custom_mappings if role_custom_mappings else None,
+    )
 
     if transfer_file_bytes is not None:
         transfer_suffix = Path(transfer_filename).suffix
@@ -160,7 +175,8 @@ def run_pipeline(
         except (ValueError, KeyError) as e:
             logging.getLogger("dashboard").warning(f"Fichier de mutations ignoré : {e}")
 
-    return df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping
+    unknown_status_values = list(df.attrs.get("unknown_status_values", []))
+    return df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping, unknown_status_values
 
 
 @st.cache_data(show_spinner=False)
@@ -447,7 +463,7 @@ def main():
                 hr_name = hr_uploaded_file.name if hr_uploaded_file else None
                 transfer_bytes = transfer_uploaded_file.getvalue() if transfer_uploaded_file else None
                 transfer_name = transfer_uploaded_file.name if transfer_uploaded_file else None
-                df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping = run_pipeline(
+                df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping, unknown_status_values = run_pipeline(
                     uploaded_file.getvalue(), uploaded_file.name, hr_bytes, hr_name,
                     default_system=default_system,
                     dormant_threshold_days=dormant_threshold_days,
@@ -461,7 +477,7 @@ def main():
         elif use_sample:
             sample_path = Path(__file__).parent.parent / "data" / "export_test_A.csv"
             with st.spinner("Traitement du fichier d'exemple..."):
-                df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping = run_pipeline(
+                df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping, unknown_status_values = run_pipeline(
                     sample_path.read_bytes(), sample_path.name,
                     dormant_threshold_days=dormant_threshold_days,
                     password_stale_threshold_days=password_stale_threshold_days,
@@ -531,6 +547,87 @@ def main():
         important_missing=important_missing, important_empty=important_empty,
         support_inversion=True,
     )
+
+    # Valeurs de statut non reconnues — même principe que les colonnes,
+    # mais pour les VALEURS : 'Valid', 'Pending', 'Approved'... → actif ou inactif ?
+    # Pire cas par défaut : traitées comme potentiellement actives pour ne
+    # jamais manquer un compte réel. Mappage manuel pour affiner.
+    all_status_learned = load_custom_status_mappings(store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
+    unknown_status_values_this_run = unknown_status_values  # passé depuis run_pipeline
+    if unknown_status_values_this_run:
+        with st.expander(
+            f"⚠️ Valeurs de statut non reconnues ({len(unknown_status_values_this_run)}) "
+            f"— traitées comme ACTIVES (pire cas audit)",
+            expanded=True,
+        ):
+            st.warning(
+                "Ces valeurs de statut ne sont ni dans la liste des valeurs actives connues, "
+                "ni dans celle des valeurs inactives connues. Par sécurité pour l'audit, "
+                "elles sont traitées comme potentiellement actives — ce qui signifie que les "
+                "comptes concernés sont inclus dans tous les contrôles. Associe chacune "
+                "manuellement pour affiner : la correction sera mémorisée pour la prochaine fois."
+            )
+            status_assignments = {}
+            for val in unknown_status_values_this_run:
+                choice = st.radio(
+                    f"'{val}' signifie :",
+                    options=["Laisser en pire cas (potentiellement actif)", "Actif", "Inactif"],
+                    key=f"status_map_{val}",
+                    horizontal=True,
+                )
+                if choice == "Actif":
+                    status_assignments[val] = "active"
+                elif choice == "Inactif":
+                    status_assignments[val] = "inactive"
+            if status_assignments and st.button("Enregistrer ces valeurs de statut et relancer"):
+                for raw_val, target in status_assignments.items():
+                    save_custom_status_mapping(raw_val, target, store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
+                st.cache_data.clear()
+                st.success(f"{len(status_assignments)} valeur(s) enregistrée(s). Relance en cours...")
+                st.rerun()
+    if all_status_learned:
+        with st.expander(f"Valeurs de statut déjà apprises ({len(all_status_learned)}) — modifier si besoin"):
+            for raw_val, target in list(all_status_learned.items()):
+                col_a, col_b = st.columns([4, 1])
+                with col_a:
+                    icon = "🟢" if target == "active" else "🔴"
+                    st.write(f"**{raw_val}** → {icon} {target}")
+                with col_b:
+                    if st.button("Retirer", key=f"status_forget_{raw_val}"):
+                        forget_custom_status_mapping(raw_val, store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
+                        st.cache_data.clear()
+                        st.rerun()
+
+    # Rôles SoD — mapping manuel pour les abréviations que le fuzzy rate
+    all_roles_learned = load_custom_role_mappings(store_path=ROLE_CUSTOM_MAPPING_STORE_PATH)
+    if all_roles_learned:
+        with st.expander(f"Équivalences de rôles SoD apprises ({len(all_roles_learned)}) — modifier si besoin"):
+            st.caption(
+                "Ces équivalences sont prioritaires sur le fuzzy matching automatique — "
+                "utiles quand un nom de rôle varie trop pour être rapproché automatiquement "
+                "('AP Resp' → 'MTN_AP - Responsable')."
+            )
+            for raw_role, std_role in list(all_roles_learned.items()):
+                col_a, col_b = st.columns([4, 1])
+                with col_a:
+                    st.write(f"**{raw_role}** → {std_role}")
+                with col_b:
+                    if st.button("Retirer", key=f"role_forget_{raw_role}"):
+                        forget_custom_role_mapping(raw_role, store_path=ROLE_CUSTOM_MAPPING_STORE_PATH)
+                        st.cache_data.clear()
+                        st.rerun()
+    with st.expander("Ajouter une équivalence de rôle SoD manuellement"):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            new_raw_role = st.text_input("Nom du rôle dans le fichier", key="new_role_src",
+                                          placeholder="ex. AP Resp")
+        with col_b:
+            new_std_role = st.text_input("Nom standard dans la matrice SoD", key="new_role_tgt",
+                                          placeholder="ex. MTN_AP - Responsable")
+        if st.button("Ajouter cette équivalence") and new_raw_role and new_std_role:
+            save_custom_role_mapping(new_raw_role, new_std_role, store_path=ROLE_CUSTOM_MAPPING_STORE_PATH)
+            st.cache_data.clear()
+            st.rerun()
 
     # Même mécanisme que ci-dessus, mais pour le fichier RH (croisement) —
     # magasin de correspondances SÉPARÉ (HR_CUSTOM_MAPPING_STORE_PATH),
