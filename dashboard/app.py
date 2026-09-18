@@ -133,12 +133,19 @@ def run_pipeline(
         # que pour l'export d'accès principal — magasin séparé, voir
         # HR_CUSTOM_MAPPING_STORE_PATH.
         hr_custom_mappings = load_custom_column_mappings(store_path=HR_CUSTOM_MAPPING_STORE_PATH)
-        hr_df_raw = load_file_with_mapping(
-            hr_tmp_path, HR_COLUMN_MAPPING, HR_REQUIRED_FIELDS, custom_mappings=hr_custom_mappings,
-        )
-        hr_unmapped_columns = list(hr_df_raw.attrs.get("unmapped_columns", []))
-        hr_full_column_mapping = dict(hr_df_raw.attrs.get("full_column_mapping", {}))
-        df = cross_reference_with_hr(df, hr_df=hr_df_raw)
+        try:
+            hr_df_raw = load_file_with_mapping(
+                hr_tmp_path, HR_COLUMN_MAPPING, HR_REQUIRED_FIELDS, custom_mappings=hr_custom_mappings,
+            )
+            hr_unmapped_columns = list(hr_df_raw.attrs.get("unmapped_columns", []))
+            hr_full_column_mapping = dict(hr_df_raw.attrs.get("full_column_mapping", {}))
+            df = cross_reference_with_hr(df, hr_df=hr_df_raw)
+        except IngestionError as e:
+            hr_unmapped_columns = []
+            hr_full_column_mapping = {}
+            # L'erreur sera affichée dans le dashboard via hr_ingestion_error
+            logging.getLogger("dashboard").warning(f"Fichier RH ignoré (illisible) : {e}")
+            df.attrs["hr_ingestion_error"] = str(e)
     else:
         hr_unmapped_columns = []
         hr_full_column_mapping = {}
@@ -185,8 +192,9 @@ def run_pipeline(
             df["is_terminated_but_active"] = (
                 df.get("is_terminated_but_active", False) | df["is_transferred_but_active"]
             )
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError, IngestionError) as e:
             logging.getLogger("dashboard").warning(f"Fichier de mutations ignoré : {e}")
+            df.attrs["transfer_ingestion_error"] = str(e)
 
     unknown_status_values = list(df.attrs.get("unknown_status_values", []))
     return df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping, unknown_status_values
@@ -424,16 +432,19 @@ def main():
                 )
             )
             if transfer_check_error:
-                st.warning(f"Fichier de mutations illisible pour l'instant : {transfer_check_error}")
-
-            TRANSFER_STANDARD_FIELDS = [
-                "transfer_full_name", "transfer_old_department", "transfer_new_department",
-            ]
-            _render_column_mapping_ui(
-                "fichier de transferts", list(transfer_full_mapping.keys()) + transfer_still_unmapped,
-                transfer_full_mapping, TRANSFER_STANDARD_FIELDS, TRANSFER_CUSTOM_MAPPING_STORE_PATH, "transfer",
-                missing_required=[] if transfer_name_found else ["transfer_full_name"],
-            )
+                st.error(
+                    f"**Fichier de mouvements RH illisible** — il sera ignoré pour ce cycle. "
+                    f"Cause : {transfer_check_error}"
+                )
+            else:
+                TRANSFER_STANDARD_FIELDS = [
+                    "transfer_full_name", "transfer_old_department", "transfer_new_department",
+                ]
+                _render_column_mapping_ui(
+                    "fichier de transferts", list(transfer_full_mapping.keys()) + transfer_still_unmapped,
+                    transfer_full_mapping, TRANSFER_STANDARD_FIELDS, TRANSFER_CUSTOM_MAPPING_STORE_PATH, "transfer",
+                    missing_required=[] if transfer_name_found else ["transfer_full_name"],
+                )
 
         st.divider()
         st.subheader("⚙️ Seuils des contrôles")
@@ -663,10 +674,17 @@ def main():
         # ce fichier précisément, pas juste informatif.
         "hr_username", "hr_employee_status", "full_name",
     ]
-    _render_column_mapping_ui(
-        "fichier RH", list(hr_full_column_mapping.keys()) + hr_unmapped_columns,
-        hr_full_column_mapping, HR_STANDARD_FIELDS_FOR_MAPPING, HR_CUSTOM_MAPPING_STORE_PATH, "hr",
-    )
+    hr_error = df.attrs.get("hr_ingestion_error") if hasattr(df, "attrs") else None
+    if hr_error:
+        st.error(
+            f"**Fichier RH illisible** — il sera ignoré pour ce cycle. "
+            f"Cause : {hr_error}"
+        )
+    else:
+        _render_column_mapping_ui(
+            "fichier RH", list(hr_full_column_mapping.keys()) + hr_unmapped_columns,
+            hr_full_column_mapping, HR_STANDARD_FIELDS_FOR_MAPPING, HR_CUSTOM_MAPPING_STORE_PATH, "hr",
+        )
 
     # Gestion des correspondances DÉJÀ apprises : une fois qu'une colonne
     # est associée (bien ou mal), elle disparaît de la liste "non
@@ -1181,12 +1199,16 @@ def main():
                 previous_file.getvalue(), previous_file.name, prev_check_mappings,
             )
             if prev_check_error:
-                st.warning(f"Revue précédente illisible pour l'instant : {prev_check_error}")
-            _render_column_mapping_ui(
-                "revue précédente", list(prev_full_mapping.keys()) + prev_check_unmapped,
-                prev_full_mapping, STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "prevreview",
-                support_inversion=True,
-            )
+                st.error(
+                    f"**Revue précédente illisible** — la comparaison entre cycles ne sera pas disponible. "
+                    f"Cause : {prev_check_error}"
+                )
+            else:
+                _render_column_mapping_ui(
+                    "revue précédente", list(prev_full_mapping.keys()) + prev_check_unmapped,
+                    prev_full_mapping, STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "prevreview",
+                    support_inversion=True,
+                )
 
     with st.expander("En-tête du document officiel — optionnel"):
         header_col1, header_col2 = st.columns(2)
