@@ -779,6 +779,33 @@ def analyze_access(
         # Collecte des valeurs inconnues distinctes pour le dashboard
         unknown_vals = df.loc[is_unknown_status, "account_status"].astype(str).str.strip().unique().tolist()
         df.attrs["unknown_status_values"] = unknown_vals
+
+        # Toutes les valeurs distinctes avec leur interprétation actuelle —
+        # pas seulement les inconnues. Permet au dashboard d'afficher un
+        # tableau complet où chaque valeur est visible avec son résultat
+        # (actif/inactif/verrouillé), et l'utilisateur peut corriger
+        # n'importe laquelle, même une qui a été interprétée automatiquement
+        # mais de travers (ex. 'offline & locked' → contient 'locked' →
+        # traité comme actif, alors que l'auditeur veut l'exclure).
+        all_status_vals = df["account_status"].astype(str).fillna("").str.strip().unique().tolist()
+        all_status_interpretation = {}
+        for v in all_status_vals:
+            if not v:
+                continue
+            r = _resolve_with_custom(v)
+            is_act, is_unk = r
+            lk = bool(LOCKED_MARKERS_RE.search(str(v)))
+            if is_unk:
+                label = "⚠️ Inconnu (traité comme actif)"
+            elif lk:
+                label = "🔒 Verrouillé (traité comme actif)"
+            elif is_act:
+                label = "🟢 Actif"
+            else:
+                label = "🔴 Inactif"
+            all_status_interpretation[v] = label
+        df.attrs["all_status_values"] = all_status_interpretation
+
         if unknown_vals:
             logger.warning(
                 f"Valeurs de statut non reconnues, traitées comme POTENTIELLEMENT ACTIVES "
@@ -791,6 +818,7 @@ def analyze_access(
         df["is_locked"] = False
         df["status_is_unknown"] = False
         df.attrs["unknown_status_values"] = []
+        df.attrs["all_status_values"] = {}
 
     if "account_status" in df.columns and "employee_status" in df.columns:
         df["is_terminated_but_active"] = df.apply(

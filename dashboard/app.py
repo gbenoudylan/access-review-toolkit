@@ -591,40 +591,53 @@ def main():
     # Valeurs de statut non reconnues — même principe que les colonnes,
     # mais pour les VALEURS : 'Valid', 'Pending', 'Approved'... → actif ou inactif ?
     # Pire cas par défaut : traitées comme potentiellement actives pour ne
-    # jamais manquer un compte réel. Mappage manuel pour affiner.
+    # Toutes les valeurs de statut distinctes — pas seulement les inconnues.
+    # Si un fichier a 'offline & locked' que l'outil interprète comme
+    # verrouillé→actif (parce que contient 'locked'), l'auditeur doit
+    # pouvoir le corriger même si l'outil "croit" l'avoir reconnu.
     all_status_learned = load_custom_status_mappings(store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
-    unknown_status_values_this_run = unknown_status_values  # passé depuis run_pipeline
-    if unknown_status_values_this_run:
+    all_status_in_file = df.attrs.get("all_status_values", {}) if hasattr(df, "attrs") else {}
+    unknown_status_values_this_run = unknown_status_values
+
+    if all_status_in_file:
+        has_unknown = bool(unknown_status_values_this_run)
+        n_vals = len(all_status_in_file)
         with st.expander(
-            f"⚠️ Valeurs de statut non reconnues ({len(unknown_status_values_this_run)}) "
-            f"— traitées comme ACTIVES (pire cas audit)",
-            expanded=True,
+            f"{'⚠️ ' if has_unknown else ''}Valeurs de statut ({n_vals}) "
+            f"— vérifier l'interprétation{'  ·  inconnues: ' + str(len(unknown_status_values_this_run)) if has_unknown else ''}",
+            expanded=has_unknown,
         ):
-            st.warning(
-                "Ces valeurs de statut ne sont ni dans la liste des valeurs actives connues, "
-                "ni dans celle des valeurs inactives connues. Par sécurité pour l'audit, "
-                "elles sont traitées comme potentiellement actives — ce qui signifie que les "
-                "comptes concernés sont inclus dans tous les contrôles. Associe chacune "
-                "manuellement pour affiner : la correction sera mémorisée pour la prochaine fois."
+            st.caption(
+                "Toutes les valeurs de statut trouvées dans ton fichier, avec l'interprétation "
+                "actuelle de l'outil. Si une valeur est interprétée de travers (ex. 'offline & "
+                "locked' traité comme actif alors que tu veux l'exclure), corrige-la ici — "
+                "mémorisé pour la prochaine fois."
             )
             status_assignments = {}
-            for val in unknown_status_values_this_run:
+            for val, current_label in all_status_in_file.items():
+                learned = all_status_learned.get(val.lower().replace(" ", " "))
+                if learned:
+                    display_label = f"🟢 Actif (corrigé)" if learned == "active" else "🔴 Inactif (corrigé)"
+                else:
+                    display_label = current_label
+                options = [f"Garder : {display_label}", "✅ Actif", "❌ Inactif"]
                 choice = st.radio(
-                    f"'{val}' signifie :",
-                    options=["Laisser en pire cas (potentiellement actif)", "Actif", "Inactif"],
+                    f"**'{val}'**",
+                    options=options,
                     key=f"status_map_{val}",
                     horizontal=True,
                 )
-                if choice == "Actif":
+                if choice == "✅ Actif":
                     status_assignments[val] = "active"
-                elif choice == "Inactif":
+                elif choice == "❌ Inactif":
                     status_assignments[val] = "inactive"
-            if status_assignments and st.button("Enregistrer ces valeurs de statut et relancer"):
+            if status_assignments and st.button("Enregistrer et relancer l'analyse", key="status_save_all"):
                 for raw_val, target in status_assignments.items():
                     save_custom_status_mapping(raw_val, target, store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
                 st.cache_data.clear()
                 st.success(f"{len(status_assignments)} valeur(s) enregistrée(s). Relance en cours...")
                 st.rerun()
+
     if all_status_learned:
         with st.expander(f"Valeurs de statut déjà apprises ({len(all_status_learned)}) — modifier si besoin"):
             for raw_val, target in list(all_status_learned.items()):
