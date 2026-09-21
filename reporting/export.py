@@ -710,7 +710,11 @@ def _build_capped_account_table(
     for record in subset_df[cols].fillna("").astype(str).values.tolist():
         row = []
         for label, value in zip(labels, record):
-            value = _translate_value(value)
+            # "OWNER comments" = colonne vide — le owner remplit lui-même
+            if label == "OWNER comments":
+                value = ""
+            else:
+                value = _translate_value(value)
             row.append(Paragraph(value, cell_style) if label in WRAP_COLUMNS else value)
         data_rows.append(row)
 
@@ -833,7 +837,16 @@ def _build_control_subsections(
     for number, title, guidance, key in CONTROL_SUBSECTIONS:
         elements.append(Paragraph(f"{number}.{title}", system_style))
         if guidance:
-            elements.append(Paragraph(guidance, note_style))
+            # "Exceptions:" en vert, reste du texte en noir
+            EXCEPTION_GREEN = colors.HexColor("#16A34A")
+            if guidance.startswith("Exception:"):
+                body = guidance[len("Exception:"):].strip()
+                para_text = (
+                    f'<font color="#16A34A"><b>Exceptions:</b></font> {body}'
+                )
+                elements.append(Paragraph(para_text, note_style))
+            else:
+                elements.append(Paragraph(guidance, note_style))
 
         count = None
         note = None
@@ -890,7 +903,12 @@ def _build_control_subsections(
                 count = value
                 comparison_detail = comparison_stats.get("profile_modified_detail") or []
         elif key in df.columns:
-            subset = df[df[key] == True]  # noqa: E712 (comparaison explicite voulue sur une colonne booléenne)
+            # Exclure les comptes Disabled des tableaux de résultats —
+            # on cherche les comptes ACTIFS à risque, pas les désactivés.
+            active_only = df
+            if "account_status" in df.columns:
+                active_only = df[df["account_status"].apply(_is_active_account)]
+            subset = active_only[active_only[key] == True]  # noqa: E712
             if len(subset):
                 subset = subset[~subset.apply(lambda r: is_finding_accepted(r, key), axis=1)]
             count = len(subset)
@@ -1521,13 +1539,7 @@ def generate_word_report(
     # ---- IV. ACCOUNT DETAILS BY CONTROL ----
     doc.add_heading("IV. ACCOUNT DETAILS BY CONTROL", level=1)
     doc.add_paragraph(SECTION_IV_INTRO)
-    clarif_p = doc.add_paragraph(
-        "Note: the \u201cRecommended Action\u201d column always reflects the account's overall priority "
-        "action (across all controls), not necessarily the precise reason for its presence "
-        "in the current subsection — an account may appear in several sections at once."
-    )
-    clarif_p.runs[0].italic = True
-    clarif_p.runs[0].font.size = Pt(8.5)
+    # Note retirée sur demande — l'en-tête "OWNER comments" se suffit à lui-même
 
     doc.add_heading("Control Summary", level=2)
     # Un compte dont le risque a été accepté pour un constat PRÉCIS n'est
@@ -1589,7 +1601,17 @@ def generate_word_report(
     for number, ctrl_title, guidance, key in CONTROL_SUBSECTIONS:
         doc.add_heading(f"{number}.{ctrl_title}", level=2)
         if guidance:
-            doc.add_paragraph(guidance)
+            # "Exceptions:" en vert, reste en noir
+            if guidance.startswith("Exception:"):
+                body = guidance[len("Exception:"):].strip()
+                p = doc.add_paragraph()
+                run_label = p.add_run("Exceptions: ")
+                run_label.bold = True
+                run_label.font.color.rgb = RGBColor(0x16, 0xA3, 0x4A)  # vert
+                run_body = p.add_run(body)
+                run_body.font.color.rgb = RGBColor(0, 0, 0)  # noir
+            else:
+                doc.add_paragraph(guidance)
         count, note, subset, comparison_detail = None, None, None, None
         if key is None:
             note = "N/A — requires company-specific configuration, not derivable from the ingested data alone."
@@ -1640,7 +1662,9 @@ def generate_word_report(
                 count = value
                 comparison_detail = comparison_stats.get("profile_modified_detail") or []
         elif key in df.columns:
-            subset = df[df[key] == True]  # noqa: E712
+            # Exclure les comptes Disabled — on cherche les actifs à risque
+            active_only_w = df[df["account_status"].apply(_is_active_account)] if "account_status" in df.columns else df
+            subset = active_only_w[active_only_w[key] == True]  # noqa: E712
             if len(subset):
                 subset = subset[~subset.apply(lambda r: is_finding_accepted(r, key), axis=1)]
             count = len(subset)
@@ -1662,6 +1686,9 @@ def generate_word_report(
                 if cols:
                     doc.add_paragraph()
                     display = subset[cols].fillna("").astype(str).map(_translate_value)
+                    # "OWNER comments" = colonne vide — le owner remplit lui-même
+                    if "review_action" in display.columns:
+                        display["review_action"] = ""
                     detail_rows = [[ALL_COLUMN_LABELS.get(c, c) for c in cols]] + display.values.tolist()
                     _docx_add_table(doc, detail_rows)
         else:
@@ -2043,15 +2070,9 @@ def generate_pdf_report(
     # ---- IV. ACCOUNT DETAILS BY CONTROL (18 sous-sections fidèles au template) ----
     elements.append(Paragraph("IV. ACCOUNT DETAILS BY CONTROL", section_style))
     elements.append(Paragraph(SECTION_IV_INTRO, note_style))
-    elements.append(Paragraph(
-        "Note: the \u201cRecommended Action\u201d column always reflects the account's overall priority "
-        "action (across all controls), not necessarily the precise reason for its presence "
-        "in the current subsection — an account may appear in several sections at once.",
-        note_style,
-    ))
+    # Note retirée sur demande — l'en-tête "OWNER comments" se suffit à lui-même
 
-    # Vue d'ensemble compacte avant le détail verbeux — lecture en un
-    # coup d'œil de l'état des 18 contrôles, avant d'entrer dans le détail.
+    # Vue d'ensemble compacte avant le détail verbeux
     elements.append(Paragraph("Control Summary", system_style))
     elements.append(_build_control_summary_table(df, comparison_stats, available_width))
     elements.append(Spacer(1, 0.4 * cm))

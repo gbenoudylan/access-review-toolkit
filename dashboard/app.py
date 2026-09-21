@@ -102,9 +102,6 @@ def run_pipeline(
             raise_on_missing_required=False,
         )
     except IngestionError as e:
-        # Fichier vide, illisible, ou structure non exploitable — on retourne
-        # un DataFrame vide annoté avec le message d'erreur pour que le
-        # dashboard puisse l'afficher proprement plutôt que de planter.
         pass
         empty_df = pd.DataFrame()
         empty_df.attrs["ingestion_error"] = str(e)
@@ -113,6 +110,14 @@ def run_pipeline(
         empty_df.attrs["missing_required_fields"] = []
         empty_df.attrs["unknown_status_values"] = []
         return empty_df, [], [], {}, {}, []
+
+    # Garantie absolue : index unique avant toute opération —
+    # certains exports Excel produisent des index dupliqués selon
+    # la façon dont pandas lit le fichier (header détecté hors ligne 0,
+    # multi-feuilles, etc.). Cette protection est en plus de celle
+    # d'analyze_access pour couvrir tout le pipeline.
+    if not df.index.is_unique:
+        df = df.reset_index(drop=True)
     unmapped_columns = list(df.attrs.get("unmapped_columns", []))
     full_column_mapping = dict(df.attrs.get("full_column_mapping", {}))
     missing_required = list(df.attrs.get("missing_required_fields") or [])
@@ -310,20 +315,28 @@ def _render_column_mapping_ui(
         )
         options = ["Ignorée"] + standard_fields
         review_assignments, invert_choices = {}, {}
-        for col in raw_columns:
+        seen_col_keys = set()
+        for ci, col in enumerate(raw_columns):
+            col_str = str(col).strip()
+            if not col_str or col_str.lower() in ("nan", "none", ""):
+                continue
+            safe_col_key = f"{key_prefix}_map_{ci}_{col_str[:30]}"
+            if safe_col_key in seen_col_keys:
+                continue
+            seen_col_keys.add(safe_col_key)
             current = full_mapping.get(col)
             default_idx = options.index(current) if current in options else 0
             choice = st.selectbox(
-                f"'{col}' correspond à :", options=options, index=default_idx,
-                key=f"{key_prefix}_map_{col}",
+                f"'{col_str}' correspond à :", options=options, index=default_idx,
+                key=safe_col_key,
             )
             if choice != (current or "Ignorée"):
                 review_assignments[col] = choice
             if support_inversion and choice == "account_status":
                 invert_choices[col] = st.checkbox(
-                    f"'{col}' est un indicateur inversé (ex. 'accountDisabled' : "
+                    f"'{col_str}' est un indicateur inversé (ex. 'accountDisabled' : "
                     f"vrai = compte désactivé, PAS actif) plutôt qu'un statut direct",
-                    key=f"{key_prefix}_invert_{col}",
+                    key=f"{key_prefix}_invert_{ci}_{col_str[:30]}",
                 )
         if review_assignments and st.button("Enregistrer ces correspondances et relancer l'analyse", key=f"{key_prefix}_map_save"):
             for raw_col, standard_field in review_assignments.items():
@@ -539,12 +552,16 @@ def main():
         # Reconstituer depuis les colonnes du df analysé : chaque colonne
         # standard présente est mappée à elle-même (nom déjà normalisé).
         full_column_mapping = {col: col for col in df.columns if col not in ("system",)}
-    all_main_raw_columns = list(full_column_mapping.keys()) + [
+    # Filtrer les colonnes sans nom valide (NaN, vides) — elles génèrent
+    # des clés de widgets dupliquées dans Streamlit ("main_map_nan")
+    def _is_valid_col(c) -> bool:
+        s = str(c).strip()
+        return bool(s) and s.lower() not in ("nan", "none", "")
+    all_main_raw_columns = [c for c in list(full_column_mapping.keys()) + [
         c for c in unmapped_columns if c not in full_column_mapping
-    ]
-    # Toujours au moins les colonnes du df si tout le reste est vide
+    ] if _is_valid_col(c)]
     if not all_main_raw_columns:
-        all_main_raw_columns = list(df.columns)
+        all_main_raw_columns = [c for c in df.columns if _is_valid_col(c)]
 
     if missing_required:
         # Un champ indispensable (ex. 'username') reste introuvable même
@@ -621,20 +638,32 @@ def main():
             options_cols = ["Ignorée"] + STANDARD_FIELDS_FOR_MAPPING
             col_assignments = {}
             invert_choices  = {}
-            for col in all_main_raw_columns:
+            seen_keys = set()
+            for i, col in enumerate(all_main_raw_columns):
+                # Ignorer les colonnes sans nom (NaN, vides) — elles n'ont rien à mapper
+                col_str = str(col).strip()
+                if not col_str or col_str.lower() in ("nan", "none", ""):
+                    continue
+                # Clé basée sur la POSITION (i) + nom — garantit l'unicité même
+                # si deux colonnes portent le même nom (ce qui peut arriver avec
+                # des exports Excel mal formés ou des colonnes dupliquées)
+                safe_key = f"main_map_{i}_{col_str}"
+                if safe_key in seen_keys:
+                    continue
+                seen_keys.add(safe_key)
                 current = full_column_mapping.get(col)
                 default_idx = options_cols.index(current) if current in options_cols else 0
                 choice = st.selectbox(
-                    f"'{col}' correspond à :",
+                    f"'{col_str}' correspond à :",
                     options=options_cols, index=default_idx,
-                    key=f"main_map_{col}",
+                    key=safe_key,
                 )
                 if choice != (current or "Ignorée"):
                     col_assignments[col] = choice
                 if choice == "account_status":
                     invert_choices[col] = st.checkbox(
-                        f"'{col}' est un indicateur inversé (ex. accountDisabled : vrai = désactivé)",
-                        key=f"main_invert_{col}",
+                        f"'{col_str}' est un indicateur inversé (ex. accountDisabled : vrai = désactivé)",
+                        key=f"main_invert_{i}_{col_str}",
                     )
             if col_assignments and st.button("Enregistrer colonnes et relancer", key="main_col_save"):
                 for raw_col, standard_field in col_assignments.items():
@@ -658,25 +687,31 @@ def main():
             if all_status_in_file:
                 st.caption("Toutes les valeurs de statut du fichier avec leur interprétation actuelle. Corrige si nécessaire.")
                 status_assignments = {}
-                for val, auto_label in all_status_in_file.items():
-                    learned = all_status_learned.get(val.strip())
+                seen_status_keys = set()
+                for j, (val, auto_label) in enumerate(all_status_in_file.items()):
+                    val_str = str(val).strip()
+                    if not val_str or val_str.lower() in ("nan", "none", ""):
+                        continue
+                    safe_status_key = f"status_sel_{j}_{val_str[:30]}"
+                    if safe_status_key in seen_status_keys:
+                        continue
+                    seen_status_keys.add(safe_status_key)
+                    learned = all_status_learned.get(val_str)
                     if learned == "active":
                         display = "Actif (corrigé)"
                     elif learned == "inactive":
                         display = "Inactif (corrigé)"
                     else:
-                        # auto_label : "Actif", "Inactif", "Verrouillé...", "Inconnu..."
                         display = auto_label.replace("🟢 ", "").replace("🔴 ", "").replace("🔒 ", "").replace("⚠️ ", "")
-
-                    options_s = [f"Garder ({display})", "Actif", "Inactif"]
+                    options_s = [f"Garder ({display})", "Actif", "Disabled"]
                     choice = st.selectbox(
-                        f"'{val}'",
+                        f"'{val_str}'",
                         options=options_s, index=0,
-                        key=f"status_sel_{val}",
+                        key=safe_status_key,
                     )
                     if choice == "Actif":
                         status_assignments[val] = "active"
-                    elif choice == "Inactif":
+                    elif choice == "Disabled":
                         status_assignments[val] = "inactive"
                 if status_assignments and st.button("Enregistrer statuts et relancer", key="status_save_all"):
                     for raw_val, target in status_assignments.items():
@@ -702,7 +737,15 @@ def main():
                     "Corrige manuellement ceux que l'outil ne reconnaît pas."
                 )
                 rights_assignments = {}
-                for right in all_distinct_rights:
+                seen_rights_keys = set()
+                for k, right in enumerate(all_distinct_rights):
+                    right_str = str(right).strip()
+                    if not right_str or right_str.lower() in ("nan", "none", ""):
+                        continue
+                    safe_right_key = f"right_sel_{k}_{right_str[:30]}"
+                    if safe_right_key in seen_rights_keys:
+                        continue
+                    seen_rights_keys.add(safe_right_key)
                     if rights_learned.get(right) == "admin":
                         current_cat, is_auto = "Admin", False
                     elif rights_learned.get(right) == "standard":
@@ -711,11 +754,10 @@ def main():
                         current_cat, is_auto = "Admin", True
                     else:
                         current_cat, is_auto = "Non qualifié", False
-
-                    label = f"{right}" + (" *(auto)*" if is_auto else "")
+                    label = right_str + (" *(auto)*" if is_auto else "")
                     options_r = ["Admin", "Standard", "Non qualifié"]
                     idx = options_r.index(current_cat) if current_cat in options_r else 2
-                    new_cat = st.selectbox(label, options=options_r, index=idx, key=f"right_sel_{right}")
+                    new_cat = st.selectbox(label, options=options_r, index=idx, key=safe_right_key)
                     if not is_auto and new_cat != current_cat:
                         if new_cat == "Admin":
                             rights_assignments[right] = "admin"
@@ -764,7 +806,7 @@ def main():
                 st.markdown("**Statuts**")
                 for raw_val, target in list(all_status_learned.items()):
                     c1, c2 = st.columns([4, 1])
-                    c1.write(f"{raw_val} → {target}")
+                    c1.write(f"{raw_val} → {"Active" if target == "active" else "Disabled"}")
                     if c2.button("Retirer", key=f"status_forget_{raw_val}"):
                         forget_custom_status_mapping(raw_val, store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
                         st.cache_data.clear(); st.rerun()
@@ -829,34 +871,10 @@ def main():
                 f"mot de passe dans le futur — probable anomalie de données à la source."
             )
 
-    st.subheader("Vue d'ensemble")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Comptes analysés", summary["total_accounts"])
-    col2.metric("Comptes dormants", summary["dormant_accounts"])
-    col3.metric("Revue traitée", f"{workflow_summary.get('taux_traitement', 0)}%")
-    col4.metric("MDP périmé / non-expirant", summary.get("password_stale", 0))
-
-    st.divider()
-
-    st.subheader("Répartition par niveau de risque")
-    risk_counts = df["risk_level"].value_counts().reindex(RISK_ORDER, fill_value=0)
-    st.bar_chart(risk_counts)
-
-    coverage = compute_control_coverage(df, {})
-    n_ok = sum(1 for _, _, status, _ in coverage if status == "OK")
-    n_warn = sum(1 for _, _, status, _ in coverage if status == "⚠️")
-    n_na = sum(1 for _, _, status, _ in coverage if status == "N/A")
-    with st.expander(f"Control Coverage — {n_ok + n_warn} / {len(coverage)} contrôles exécutés"):
-        st.caption(
-            f"{n_ok} OK · {n_warn} avec anomalie(s) · {n_na} non applicable (données insuffisantes)."
-        )
-        coverage_table = [
-            {"N°": number, "Contrôle": title, "Résultat": status, "Comptes": count_display}
-            for number, title, status, count_display in coverage
-        ]
-        st.dataframe(coverage_table, width="stretch", hide_index=True)
-
-    st.divider()
+    # filtered est calculé ici (avant Rapports formatés et Détail des comptes)
+    # pour être disponible dans les deux sections — les filtres de risque
+    # s'appliquent aussi bien aux rapports qu'au tableau de détail.
+    filtered = df  # par défaut : tous les comptes
 
     st.subheader("Rapports formatés")
 
@@ -1048,6 +1066,37 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
             )
+
+
+    st.divider()
+
+    st.subheader("Vue d'ensemble")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Comptes analysés", summary["total_accounts"])
+    col2.metric("Comptes dormants", summary["dormant_accounts"])
+    col3.metric("Revue traitée", f"{workflow_summary.get('taux_traitement', 0)}%")
+    col4.metric("MDP périmé / non-expirant", summary.get("password_stale", 0))
+
+    st.divider()
+
+    st.subheader("Répartition par niveau de risque")
+    vc = df["risk_level"].value_counts() if "risk_level" in df.columns else pd.Series(dtype=int)
+    risk_counts = pd.Series({r: int(vc.get(r, 0)) for r in RISK_ORDER})
+    st.bar_chart(risk_counts)
+
+    coverage = compute_control_coverage(df, {})
+    n_ok = sum(1 for _, _, status, _ in coverage if status == "OK")
+    n_warn = sum(1 for _, _, status, _ in coverage if status == "⚠️")
+    n_na = sum(1 for _, _, status, _ in coverage if status == "N/A")
+    with st.expander(f"Control Coverage — {n_ok + n_warn} / {len(coverage)} contrôles exécutés"):
+        st.caption(
+            f"{n_ok} OK · {n_warn} avec anomalie(s) · {n_na} non applicable (données insuffisantes)."
+        )
+        coverage_table = [
+            {"N°": number, "Contrôle": title, "Résultat": status, "Comptes": count_display}
+            for number, title, status, count_display in coverage
+        ]
+        st.dataframe(coverage_table, width="stretch", hide_index=True)
 
     st.divider()
 

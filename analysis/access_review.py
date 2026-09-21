@@ -666,6 +666,12 @@ def analyze_access(
         - risk_level : niveau de risque (Critique / Élevé / Moyen / Faible)
     """
     df = df.copy()
+    # Garantir un index entier unique et contigu — requis par plusieurs
+    # opérations internes (reindex, loc avec masque booléen, transform).
+    # Un fichier Excel mal lu ou un concat sans ignore_index peut produire
+    # des index dupliqués qui font planter ces opérations silencieusement.
+    if not df.index.is_unique or not isinstance(df.index, pd.RangeIndex):
+        df = df.reset_index(drop=True)
     reference_datetime = reference_datetime or datetime.now()
 
     if "last_login_date" in df.columns:
@@ -859,22 +865,18 @@ def analyze_access(
                     return custom_status_mappings[key] == "active", False
             if _is_active_account(val):
                 return True, False
-            # Valeur verrouillée : active pour l'audit (le compte existe,
-            # ses rôles sont là) mais is_locked sera True via LOCKED_MARKERS_RE
-            tokens = _tokenize_status_value(val)
-            if tokens & LOCKED_STATUS_VALUES:
-                return True, False
             norm = str(val).strip().lower()
-            if norm in LOCKED_STATUS_VALUES:
-                return True, False
+            tokens = _tokenize_status_value(val)
+            # LOCKED = DISABLED (retour terrain BSS/MTN) — vérifié avant le
+            # bloc générique TERMINATED_STATUS_VALUES car 'locked' est dans les
+            # deux ensembles ; on veut le résultat "inactif" ici.
+            if norm in LOCKED_STATUS_VALUES or (tokens & LOCKED_STATUS_VALUES):
+                return False, False
             if norm in TERMINATED_STATUS_VALUES or (tokens & TERMINATED_STATUS_VALUES):
                 return False, False
             if not norm or norm in ("nan", "none", ""):
                 # Champ vide = actif dans certains systèmes (ex. BSS où la
                 # colonne identity/accountState vide signifie "unlock/actif").
-                # Traité comme actif (pire cas audit) — non signalé comme
-                # inconnu puisque c'est un comportement documenté de certains
-                # exports. L'auditeur peut mapper "" → "inactive" si besoin.
                 return True, False
             # Vraiment inconnue → pire cas (potentiellement actif)
             return True, True
@@ -903,13 +905,13 @@ def analyze_access(
             is_act, is_unk = r
             lk = bool(LOCKED_MARKERS_RE.search(str(v)))
             if is_unk:
-                label = "⚠️ Inconnu (traité comme actif)"
+                label = "⚠️ Unknown (treated as Active)"
             elif lk:
-                label = "🔒 Verrouillé (traité comme actif)"
+                label = "🔒 Locked (→ Disabled)"
             elif is_act:
-                label = "🟢 Actif"
+                label = "🟢 Active"
             else:
-                label = "🔴 Inactif"
+                label = "🔴 Disabled"
             all_status_interpretation[v] = label
         df.attrs["all_status_values"] = all_status_interpretation
 

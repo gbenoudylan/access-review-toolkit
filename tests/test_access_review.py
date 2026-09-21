@@ -473,14 +473,13 @@ def test_oracle_open_status_recognized_as_active():
     print("OK - test_oracle_open_status_recognized_as_active")
 
 
-def test_locked_account_counted_as_dormant_and_flagged_separately():
+def test_locked_account_treated_as_disabled():
     """
-    Décision révisée après un vrai cas utilisateur (fichier avec 'Active'
-    et 'Locked') : 'Locked' n'est PAS la même chose qu'Inactive pour un
-    audit. Un compte verrouillé peut être déverrouillé à tout moment,
-    conserve ses rôles (SoD), et s'il appartient à un employé parti c'est
-    une anomalie critique. Il est donc inclus dans les contrôles de
-    dormance ET signalé séparément via is_locked=True.
+    Retour terrain BSS/MTN : LOCKED = DISABLED.
+    Un compte verrouillé ne sort PAS dans les observations actives —
+    il est exclu des contrôles exactement comme un compte N-inactive.
+    is_locked reste True pour l'information (indicateur de verrouillage)
+    mais le compte n'est pas compté comme dormant.
     """
     df = pd.DataFrame({
         "username": ["u1", "u2"], "system": ["Oracle"] * 2,
@@ -488,11 +487,11 @@ def test_locked_account_counted_as_dormant_and_flagged_separately():
         "last_login_date": ["2025-01-01"] * 2,
     })
     result = analyze_access(df)
-    assert result.loc[0, "is_dormant"] == True   # open + vieux login -> dormant
-    assert result.loc[1, "is_dormant"] == True   # locked -> AUSSI dormant (inclus dans l'audit)
-    assert result.loc[1, "is_locked"] == True    # ET signalé verrouillé séparément
+    assert result.loc[0, "is_dormant"] == True   # open + vieux login → dormant
+    assert result.loc[1, "is_dormant"] == False  # locked = disabled → pas dormant
+    assert result.loc[1, "is_locked"] == True    # mais bien marqué verrouillé
     assert result.loc[0, "is_locked"] == False
-    print("OK - test_locked_account_counted_as_dormant_and_flagged_separately")
+    print("OK - test_locked_account_treated_as_disabled")
 
 
 def test_additional_hr_terminated_status_values_recognized():

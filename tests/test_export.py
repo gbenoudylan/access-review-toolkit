@@ -615,12 +615,12 @@ def test_control_action_clarification_note_present():
     pdf_output = generate_pdf_report(result, "output/test_clarif_pdf.pdf")
     with pdfplumber.open(pdf_output) as pdf:
         pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    assert "overall priority" in pdf_text
+    assert "OWNER comments" in pdf_text  # note retirée, OWNER comments à la place
 
     word_output = generate_word_report(result, "output/test_clarif_word.docx")
     doc = Document(str(word_output))
     word_text = "\n".join(p.text for p in doc.paragraphs)
-    assert "overall priority" in word_text
+    assert "Exceptions:" in word_text  # Exceptions: en vert au début de chaque contrôle
     print("OK - test_control_action_clarification_note_present")
 
 

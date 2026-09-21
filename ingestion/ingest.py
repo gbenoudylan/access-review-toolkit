@@ -220,6 +220,15 @@ def standardize_columns(
     l'appelant (dashboard) puisse proposer une correction manuelle.
     """
     rename_map, unmatched = {}, []
+    # Garantir un index unique dès l'entrée de standardize_columns
+    if not df.index.is_unique:
+        df = df.reset_index(drop=True)
+    # Supprimer les colonnes sans nom valide (NaN, vides) — elles n'ont
+    # aucun contenu utile et génèrent des clés dupliquées dans le dashboard
+    import pandas as _pd
+    bad_cols = [c for c in df.columns if not str(c).strip() or str(c).strip().lower() in ("nan","none","")]
+    if bad_cols:
+        df = df.drop(columns=bad_cols)
     # Correspondance COMPLÈTE (colonne brute -> champ reconnu), pas
     # seulement les échecs — pour la vue "toutes les correspondances"
     # du dashboard, qui permet de vérifier/corriger même une colonne
@@ -1275,7 +1284,7 @@ def _merge_or_stack_named_tables(
                 other_df = named_dfs[other_name]
                 group_df = group_df.merge(
                     other_df, on="username", how="outer", suffixes=("", "_dup")
-                )
+                ).reset_index(drop=True)
                 dup_cols = [c for c in group_df.columns if str(c).endswith("_dup")]
                 for dup_col in dup_cols:
                     base_col = str(dup_col)[:-4]
@@ -1497,6 +1506,9 @@ def _load_single_file(
         df = raw.iloc[header_row_idx + 1:].copy()
         df.columns = raw.iloc[header_row_idx]
         df = df.dropna(how="all").reset_index(drop=True)
+    # Garantie finale : index entier unique et contigu avant toute analyse
+    if not df.index.is_unique:
+        df = df.reset_index(drop=True)
 
     df = standardize_columns(df, column_mapping, custom_mappings=custom_mappings)
     df = _synthesize_full_name(df)

@@ -11,5 +11,7 @@
   "expiry date": "last_login_date",
   "user logon": "username",
   "user status": "account_status",
-  "member of group": "user_rights"
+  "member of group": "user_rights",
+  "ou name": "user_rights",
+  "last logon time": "last_login_date"
 }
