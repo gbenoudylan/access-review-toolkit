@@ -31,6 +31,10 @@ from ingestion.custom_status_mappings import (
 from ingestion.custom_role_mappings import (
     load_custom_role_mappings, save_custom_role_mapping, forget_custom_role_mapping,
 )
+from ingestion.custom_rights_mappings import (
+    load_custom_rights_mappings, save_custom_rights_mapping, forget_custom_rights_mapping,
+    get_all_distinct_rights_from_df,
+)
 from analysis.access_review import analyze_access, summarize
 from analysis.hr_crossref import (
     cross_reference_with_hr, load_transferred_employees, flag_transferred_but_still_active,
@@ -54,6 +58,7 @@ DECISIONS_STORE_PATH = Path(__file__).parent.parent / "data" / "review_decisions
 RISK_ACCEPTANCE_STORE_PATH = Path(__file__).parent.parent / "data" / "risk_acceptances.json"
 STATUS_CUSTOM_MAPPING_STORE_PATH = Path(__file__).parent.parent / "data" / "custom_status_mappings.json"
 ROLE_CUSTOM_MAPPING_STORE_PATH = Path(__file__).parent.parent / "data" / "custom_role_mappings.json"
+RIGHTS_CUSTOM_MAPPING_STORE_PATH = Path(__file__).parent.parent / "data" / "custom_rights_mappings.json"
 # Magasin SÉPARÉ de celui de l'export d'accès principal : les champs
 # standard visés diffèrent entièrement (hr_username, hr_employee_status...
 # vs last_login_date, account_status...) — une même colonne source
@@ -159,6 +164,7 @@ def run_pipeline(
 
     status_custom_mappings = load_custom_status_mappings(store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
     role_custom_mappings = load_custom_role_mappings(store_path=ROLE_CUSTOM_MAPPING_STORE_PATH)
+    rights_custom_mappings = load_custom_rights_mappings(store_path=RIGHTS_CUSTOM_MAPPING_STORE_PATH)
 
     df = analyze_access(
         df,
@@ -167,6 +173,7 @@ def run_pipeline(
         never_used_threshold_days=never_used_threshold_days,
         reference_datetime=reference_dt,
         custom_status_mappings=status_custom_mappings if status_custom_mappings else None,
+        custom_rights_mappings=rights_custom_mappings if rights_custom_mappings else None,
     )
     df = detect_sod_conflicts(
         df, conflicts=sod_conflicts,
@@ -518,6 +525,10 @@ def main():
     STANDARD_FIELDS_FOR_MAPPING = [
         "username", "system", "account_status", "is_locked",
         "last_login_date", "account_created_date", "password_last_set",
+        # user_rights : droits réels octroyés (USER RIGHTS/PERMISSIONS Oracle EBS,
+        # entitlements, permissions...) — inclut la détection automatique des admins
+        "user_rights",
+        "description",
     ]
     missing_required = list(df.attrs.get("missing_required_fields") or [])
     # full_column_mapping vient du tuple de retour de run_pipeline.
@@ -552,12 +563,6 @@ def main():
     def _is_effectively_empty(series) -> bool:
         return series.isna().all() or (series.astype(str).str.strip().isin(["", "nan", "none"])).all()
 
-    # Un champ reconnu mais entièrement VIDE (ex. une colonne 'status'
-    # présente mais sans une seule valeur renseignée, alors qu'une autre
-    # colonne du même fichier — ex. 'identity/accountDisabled' — porte
-    # la vraie donnée) doit être traité comme un manque au même titre
-    # qu'une colonne jamais reconnue : sinon, personne ne s'aperçoit
-    # jamais que la vraie donnée existe ailleurs dans le fichier.
     important_check_fields = ("last_login_date", "password_last_set", "account_status")
     important_missing = [f for f in important_check_fields if f not in df.columns]
     important_empty = [
@@ -565,114 +570,215 @@ def main():
         if f in df.columns and f not in important_missing and _is_effectively_empty(df[f])
     ]
 
-    _render_column_mapping_ui(
-        "fichier principal", all_main_raw_columns, full_column_mapping,
-        STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "main",
-        important_missing=important_missing, important_empty=important_empty,
-        support_inversion=True,
-    )
+    # L'interface de configuration complète (colonnes + statuts + droits)
+    # est maintenant dans la section unifiée ci-dessous.
+    # On conserve _render_column_mapping_ui uniquement pour la revue
+    # précédente et le fichier de transferts.
 
-    # Valeurs de statut non reconnues — même principe que les colonnes,
-    # mais pour les VALEURS : 'Valid', 'Pending', 'Approved'... → actif ou inactif ?
-    # Pire cas par défaut : traitées comme potentiellement actives pour ne
-    # Toutes les valeurs de statut distinctes — pas seulement les inconnues.
-    # Si un fichier a 'offline & locked' que l'outil interprète comme
-    # verrouillé→actif (parce que contient 'locked'), l'auditeur doit
-    # pouvoir le corriger même si l'outil "croit" l'avoir reconnu.
-    all_status_learned = load_custom_status_mappings(store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
-    all_status_in_file = df.attrs.get("all_status_values", {}) if hasattr(df, "attrs") else {}
+    # ── Section unifiée : Configuration du fichier ──────────────────────────
+    # Trois onglets dans un seul expander — colonnes, statuts, droits —
+    # plus une section "Déjà enregistré" unique qui regroupe tout ce qui
+    # a été appris manuellement lors des sessions précédentes.
+    all_status_learned  = load_custom_status_mappings(store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
+    all_status_in_file  = df.attrs.get("all_status_values", {}) if hasattr(df, "attrs") else {}
     unknown_status_values_this_run = unknown_status_values
+    all_distinct_rights = get_all_distinct_rights_from_df(df) if df is not None and not df.empty else []
+    rights_learned      = load_custom_rights_mappings(store_path=RIGHTS_CUSTOM_MAPPING_STORE_PATH)
 
-    if all_status_in_file:
-        has_unknown = bool(unknown_status_values_this_run)
-        n_vals = len(all_status_in_file)
-        with st.expander(
-            f"{'⚠️ ' if has_unknown else ''}Valeurs de statut ({n_vals}) "
-            f"— vérifier l'interprétation{'  ·  inconnues: ' + str(len(unknown_status_values_this_run)) if has_unknown else ''}",
-            expanded=has_unknown,
-        ):
-            st.caption(
-                "Toutes les valeurs de statut trouvées dans ton fichier, avec l'interprétation "
-                "actuelle de l'outil. Si une valeur est interprétée de travers (ex. 'offline & "
-                "locked' traité comme actif alors que tu veux l'exclure), corrige-la ici — "
-                "mémorisé pour la prochaine fois."
-            )
-            status_assignments = {}
-            for val, current_label in all_status_in_file.items():
-                learned = all_status_learned.get(val.lower().replace(" ", " "))
-                if learned:
-                    display_label = f"🟢 Actif (corrigé)" if learned == "active" else "🔴 Inactif (corrigé)"
-                else:
-                    display_label = current_label
-                options = [f"Garder : {display_label}", "✅ Actif", "❌ Inactif"]
-                choice = st.radio(
-                    f"**'{val}'**",
-                    options=options,
-                    key=f"status_map_{val}",
-                    horizontal=True,
+    has_unknown_status  = bool(unknown_status_values_this_run)
+    n_cols   = len(all_main_raw_columns)
+    n_status = len(all_status_in_file)
+    n_rights = len(all_distinct_rights)
+
+    with st.expander(
+        f"{'⚠️ ' if (missing_required or has_unknown_status) else ''}Configuration du fichier"
+        f" — {n_cols} colonnes · {n_status} statuts · {n_rights} droits",
+        expanded=bool(missing_required or important_missing or important_empty or has_unknown_status),
+    ):
+        tab_cols, tab_status, tab_rights = st.tabs([
+            f"Colonnes ({n_cols})",
+            f"Statuts ({n_status})" + (" ⚠️" if has_unknown_status else ""),
+            f"Droits ({n_rights})",
+        ])
+
+        # ── Onglet 1 : Colonnes ───────────────────────────────────────────
+        with tab_cols:
+            if missing_required:
+                st.error(
+                    "Champ(s) indispensable(s) introuvable(s) — l'analyse ne peut "
+                    "pas continuer sans eux : " + ", ".join(missing_required) +
+                    ". Associe la bonne colonne ci-dessous."
                 )
-                if choice == "✅ Actif":
-                    status_assignments[val] = "active"
-                elif choice == "❌ Inactif":
-                    status_assignments[val] = "inactive"
-            if status_assignments and st.button("Enregistrer et relancer l'analyse", key="status_save_all"):
-                for raw_val, target in status_assignments.items():
-                    save_custom_status_mapping(raw_val, target, store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
+            if important_missing:
+                st.warning("Champs importants absents : " + ", ".join(important_missing))
+            if important_empty:
+                st.warning("Champs présents mais entièrement vides : " + ", ".join(important_empty))
+
+            st.caption(
+                "Associe chaque colonne au champ qu'elle représente. "
+                "La correction est mémorisée pour tous les prochains fichiers portant ce même nom de colonne."
+            )
+            options_cols = ["Ignorée"] + STANDARD_FIELDS_FOR_MAPPING
+            col_assignments = {}
+            invert_choices  = {}
+            for col in all_main_raw_columns:
+                current = full_column_mapping.get(col)
+                default_idx = options_cols.index(current) if current in options_cols else 0
+                choice = st.selectbox(
+                    f"'{col}' correspond à :",
+                    options=options_cols, index=default_idx,
+                    key=f"main_map_{col}",
+                )
+                if choice != (current or "Ignorée"):
+                    col_assignments[col] = choice
+                if choice == "account_status":
+                    invert_choices[col] = st.checkbox(
+                        f"'{col}' est un indicateur inversé (ex. accountDisabled : vrai = désactivé)",
+                        key=f"main_invert_{col}",
+                    )
+            if col_assignments and st.button("Enregistrer colonnes et relancer", key="main_col_save"):
+                for raw_col, standard_field in col_assignments.items():
+                    if standard_field == "Ignorée":
+                        forget_custom_column_mapping(raw_col, store_path=MAIN_CUSTOM_MAPPING_STORE_PATH)
+                    else:
+                        target = f"{standard_field}__inverted_bool" if invert_choices.get(raw_col) else standard_field
+                        save_custom_column_mapping(raw_col, target, store_path=MAIN_CUSTOM_MAPPING_STORE_PATH)
                 st.cache_data.clear()
-                st.success(f"{len(status_assignments)} valeur(s) enregistrée(s). Relance en cours...")
+                st.success(f"{len(col_assignments)} correspondance(s) enregistrée(s). Relance en cours...")
                 st.rerun()
 
-    if all_status_learned:
-        with st.expander(f"Valeurs de statut déjà apprises ({len(all_status_learned)}) — modifier si besoin"):
-            for raw_val, target in list(all_status_learned.items()):
-                col_a, col_b = st.columns([4, 1])
-                with col_a:
-                    icon = "🟢" if target == "active" else "🔴"
-                    st.write(f"**{raw_val}** → {icon} {target}")
-                with col_b:
-                    if st.button("Retirer", key=f"status_forget_{raw_val}"):
+        # ── Onglet 2 : Statuts ────────────────────────────────────────────
+        with tab_status:
+            if has_unknown_status:
+                st.warning(
+                    f"Valeur(s) non reconnue(s) — traitée(s) comme actives par défaut "
+                    f"(pire cas audit) : {', '.join(unknown_status_values_this_run)}. "
+                    "Corrige ci-dessous pour affiner."
+                )
+            if all_status_in_file:
+                st.caption("Toutes les valeurs de statut du fichier avec leur interprétation actuelle. Corrige si nécessaire.")
+                status_assignments = {}
+                for val, auto_label in all_status_in_file.items():
+                    learned = all_status_learned.get(val.strip())
+                    if learned == "active":
+                        display = "Actif (corrigé)"
+                    elif learned == "inactive":
+                        display = "Inactif (corrigé)"
+                    else:
+                        # auto_label : "Actif", "Inactif", "Verrouillé...", "Inconnu..."
+                        display = auto_label.replace("🟢 ", "").replace("🔴 ", "").replace("🔒 ", "").replace("⚠️ ", "")
+
+                    options_s = [f"Garder ({display})", "Actif", "Inactif"]
+                    choice = st.selectbox(
+                        f"'{val}'",
+                        options=options_s, index=0,
+                        key=f"status_sel_{val}",
+                    )
+                    if choice == "Actif":
+                        status_assignments[val] = "active"
+                    elif choice == "Inactif":
+                        status_assignments[val] = "inactive"
+                if status_assignments and st.button("Enregistrer statuts et relancer", key="status_save_all"):
+                    for raw_val, target in status_assignments.items():
+                        save_custom_status_mapping(raw_val, target, store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
+                    st.cache_data.clear()
+                    st.success(f"{len(status_assignments)} valeur(s) enregistrée(s). Relance en cours...")
+                    st.rerun()
+            else:
+                st.caption("Aucune valeur de statut dans ce fichier.")
+
+        # ── Onglet 3 : Droits ─────────────────────────────────────────────
+        with tab_rights:
+            from analysis.access_review import _is_privileged_role_value
+            if all_distinct_rights:
+                n_admin_total = sum(
+                    1 for r in all_distinct_rights
+                    if rights_learned.get(r) == "admin" or
+                    (rights_learned.get(r) != "standard" and _is_privileged_role_value(r))
+                )
+                st.caption(
+                    f"{n_admin_total} droit(s) classé(s) Admin sur {n_rights}. "
+                    "Les droits détectés automatiquement comme Admin sont pré-sélectionnés. "
+                    "Corrige manuellement ceux que l'outil ne reconnaît pas."
+                )
+                rights_assignments = {}
+                for right in all_distinct_rights:
+                    if rights_learned.get(right) == "admin":
+                        current_cat, is_auto = "Admin", False
+                    elif rights_learned.get(right) == "standard":
+                        current_cat, is_auto = "Standard", False
+                    elif _is_privileged_role_value(right):
+                        current_cat, is_auto = "Admin", True
+                    else:
+                        current_cat, is_auto = "Non qualifié", False
+
+                    label = f"{right}" + (" *(auto)*" if is_auto else "")
+                    options_r = ["Admin", "Standard", "Non qualifié"]
+                    idx = options_r.index(current_cat) if current_cat in options_r else 2
+                    new_cat = st.selectbox(label, options=options_r, index=idx, key=f"right_sel_{right}")
+                    if not is_auto and new_cat != current_cat:
+                        if new_cat == "Admin":
+                            rights_assignments[right] = "admin"
+                        elif new_cat == "Standard":
+                            rights_assignments[right] = "standard"
+                        else:
+                            rights_assignments[right] = None
+
+                if st.button("Enregistrer droits et relancer", key="rights_save"):
+                    for right, cat in rights_assignments.items():
+                        if cat is None:
+                            forget_custom_rights_mapping(right, store_path=RIGHTS_CUSTOM_MAPPING_STORE_PATH)
+                        else:
+                            save_custom_rights_mapping(right, cat, store_path=RIGHTS_CUSTOM_MAPPING_STORE_PATH)
+                    st.cache_data.clear()
+                    st.success(f"{len(rights_assignments)} qualification(s) enregistrée(s). Relance en cours...")
+                    st.rerun()
+            else:
+                st.caption("Aucun droit trouvé dans ce fichier (colonne user_rights / role absente).")
+
+    # ── Section unifiée : Déjà enregistré ───────────────────────────────────
+    all_learned          = load_custom_column_mappings()
+    transfer_all_learned = load_custom_column_mappings(store_path=TRANSFER_CUSTOM_MAPPING_STORE_PATH)
+    total_learned = len(all_learned) + len(transfer_all_learned) + len(all_status_learned) + len(rights_learned)
+
+    if total_learned > 0:
+        with st.expander(f"Corrections déjà enregistrées ({total_learned}) — cliquer pour modifier"):
+            if all_learned:
+                st.markdown("**Colonnes (fichier principal)**")
+                for raw_col, target in list(all_learned.items()):
+                    disp = target.replace("__inverted_bool", " (inversé)")
+                    c1, c2 = st.columns([4, 1])
+                    c1.write(f"{raw_col} → {disp}")
+                    if c2.button("Retirer", key=f"forget_{raw_col}"):
+                        forget_custom_column_mapping(raw_col)
+                        st.cache_data.clear(); st.rerun()
+            if transfer_all_learned:
+                st.markdown("**Colonnes (transferts)**")
+                for raw_col, target in list(transfer_all_learned.items()):
+                    c1, c2 = st.columns([4, 1])
+                    c1.write(f"{raw_col} → {target}")
+                    if c2.button("Retirer", key=f"xfer_forget_{raw_col}"):
+                        forget_custom_column_mapping(raw_col, store_path=TRANSFER_CUSTOM_MAPPING_STORE_PATH)
+                        st.cache_data.clear(); st.rerun()
+            if all_status_learned:
+                st.markdown("**Statuts**")
+                for raw_val, target in list(all_status_learned.items()):
+                    c1, c2 = st.columns([4, 1])
+                    c1.write(f"{raw_val} → {target}")
+                    if c2.button("Retirer", key=f"status_forget_{raw_val}"):
                         forget_custom_status_mapping(raw_val, store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
-                        st.cache_data.clear()
-                        st.rerun()
+                        st.cache_data.clear(); st.rerun()
+            if rights_learned:
+                st.markdown("**Droits**")
+                for right, cat in list(rights_learned.items()):
+                    c1, c2 = st.columns([4, 1])
+                    c1.write(f"{right} → {cat}")
+                    if c2.button("Retirer", key=f"rights_forget_{right}"):
+                        forget_custom_rights_mapping(right, store_path=RIGHTS_CUSTOM_MAPPING_STORE_PATH)
+                        st.cache_data.clear(); st.rerun()
 
     # Rôles SoD masqués (interface non exposée pour l'instant).
-
-    # Section RH masquée (interface non exposée pour l'instant — fonctionnalités
-    # intactes dans le code, prêtes à être réactivées).
-
-    # Correspondances colonnes déjà apprises (fichier principal)
-    all_learned = load_custom_column_mappings()
-    if all_learned:
-        with st.expander(f"Correspondances déjà apprises ({len(all_learned)}) — modifier si besoin"):
-            st.caption("Colonnes déjà associées manuellement. Retire si incorrecte.")
-            for raw_col_norm, target_field in list(all_learned.items()):
-                display_field = target_field.replace("__inverted_bool", " (inversé)")
-                col_a, col_b = st.columns([4, 1])
-                with col_a:
-                    st.write(f"**{raw_col_norm}** → {display_field}")
-                with col_b:
-                    if st.button("Retirer", key=f"forget_{raw_col_norm}"):
-                        forget_custom_column_mapping(raw_col_norm)
-                        st.cache_data.clear()
-                        st.rerun()
-
-    transfer_all_learned = load_custom_column_mappings(store_path=TRANSFER_CUSTOM_MAPPING_STORE_PATH)
-    if transfer_all_learned:
-        with st.expander(f"Correspondances transferts déjà apprises ({len(transfer_all_learned)}) — modifier si besoin"):
-            st.caption(
-                "Colonnes du fichier de mouvements RH (transferts/mutations) déjà associées "
-                "manuellement lors d'une session précédente. Retire une correspondance si "
-                "elle est incorrecte."
-            )
-            for raw_col_norm, target_field in list(transfer_all_learned.items()):
-                col_a, col_b = st.columns([4, 1])
-                with col_a:
-                    st.write(f"**{raw_col_norm}** → {target_field}")
-                with col_b:
-                    if st.button("Retirer", key=f"transfer_forget_{raw_col_norm}"):
-                        forget_custom_column_mapping(raw_col_norm, store_path=TRANSFER_CUSTOM_MAPPING_STORE_PATH)
-                        st.cache_data.clear()
-                        st.rerun()
+    # Section RH masquée (interface non exposée pour l'instant).
 
     df = apply_risk_acceptances(df, store_path=RISK_ACCEPTANCE_STORE_PATH)
     df = attach_review_status(df, store_path=DECISIONS_STORE_PATH)
@@ -752,6 +858,199 @@ def main():
 
     st.divider()
 
+    st.subheader("Rapports formatés")
+
+    period_label = st.text_input(
+        "Période couverte par ce rapport",
+        placeholder="ex. T1 2026, Mars 2026...",
+        help="Laisser vide pour utiliser automatiquement le trimestre courant. "
+             "Ce champ permet de relancer ce même rapport à chaque cycle de revue "
+             "sans modifier le code.",
+    )
+
+    with st.expander("Comparer avec la revue précédente — optionnel"):
+        previous_file = st.file_uploader(
+            "Revue précédente (même format que l'export d'accès)",
+            type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml", "html", "htm", "ldif", "pdf", "jpeg", "jpg", "png", "zip"],
+            key="previous_review_upload",
+            help="Fournis le fichier de la revue précédente pour que le rapport calcule "
+                 "automatiquement les comptes créés, supprimés, réactivés et les profils "
+                 "modifiés entre les deux cycles.",
+        )
+        previous_extraction_date = st.date_input(
+            "Date d'extraction de cette revue précédente", value=None,
+            help="Utilisée dans les tableaux de comparaison (Profile Modified, Reactivated "
+                 "accounts) pour dater précisément l'ancienne valeur, à côté de la nouvelle.",
+            key="previous_extraction_date_input",
+        )
+
+        # Même correction manuelle que pour le fichier d'accès principal —
+        # même magasin de correspondances (même format de fichier), pour
+        # qu'une correction apprise sur l'un s'applique aussi à l'autre.
+        # Vérifié dès l'upload plutôt qu'au moment de générer le rapport :
+        # sans ça, une colonne non reconnue ne se remarquerait qu'après
+        # avoir cliqué sur "Générer", trop tard pour corriger sereinement.
+        if previous_file is not None:
+            prev_check_mappings = load_custom_column_mappings()
+            prev_check_unmapped, prev_check_error, prev_full_mapping = _check_previous_file_columns(
+                previous_file.getvalue(), previous_file.name, prev_check_mappings,
+            )
+            if prev_check_error:
+                st.error(
+                    f"**Revue précédente illisible** — la comparaison entre cycles ne sera pas disponible. "
+                    f"Cause : {prev_check_error}"
+                )
+            else:
+                _render_column_mapping_ui(
+                    "revue précédente", list(prev_full_mapping.keys()) + prev_check_unmapped,
+                    prev_full_mapping, STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "prevreview",
+                    support_inversion=True,
+                )
+
+    with st.expander("En-tête du document officiel — optionnel"):
+        header_col1, header_col2 = st.columns(2)
+        with header_col1:
+            department = st.text_input("Département émetteur", placeholder="ex. Technology Department")
+            application_scope = st.text_input("Périmètre / Application", placeholder="ex. Active Directory")
+            extraction_origin = st.text_input(
+                "Origine de l'extraction (nom du fichier)", placeholder="ex. Extraction ServiceNow mensuelle",
+                help="Remplace le nom de système déduit automatiquement dans le nom du fichier "
+                     "téléchargé. Laissé vide, le système est repris automatiquement comme avant.",
+            )
+        with header_col2:
+            editor = st.text_input("Éditeur du document", placeholder="Nom, Prénom")
+            document_version = st.text_input("Version du document", value="1.0")
+        include_controls_reference = st.checkbox(
+            "Inclure le référentiel des 18 contrôles standards", value=True,
+        )
+        logo_file = st.file_uploader(
+            "Logo de l'entreprise (optionnel — utilise assets/mtnlogo.png par défaut si présent)",
+            type=["png", "jpg", "jpeg"],
+            help="Un logo importé ici remplace ponctuellement celui par défaut, pour ce "
+                 "rapport uniquement.",
+        )
+
+    with st.expander("Validation (sign-off) — optionnel"):
+        signoff_col1, signoff_col2, signoff_col3 = st.columns(3)
+        with signoff_col1:
+            prepared_by = st.text_input("Préparé par", placeholder="Nom, Prénom")
+        with signoff_col2:
+            reviewed_by = st.text_input("Revu par", placeholder="Nom, Prénom")
+        with signoff_col3:
+            approved_by = st.text_input("Approuvé par", placeholder="Nom, Prénom")
+
+    report_col1, report_col2, report_col3 = st.columns(3)
+    with report_col1:
+        if st.button("Générer le rapport Excel", use_container_width=True):
+            with st.spinner("Génération..."):
+                tmp_xlsx = Path(tempfile.gettempdir()) / "rapport_revue_acces.xlsx"
+                generate_excel_report(filtered, tmp_xlsx)
+                buf = BytesIO(tmp_xlsx.read_bytes())
+            st.download_button(
+                "Télécharger le rapport Excel", data=buf.getvalue(),
+                file_name=default_report_filename(filtered, "xlsx", extraction_origin=extraction_origin),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+    def _resolve_previous_df_and_logo():
+        previous_df = None
+        previous_unmapped = []
+        if previous_file is not None:
+            prev_suffix = Path(previous_file.name).suffix
+            with tempfile.NamedTemporaryFile(suffix=prev_suffix, delete=False) as tmp_prev:
+                tmp_prev.write(previous_file.getvalue())
+                tmp_prev_path = tmp_prev.name
+            try:
+                # Même format que le fichier d'accès principal (un export
+                # antérieur du même système) — réutilise le même magasin de
+                # correspondances apprises, pas un magasin séparé : une
+                # correction apprise sur l'un doit s'appliquer à l'autre.
+                previous_custom_mappings = load_custom_column_mappings()
+                previous_raw = load_file(tmp_prev_path, default_system=None, custom_mappings=previous_custom_mappings)
+                previous_unmapped = list(previous_raw.attrs.get("unmapped_columns", []))
+                previous_df = analyze_access(
+                    previous_raw,
+                    dormant_threshold_days=dormant_threshold_days,
+                    password_stale_threshold_days=password_stale_threshold_days,
+                    never_used_threshold_days=never_used_threshold_days,
+                )
+            except IngestionError as e:
+                st.warning(f"Revue précédente ignorée (erreur d'ingestion) : {e}")
+
+        logo_path = None
+        if logo_file is not None:
+            logo_suffix = Path(logo_file.name).suffix
+            with tempfile.NamedTemporaryFile(suffix=logo_suffix, delete=False) as tmp_logo:
+                tmp_logo.write(logo_file.getvalue())
+                logo_path = tmp_logo.name
+        else:
+            default_logo = Path(__file__).parent.parent / "assets" / "mtnlogo.png"
+            if default_logo.exists():
+                logo_path = str(default_logo)
+        return previous_df, logo_path, previous_unmapped
+
+    with report_col2:
+        if st.button("Générer le rapport PDF", use_container_width=True):
+            with st.spinner("Génération..."):
+                previous_df, logo_path, _ = _resolve_previous_df_and_logo()
+                tmp_pdf = Path(tempfile.gettempdir()) / "rapport_revue_acces.pdf"
+                generate_pdf_report(
+                    filtered, tmp_pdf, period=period_label or None,
+                    prepared_by=prepared_by or None,
+                    reviewed_by=reviewed_by or None,
+                    approved_by=approved_by or None,
+                    department=department or None,
+                    editor=editor or None,
+                    application_scope=application_scope or None,
+                    document_version=document_version or "1.0",
+                    include_controls_reference=include_controls_reference,
+                    previous_df=previous_df,
+                    logo_path=logo_path,
+                    dormant_threshold_days=dormant_threshold_days,
+                    current_extraction_date=extraction_date.strftime("%Y-%m-%d"),
+                    previous_extraction_date=(
+                        previous_extraction_date.strftime("%Y-%m-%d") if previous_extraction_date else None
+                    ),
+                )
+                buf = BytesIO(tmp_pdf.read_bytes())
+            st.download_button(
+                "Télécharger le rapport PDF", data=buf.getvalue(),
+                file_name=default_report_filename(filtered, "pdf", extraction_origin=extraction_origin), mime="application/pdf",
+                use_container_width=True,
+            )
+    with report_col3:
+        if st.button("Générer le rapport Word", use_container_width=True):
+            with st.spinner("Génération..."):
+                previous_df, logo_path, _ = _resolve_previous_df_and_logo()
+                tmp_docx = Path(tempfile.gettempdir()) / "rapport_revue_acces.docx"
+                generate_word_report(
+                    filtered, tmp_docx, period=period_label or None,
+                    prepared_by=prepared_by or None,
+                    reviewed_by=reviewed_by or None,
+                    approved_by=approved_by or None,
+                    department=department or None,
+                    editor=editor or None,
+                    application_scope=application_scope or None,
+                    document_version=document_version or "1.0",
+                    previous_df=previous_df,
+                    logo_path=logo_path,
+                    dormant_threshold_days=dormant_threshold_days,
+                    current_extraction_date=extraction_date.strftime("%Y-%m-%d"),
+                    previous_extraction_date=(
+                        previous_extraction_date.strftime("%Y-%m-%d") if previous_extraction_date else None
+                    ),
+                )
+                buf = BytesIO(tmp_docx.read_bytes())
+            st.download_button(
+                "Télécharger le rapport Word", data=buf.getvalue(),
+                file_name=default_report_filename(filtered, "docx", extraction_origin=extraction_origin),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+
+    st.divider()
+
     st.subheader("Détail des comptes")
     filter_col1, filter_col2 = st.columns(2)
     with filter_col1:
@@ -821,19 +1120,31 @@ def main():
             with inv_col1:
                 st.markdown("**Identity**")
                 st.write(f"Username : {account.get('username', '—')}")
-                st.write(f"Nom : {account.get('full_name', '—')}")
-                st.write(f"Département : {account.get('department', '—')}")
-                st.write(f"Manager : {account.get('manager') or '—'}")
-                st.write(f"Statut RH : {account.get('employee_status', '—')}")
-            with inv_col2:
-                st.markdown("**Access**")
                 st.write(f"Système : {account.get('system', '—')}")
-                st.write(f"Rôle : {account.get('role', '—')}")
-                st.write(f"Privilégié : {'Oui' if account.get('is_privileged_flag') else 'Non'}")
                 st.write(f"Statut compte : {account.get('account_status', '—')}")
                 st.write(f"Verrouillé : {'Oui' if account.get('is_locked') else 'Non'}")
+                desc = account.get("description") or "—"
+                if desc != "—" and len(str(desc)) > 60:
+                    desc = str(desc)[:60] + "…"
+                st.write(f"Description : {desc}")
+            with inv_col2:
+                st.markdown("**Droits & Privilèges**")
+                st.write(f"Privilégié : {'⚠️ Oui' if account.get('is_privileged_flag') else 'Non'}")
+                # Afficher user_rights en priorité (droits réels octroyés),
+                # puis role (profil métier) — deux champs distincts dans Oracle EBS
+                for field_label, field_key in [("Droits (USER RIGHTS)", "user_rights"), ("Rôle", "role")]:
+                    val = account.get(field_key) or ""
+                    if val and str(val) not in ("—", "nan", "none", ""):
+                        roles_list = [r.strip() for r in str(val).split("\n") if r.strip()]
+                        if not roles_list:
+                            roles_list = [str(val)]
+                        st.markdown(f"*{field_label} :*")
+                        for r in roles_list[:5]:
+                            st.write(f"  • {r}")
+                        if len(roles_list) > 5:
+                            st.write(f"  … et {len(roles_list)-5} autre(s)")
             with inv_col3:
-                st.markdown("**Activity**")
+                st.markdown("**Activité**")
                 days_login = account.get("days_since_last_login")
                 st.write(f"Dernière connexion : {int(days_login) if pd.notna(days_login) else 'inconnue'} jour(s)")
                 days_pwd = account.get("days_since_password_change")
@@ -1081,199 +1392,6 @@ def main():
 
             with st.expander("Historique détaillé"):
                 st.dataframe(trend_history, width="stretch", hide_index=True)
-
-    st.divider()
-
-    st.subheader("Rapports formatés")
-
-    period_label = st.text_input(
-        "Période couverte par ce rapport",
-        placeholder="ex. T1 2026, Mars 2026...",
-        help="Laisser vide pour utiliser automatiquement le trimestre courant. "
-             "Ce champ permet de relancer ce même rapport à chaque cycle de revue "
-             "sans modifier le code.",
-    )
-
-    with st.expander("Comparer avec la revue précédente — optionnel"):
-        previous_file = st.file_uploader(
-            "Revue précédente (même format que l'export d'accès)",
-            type=["csv", "xlsx", "xls", "docx", "txt", "json", "xml", "html", "htm", "ldif", "pdf", "jpeg", "jpg", "png", "zip"],
-            key="previous_review_upload",
-            help="Fournis le fichier de la revue précédente pour que le rapport calcule "
-                 "automatiquement les comptes créés, supprimés, réactivés et les profils "
-                 "modifiés entre les deux cycles.",
-        )
-        previous_extraction_date = st.date_input(
-            "Date d'extraction de cette revue précédente", value=None,
-            help="Utilisée dans les tableaux de comparaison (Profile Modified, Reactivated "
-                 "accounts) pour dater précisément l'ancienne valeur, à côté de la nouvelle.",
-            key="previous_extraction_date_input",
-        )
-
-        # Même correction manuelle que pour le fichier d'accès principal —
-        # même magasin de correspondances (même format de fichier), pour
-        # qu'une correction apprise sur l'un s'applique aussi à l'autre.
-        # Vérifié dès l'upload plutôt qu'au moment de générer le rapport :
-        # sans ça, une colonne non reconnue ne se remarquerait qu'après
-        # avoir cliqué sur "Générer", trop tard pour corriger sereinement.
-        if previous_file is not None:
-            prev_check_mappings = load_custom_column_mappings()
-            prev_check_unmapped, prev_check_error, prev_full_mapping = _check_previous_file_columns(
-                previous_file.getvalue(), previous_file.name, prev_check_mappings,
-            )
-            if prev_check_error:
-                st.error(
-                    f"**Revue précédente illisible** — la comparaison entre cycles ne sera pas disponible. "
-                    f"Cause : {prev_check_error}"
-                )
-            else:
-                _render_column_mapping_ui(
-                    "revue précédente", list(prev_full_mapping.keys()) + prev_check_unmapped,
-                    prev_full_mapping, STANDARD_FIELDS_FOR_MAPPING, MAIN_CUSTOM_MAPPING_STORE_PATH, "prevreview",
-                    support_inversion=True,
-                )
-
-    with st.expander("En-tête du document officiel — optionnel"):
-        header_col1, header_col2 = st.columns(2)
-        with header_col1:
-            department = st.text_input("Département émetteur", placeholder="ex. Technology Department")
-            application_scope = st.text_input("Périmètre / Application", placeholder="ex. Active Directory")
-            extraction_origin = st.text_input(
-                "Origine de l'extraction (nom du fichier)", placeholder="ex. Extraction ServiceNow mensuelle",
-                help="Remplace le nom de système déduit automatiquement dans le nom du fichier "
-                     "téléchargé. Laissé vide, le système est repris automatiquement comme avant.",
-            )
-        with header_col2:
-            editor = st.text_input("Éditeur du document", placeholder="Nom, Prénom")
-            document_version = st.text_input("Version du document", value="1.0")
-        include_controls_reference = st.checkbox(
-            "Inclure le référentiel des 18 contrôles standards", value=True,
-        )
-        logo_file = st.file_uploader(
-            "Logo de l'entreprise (optionnel — utilise assets/mtnlogo.png par défaut si présent)",
-            type=["png", "jpg", "jpeg"],
-            help="Un logo importé ici remplace ponctuellement celui par défaut, pour ce "
-                 "rapport uniquement.",
-        )
-
-    with st.expander("Validation (sign-off) — optionnel"):
-        signoff_col1, signoff_col2, signoff_col3 = st.columns(3)
-        with signoff_col1:
-            prepared_by = st.text_input("Préparé par", placeholder="Nom, Prénom")
-        with signoff_col2:
-            reviewed_by = st.text_input("Revu par", placeholder="Nom, Prénom")
-        with signoff_col3:
-            approved_by = st.text_input("Approuvé par", placeholder="Nom, Prénom")
-
-    report_col1, report_col2, report_col3 = st.columns(3)
-    with report_col1:
-        if st.button("Générer le rapport Excel", use_container_width=True):
-            with st.spinner("Génération..."):
-                tmp_xlsx = Path(tempfile.gettempdir()) / "rapport_revue_acces.xlsx"
-                generate_excel_report(filtered, tmp_xlsx)
-                buf = BytesIO(tmp_xlsx.read_bytes())
-            st.download_button(
-                "Télécharger le rapport Excel", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "xlsx", extraction_origin=extraction_origin),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-
-    def _resolve_previous_df_and_logo():
-        previous_df = None
-        previous_unmapped = []
-        if previous_file is not None:
-            prev_suffix = Path(previous_file.name).suffix
-            with tempfile.NamedTemporaryFile(suffix=prev_suffix, delete=False) as tmp_prev:
-                tmp_prev.write(previous_file.getvalue())
-                tmp_prev_path = tmp_prev.name
-            try:
-                # Même format que le fichier d'accès principal (un export
-                # antérieur du même système) — réutilise le même magasin de
-                # correspondances apprises, pas un magasin séparé : une
-                # correction apprise sur l'un doit s'appliquer à l'autre.
-                previous_custom_mappings = load_custom_column_mappings()
-                previous_raw = load_file(tmp_prev_path, default_system=None, custom_mappings=previous_custom_mappings)
-                previous_unmapped = list(previous_raw.attrs.get("unmapped_columns", []))
-                previous_df = analyze_access(
-                    previous_raw,
-                    dormant_threshold_days=dormant_threshold_days,
-                    password_stale_threshold_days=password_stale_threshold_days,
-                    never_used_threshold_days=never_used_threshold_days,
-                )
-            except IngestionError as e:
-                st.warning(f"Revue précédente ignorée (erreur d'ingestion) : {e}")
-
-        logo_path = None
-        if logo_file is not None:
-            logo_suffix = Path(logo_file.name).suffix
-            with tempfile.NamedTemporaryFile(suffix=logo_suffix, delete=False) as tmp_logo:
-                tmp_logo.write(logo_file.getvalue())
-                logo_path = tmp_logo.name
-        else:
-            default_logo = Path(__file__).parent.parent / "assets" / "mtnlogo.png"
-            if default_logo.exists():
-                logo_path = str(default_logo)
-        return previous_df, logo_path, previous_unmapped
-
-    with report_col2:
-        if st.button("Générer le rapport PDF", use_container_width=True):
-            with st.spinner("Génération..."):
-                previous_df, logo_path, _ = _resolve_previous_df_and_logo()
-                tmp_pdf = Path(tempfile.gettempdir()) / "rapport_revue_acces.pdf"
-                generate_pdf_report(
-                    filtered, tmp_pdf, period=period_label or None,
-                    prepared_by=prepared_by or None,
-                    reviewed_by=reviewed_by or None,
-                    approved_by=approved_by or None,
-                    department=department or None,
-                    editor=editor or None,
-                    application_scope=application_scope or None,
-                    document_version=document_version or "1.0",
-                    include_controls_reference=include_controls_reference,
-                    previous_df=previous_df,
-                    logo_path=logo_path,
-                    dormant_threshold_days=dormant_threshold_days,
-                    current_extraction_date=extraction_date.strftime("%Y-%m-%d"),
-                    previous_extraction_date=(
-                        previous_extraction_date.strftime("%Y-%m-%d") if previous_extraction_date else None
-                    ),
-                )
-                buf = BytesIO(tmp_pdf.read_bytes())
-            st.download_button(
-                "Télécharger le rapport PDF", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "pdf", extraction_origin=extraction_origin), mime="application/pdf",
-                use_container_width=True,
-            )
-    with report_col3:
-        if st.button("Générer le rapport Word", use_container_width=True):
-            with st.spinner("Génération..."):
-                previous_df, logo_path, _ = _resolve_previous_df_and_logo()
-                tmp_docx = Path(tempfile.gettempdir()) / "rapport_revue_acces.docx"
-                generate_word_report(
-                    filtered, tmp_docx, period=period_label or None,
-                    prepared_by=prepared_by or None,
-                    reviewed_by=reviewed_by or None,
-                    approved_by=approved_by or None,
-                    department=department or None,
-                    editor=editor or None,
-                    application_scope=application_scope or None,
-                    document_version=document_version or "1.0",
-                    previous_df=previous_df,
-                    logo_path=logo_path,
-                    dormant_threshold_days=dormant_threshold_days,
-                    current_extraction_date=extraction_date.strftime("%Y-%m-%d"),
-                    previous_extraction_date=(
-                        previous_extraction_date.strftime("%Y-%m-%d") if previous_extraction_date else None
-                    ),
-                )
-                buf = BytesIO(tmp_docx.read_bytes())
-            st.download_button(
-                "Télécharger le rapport Word", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "docx", extraction_origin=extraction_origin),
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True,
-            )
 
 
 if __name__ == "__main__":

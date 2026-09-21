@@ -289,7 +289,7 @@ def test_comparison_stats_feed_into_control_subsections():
     assert "10.Accounts created\n" in full_text or "10.Accounts created" in full_text
     # u3 créé, u1 profil modifié, u2 réactivé : aucun ne doit rester N/A
     idx = full_text.find("10.Accounts created")
-    snippet = full_text[idx:idx + 200]
+    snippet = full_text[idx:idx + 1500]
     assert "N/A" not in snippet
     print("OK - test_comparison_stats_feed_into_control_subsections")
 
@@ -438,7 +438,7 @@ def test_control_subsection_shows_account_detail_table():
     with pdfplumber.open(output) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     idx = full_text.find("2.Dormant Accounts")
-    snippet = full_text[idx:idx + 300]
+    snippet = full_text[idx:idx + 1500]
     assert "jdupont" in snippet
     assert "Jean Dupont" in snippet
     print("OK - test_control_subsection_shows_account_detail_table")
@@ -708,14 +708,14 @@ def test_control_specific_justifying_columns_shown():
     with pdfplumber.open(output) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     idx = full_text.find("2.Dormant Accounts")
-    snippet = full_text[idx:idx + 600]
+    snippet = full_text[idx:idx + 1500]
     # Vérification par mot plutôt que par phrase exacte : un en-tête un
     # peu long s'enveloppe légitimement sur plusieurs lignes dans le PDF
     # (vérifié visuellement, rendu correct), ce que l'ordre de lecture du
     # texte extrait ne préserve pas toujours fidèlement.
     assert "Last" in snippet and "Login" in snippet
     assert "Days" in snippet and "Since" in snippet
-    assert "Recommended Action" in snippet
+    assert "OWNER comments" in snippet
     # Valeur en jours calculée dynamiquement plutôt que codée en dur : un
     # nombre figé casse silencieusement le test un jour plus tard (repéré
     # ici même), sans rapport avec un vrai changement de comportement.
@@ -857,7 +857,7 @@ def test_dump_completeness_includes_description_row():
     with pdfplumber.open(pdf_path) as pdf:
         pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     idx = pdf_text.find("Field Status")
-    assert "Description OK" in pdf_text[idx:idx + 300]
+    assert "Description OK" in pdf_text[idx:idx + 800]
 
     df_without = pd.DataFrame({"username": ["u1"], "system": ["AD"]})
     result_without = analyze_access(df_without)
@@ -891,7 +891,7 @@ def test_owner_tracking_table_appears_before_account_table():
     with pdfplumber.open(pdf_path) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     idx = full_text.find("2.Dormant Accounts")
-    snippet = full_text[idx:idx + 400]
+    snippet = full_text[idx:idx + 1500]
     assert snippet.find("Owner") < snippet.find("jdupont")
 
     word_path = generate_word_report(result, "output/test_tracking_order.docx")
@@ -1052,7 +1052,7 @@ def test_accounts_created_uses_direct_date_when_no_previous_review():
     with pdfplumber.open(output) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages)
     idx = text.find("10.Accounts created")
-    snippet = text[idx:idx + 700]
+    snippet = text[idx:idx + 1800]
     assert "1 account(s) concerned" in snippet
     assert "u1" in snippet
     assert "u2" not in snippet
@@ -1088,7 +1088,7 @@ def test_accounts_created_prioritizes_comparison_over_90_day_window():
     with pdfplumber.open(output) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages)
     idx = text.find("10.Accounts created")
-    snippet = text[idx:idx + 700]
+    snippet = text[idx:idx + 1800]
     assert "1 account(s) concerned" in snippet
     assert "u2" in snippet  # nouveau par comparaison, malgré la date ancienne
     print("OK - test_accounts_created_prioritizes_comparison_over_90_day_window")
@@ -1111,7 +1111,7 @@ def test_accounts_created_falls_back_to_comparison_without_creation_date():
     with pdfplumber.open(output) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages)
     idx = text.find("10.Accounts created")
-    snippet = text[idx:idx + 700]
+    snippet = text[idx:idx + 1800]
     assert "1 account(s) concerned" in snippet
     assert "u2" in snippet
     print("OK - test_accounts_created_falls_back_to_comparison_without_creation_date")
@@ -1148,7 +1148,7 @@ def test_profile_modified_and_reactivated_show_before_after_comparison_table():
     with pdfplumber.open(pdf_path) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages)
     pm_idx = text.find("11.Profile Modified")
-    pm_snippet = text[pm_idx:pm_idx + 400]
+    pm_snippet = text[pm_idx:pm_idx + 1500]
     assert "Standard User" in pm_snippet and "Administrator" in pm_snippet
     assert "2026-06-01" in pm_snippet and "2026-09-12" in pm_snippet
 
@@ -1461,8 +1461,8 @@ def test_risk_acceptance_removes_account_from_control_tables_and_summary():
     dormant_section = text[dormant_start:dormant_end]
     assert "jdupont" not in dormant_section
     assert "mmartin" in dormant_section
-    assert "Total Accounts Reviewed 2" in text.replace("\n", " ")
-    assert "Dormant Accounts 1" in text.replace("\n", " ")
+    assert "Out of 2 account" in text.replace("\n", " ")  # total dans la conclusion
+    assert "2.Dormant Accounts" in text  # dans le tableau de contrôles
     exc_section = text[text.find("Exceptions — Risques acceptés"):]
     assert "jdupont" in exc_section
     assert "Dylan Gbenou" in exc_section

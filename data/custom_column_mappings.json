@@ -1,0 +1,15 @@
+{
+  "user creation date": "account_created_date",
+  "group id": "role",
+  "last login time": "last_login_date",
+  "enabled": "account_status",
+  "userstatus.keyword: descending": "account_status",
+  "status": "account_status",
+  "node": "system",
+  "expiry status": "account_status",
+  "host": "system",
+  "expiry date": "last_login_date",
+  "user logon": "username",
+  "user status": "account_status",
+  "member of group": "user_rights"
+}

@@ -141,7 +141,7 @@ DUMP_COMPLETENESS_GUIDANCE = "Fill the table with OK or NOK"
 DUMP_COMPLETENESS_COLUMNS = [
     ("User logon (User ID)", ["username", "user_id"]),
     ("User creation DATE", ["account_created_date"]),
-    ("User rights or permissions", ["role"]),
+    ("User rights or permissions", ["user_rights", "role"]),  # user_rights (Oracle EBS) OU role
     ("Description", ["description"]),
     ("Password reset date", ["password_last_set"]),
     ("Last login date", ["last_login_date"]),
@@ -150,35 +150,93 @@ DUMP_COMPLETENESS_COLUMNS = [
 
 # (numéro, titre exact, consigne exacte ou None, clé de donnée ou None)
 CONTROL_SUBSECTIONS = [
-    (2, "Dormant Accounts", "Guidance : Check the last login that exceed 90 days", "is_dormant"),
-    (3, "Orphaned accounts", None, "is_orphaned_account"),
-    (4, "Test Accounts", None, "is_test_account"),
-    (5, "Active accounts", None, "_active_count"),
-    (6, "Inactive accounts", None, "is_never_used"),
-    (7, "Service Accounts", None, "is_service_account"),
-    (8, "Duplicate accounts", None, "is_duplicate_account"),
-    (9, "Active Non-compliant logins", None, None),
+    (2, "Dormant Accounts",
+     "Exception: All active accounts must have been used within the last 90 days. "
+     "Accounts with no login activity beyond this threshold must be disabled or justified "
+     "by the system owner with a formal risk acceptance.",
+     "is_dormant"),
+    (3, "Orphaned accounts",
+     "Exception: Every active account must have an identified owner. "
+     "Generic, shared, or unattributed accounts must be formally justified, "
+     "reassigned to a named individual, or disabled.",
+     "is_orphaned_account"),
+    (4, "Test Accounts",
+     "Exception: Test accounts must not exist in production environments. "
+     "Any test account found active in production must be immediately disabled "
+     "and its creation justified by the system owner.",
+     "is_test_account"),
+    (5, "Active accounts",
+     "Exception: All active accounts must correspond to current employees or "
+     "authorized service accounts. Each account must be reviewed and confirmed "
+     "as legitimate by the system owner.",
+     "_active_count"),
+    (6, "Inactive accounts",
+     "Exception: Accounts that have never been used since creation beyond the "
+     "defined threshold must be investigated and either activated with justification "
+     "or disabled.",
+     "is_never_used"),
+    (7, "Service Accounts",
+     "Exception: All service accounts must be documented, have a named owner, "
+     "and follow the principle of least privilege. Shared passwords must be rotated "
+     "regularly and access must be limited to the required functions only.",
+     "is_service_account"),
+    (8, "Duplicate accounts",
+     "Exception: No user should hold more than one active account unless formally "
+     "justified. Duplicate accounts increase the risk of unauthorized access and "
+     "complicate audit trails.",
+     "is_duplicate_account"),
+    (9, "Active Non-compliant logins",
+     "Exception: All login attempts must comply with the defined security policy "
+     "(password complexity, MFA where required, authorized IP ranges). "
+     "Non-compliant active sessions must be investigated.",
+     None),
     (10, "Accounts created",
-     "Guidance: check the creation date of the extraction to identify new account , if the "
-     "system does not provide creation , perform the comparison between the last extraction "
-     "and the extraction to identify new account.Once new account is identified , check if "
-     "that account has been approved and that account is associated with service now ID.",
+     "Exception: All new accounts must be created following an approved request "
+     "(e.g. ServiceNow ticket). The system owner must confirm that each new account "
+     "is authorized, properly configured, and assigned to a named individual.",
      "_created"),
-    (11, "Profile Modified", None, "_profile_modified"),
-    (12, "Reactivated accounts", None, "_reactivated"),
-    (13, "Deleted accounts", None, "_deleted"),
-    (14, "Expired password(Password age> 90days)", None, "is_password_stale"),
-    (15, "3PP (Third-Party Personnel)", None, None),
-    (16, "Administrator Accounts", None, "is_privileged_flag"),
-    (17, "Annual User Profile and matrix review", None, None),
+    (11, "Profile Modified",
+     "Exception: Any change to an account profile (role, permissions, access level) "
+     "must be authorized and traceable to an approved change request. "
+     "Unauthorized profile changes must be reverted and investigated.",
+     "_profile_modified"),
+    (12, "Reactivated accounts",
+     "Exception: Reactivated accounts must correspond to an approved re-onboarding "
+     "request. The system owner must confirm the reactivation is legitimate and "
+     "that access rights remain appropriate.",
+     "_reactivated"),
+    (13, "Deleted accounts",
+     "Exception: All account deletions must be traceable to an approved offboarding "
+     "or access removal request. Unexpected deletions must be investigated.",
+     "_deleted"),
+    (14, "Expired password(Password age> 90days)",
+     "Exception: All active user accounts must have a password changed within the "
+     "last 90 days. Accounts with expired passwords must be flagged to the system "
+     "owner for immediate reset or formal justification.",
+     "is_password_stale"),
+    (15, "3PP (Third-Party Personnel)",
+     "Exception: Third-party accounts must be time-limited, regularly reviewed, "
+     "and immediately disabled upon contract termination. Access must be restricted "
+     "to the minimum required scope.",
+     None),
+    (16, "Administrator Accounts",
+     "Exception: Administrator and privileged accounts must be limited to named "
+     "individuals with a documented business justification. Shared admin accounts "
+     "are not permitted. All admin actions must be logged and monitored.",
+     "is_privileged_flag"),
+    (17, "Annual User Profile and matrix review",
+     "Exception: The system owner must perform and document a full user access "
+     "review at least annually, validating that all access rights remain appropriate "
+     "and aligned with current job responsibilities.",
+     None),
     (18, "Terminated Users and Transferred users",
-     "Guidance : Get the list of terminated staff and the list of people that have changed "
-     "position from HR and get the list of relevant contractor that have access to the "
-     "systems , compare that list of active user in the application.",
+     "Exception: Access must be revoked within 24 hours of employee departure or "
+     "role change. The system owner must cross-reference the HR termination and "
+     "transfer lists against active accounts and confirm all departures are addressed.",
      "is_terminated_but_active"),
     (19, "First line user access review report and accuracy",
-     "Guidance : Verify that the application owner performs monthly user access reviews "
-     "using the approved template and confirm that the review report is complete, "
+     "Exception: The system owner must perform monthly user access reviews using "
+     "the approved template and confirm that the review report is complete, "
      "accurate, and supported by sufficient evidence.",
      None),
 ]

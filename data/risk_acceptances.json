@@ -1,0 +1,11 @@
+{
+  "claudiad::erp": {
+    "username": "CLAUDIAD",
+    "system": "erp",
+    "accepted_review_action": "Désactiver (dormant)",
+    "comment": "efg",
+    "accepted_by": "ez",
+    "accepted_date": "2026-09-16",
+    "expiration_date": "2026-09-16"
+  }
+}

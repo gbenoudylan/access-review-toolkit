@@ -104,7 +104,7 @@ DISPLAY_COLUMNS = [
     ("days_since_password_change", "Days Since Password Change"),
     ("is_privileged_flag", "Privileged"),
     ("has_non_expiring_password", "Password Never Expires"),
-    ("review_action", "Recommended Action"),
+    ("review_action", "OWNER comments"),
     ("risk_score", "Score"),
     ("risk_level", "Risk"),
 ]
@@ -115,7 +115,8 @@ _EXTRA_COLUMN_LABELS = {
     "last_login_date": "Last Login (raw)",
     "account_created_date": "Creation Date",
     "password_last_set": "Last Password Change (raw)",
-    "role": "Role",
+    "role": "Role / Profile",
+    "user_rights": "User Rights / Permissions",
     "password_status": "Password Status",
 }
 ALL_COLUMN_LABELS = {**dict(DISPLAY_COLUMNS), **_EXTRA_COLUMN_LABELS}
@@ -197,7 +198,7 @@ CONTROL_TABLE_COLUMNS = {
     "_reactivated": ["username", "full_name", "system", "account_status", "review_action"],
     "_deleted": ["username", "full_name", "system"],  # n'existe plus dans le cycle courant : pas d'action à afficher
     "is_password_stale": ["username", "full_name", "system", "password_last_set", "days_since_password_change", "review_action"],
-    "is_privileged_flag": ["username", "full_name", "system", "role", "account_status", "review_action"],
+    "is_privileged_flag": ["username", "full_name", "system", "user_rights", "role", "account_status", "review_action"],
     "is_terminated_but_active": ["username", "full_name", "system", "employee_status", "account_status", "review_action"],
 }
 
@@ -418,7 +419,7 @@ COLUMN_WIDTH_WEIGHTS = {
     "Days Since Password Change": 1.1,
     "Privileged": 0.7,
     "Password Never Expires": 1.0,
-    "Recommended Action": 2.2,
+    "OWNER comments": 2.2,
     "Risk": 0.8,
     "Last Login (raw)": 1.3,
     "Creation Date": 1.1,
@@ -430,7 +431,7 @@ COLUMN_WIDTH_WEIGHTS = {
 # déborder ou être tronqué.
 WRAP_COLUMNS = {
     "Account", "Employee ID", "Name", "Department", "System", "Manager",
-    "Account Status", "HR Status", "Recommended Action",
+    "Account Status", "HR Status", "OWNER comments",
     "Last Login (raw)", "Creation Date",
     "Last Password Change (raw)", "Role", "Password Status",
 }
@@ -509,18 +510,21 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
         count = None
         if key is None:
             status, count_display = "N/A", "—"
+
         elif key == "_active_count":
+            # Contrôle 5 : comptes actifs — toujours évaluable si account_status présent.
             if "account_status" in df.columns:
                 count = int(df["account_status"].apply(_is_active_account).astype(bool).sum())
-            status = "OK"
-            count_display = str(count) if count is not None else "—"
+                status = "OK"
+                count_display = str(count)
+            else:
+                status, count_display = "N/A", "—"
+
         elif key == "_created":
             # Priorité à la comparaison avec une revue précédente quand
             # elle est fournie : plus fiable qu'une fenêtre de 90 jours
-            # fixe (un compte créé il y a 91 jours ressortirait quand
-            # même comme "nouveau" par comparaison s'il n'existait pas
-            # à la revue précédente). La fenêtre de 90 jours ne sert de
-            # repli QUE quand aucune revue précédente n'est fournie.
+            # fixe. La fenêtre ne sert de repli QUE quand aucune revue
+            # précédente n'est fournie.
             value = comparison_stats.get("created")
             if value is not None:
                 status, count_display = ("⚠️" if value > 0 else "OK"), str(value)
@@ -529,18 +533,79 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
                 status, count_display = ("⚠️" if count > 0 else "OK"), str(count)
             else:
                 status, count_display = "N/A", "—"
+
         elif key in ("_reactivated", "_deleted", "_profile_modified"):
             value = comparison_stats.get(key.lstrip("_"))
             if value is None:
                 status, count_display = "N/A", "—"
             else:
                 status, count_display = ("⚠️" if value > 0 else "OK"), str(value)
+
+        elif key == "is_password_stale":
+            # Contrôle 14 : MDP périmé — N/A si la colonne source est absente.
+            # Un fichier sans 'password_last_set' laisse is_password_stale=False
+            # pour tous les comptes (valeur par défaut), ce qui donnerait "OK 0"
+            # à tort : le reviewer croirait que tous les mots de passe sont à
+            # jour, alors qu'on n'a tout simplement pas l'information.
+            from analysis.access_review import PASSWORD_DATA_PRESENT_ATTR
+            has_pwd_data = df.attrs.get(PASSWORD_DATA_PRESENT_ATTR, "password_last_set" in df.columns)
+            if not has_pwd_data:
+                status, count_display = "N/A", "—"
+            elif "is_password_stale" in df.columns:
+                count = _count_excluding_accepted("is_password_stale")
+                status = "⚠️" if count > 0 else "OK"
+                count_display = str(count)
+            else:
+                status, count_display = "N/A", "—"
+
+        elif key == "is_terminated_but_active":
+            # Contrôle 18 : N/A si aucune source RH (employee_status) ni fichier
+            # de transferts n'a été fourni. Sans ces données, is_terminated_but_active
+            # est à False par défaut pour tous les comptes — afficher "OK 0" serait
+            # trompeur : le reviewer croirait que personne n'a gardé un accès après
+            # son départ, alors qu'on n'a tout simplement pas vérifié.
+            hr_data_present = df.attrs.get("_hr_data_present", "employee_status" in df.columns)
+            transfer_data_present = "is_transferred_but_active" in df.columns and df["is_transferred_but_active"].any() or df.attrs.get("_transfer_data_present", False)
+            if not hr_data_present and not transfer_data_present:
+                status, count_display = "N/A", "—"
+            else:
+                count = 0
+                if "is_terminated_but_active" in df.columns and hr_data_present:
+                    count += _count_excluding_accepted("is_terminated_but_active")
+                if "is_transferred_but_active" in df.columns and transfer_data_present:
+                    from analysis.risk_acceptance import is_finding_accepted as _ifa
+                    mask2 = df["is_transferred_but_active"] & ~df.apply(lambda r: _ifa(r, "is_transferred_but_active"), axis=1)
+                    count += int(mask2.sum())
+                status = "⚠️" if count > 0 else "OK"
+                count_display = str(count)
+
+        elif key == "is_never_used":
+            # Contrôle 6 : N/A si les données de connexion sont absentes.
+            has_login_data = df.attrs.get("_login_data_present", "last_login_date" in df.columns)
+            has_date_data = has_login_data or "account_created_date" in df.columns
+            if not has_date_data or "is_never_used" not in df.columns:
+                status, count_display = "N/A", "—"
+            else:
+                count = _count_excluding_accepted("is_never_used")
+                status = "⚠️" if count > 0 else "OK"
+                count_display = str(count)
+
         elif key in df.columns:
+            # Contrôle 2 (is_dormant) et autres : N/A si les données
+            # nécessaires à l'évaluation étaient absentes du fichier source.
+            if key == "is_dormant":
+                has_login_data = df.attrs.get("_login_data_present", "last_login_date" in df.columns)
+                if not has_login_data:
+                    status, count_display = "N/A", "—"
+                    rows.append((number, title, status, count_display))
+                    continue
             count = _count_excluding_accepted(key)
             status = "⚠️" if count > 0 else "OK"
             count_display = str(count)
+
         else:
             status, count_display = "N/A", "—"
+
         rows.append((number, title, status, count_display))
     return rows
 
@@ -1655,42 +1720,8 @@ def generate_word_report(
         doc.add_paragraph("No data quality issues detected in this file.")
     doc.add_paragraph()
 
-    doc.add_heading("Executive Summary", level=2)
-    # 'Total Accounts Reviewed' reste le vrai total de la population
-    # revue (acceptés compris) — risk_level est déjà recalculé par
-    # apply_risk_acceptances en excluant les constats acceptés. Les
-    # comptages BRUTS par indicateur ci-dessous excluent spécifiquement
-    # les comptes acceptés POUR CE constat précis (is_finding_accepted),
-    # jamais une exclusion globale du compte.
-    total_accounts_reviewed = len(df_all_accounts)
-
-    def _count_excluding_accepted_word(flag_col: str) -> int:
-        if "accepted_finding_keys" not in df.columns:
-            return int(df[flag_col].sum())
-        mask = df[flag_col] & ~df.apply(lambda r: is_finding_accepted(r, flag_col), axis=1)
-        return int(mask.sum())
-
-    risk_counts = df["risk_level"].value_counts() if "risk_level" in df.columns else {}
-    exec_rows = [["Indicator", "Value"], ["Total Accounts Reviewed", str(total_accounts_reviewed)]]
-    for risk in RISK_COLORS_HEX:
-        exec_rows.append([_translate_value(risk), str(int(risk_counts.get(risk, 0)))])
-    if "is_terminated_but_active" in df.columns:
-        exec_rows.append(["Active Accounts of Departed Employees", str(_count_excluding_accepted_word("is_terminated_but_active"))])
-    if "is_dormant" in df.columns:
-        exec_rows.append(["Dormant Accounts", str(_count_excluding_accepted_word("is_dormant"))])
-    if "is_never_used" in df.columns:
-        exec_rows.append(["Never Used Accounts", str(_count_excluding_accepted_word("is_never_used"))])
-    if "is_password_stale" in df.columns:
-        exec_rows.append(["Stale Passwords", str(_count_excluding_accepted_word("is_password_stale"))])
-    if "is_duplicate_account" in df.columns:
-        exec_rows.append(["Duplicate Accounts", str(_count_excluding_accepted_word("is_duplicate_account"))])
-    if "is_locked" in df.columns:
-        exec_rows.append(["Locked Accounts (outside dormancy)", str(_count_excluding_accepted_word("is_locked"))])
-    _docx_add_table(doc, exec_rows)
-    doc.add_paragraph()
-
     # ---- Exceptions : comptes dont le risque a été formellement accepté ----
-    df = df_all_accounts  # restaure l'ensemble complet (voir plus haut)
+    df = df_all_accounts  # restaure l'ensemble complet
     doc.add_heading("Exceptions — Risques acceptés", level=2)
     accepted_detail = get_accepted_findings_detail(df)
     if accepted_detail:
@@ -2107,70 +2138,11 @@ def generate_pdf_report(
         elements.append(Paragraph("No data quality issues detected in this file.", note_style))
     elements.append(Spacer(1, 0.4 * cm))
 
-    # ---- Résumé exécutif ----
-    elements.append(Paragraph("Executive Summary", section_style))
-    # 'Total Accounts Reviewed' reste le vrai total de la population
-    # revue (acceptés compris) — risk_level est déjà recalculé par
-    # apply_risk_acceptances en excluant les constats acceptés, donc la
-    # répartition Critique/Élevé/Moyen/Faible est déjà correcte sans
-    # filtre supplémentaire ici. Les comptages BRUTS par indicateur
-    # (Dormant Accounts, etc.) ci-dessous doivent, eux, exclure
-    # spécifiquement les comptes acceptés POUR CE constat précis — voir
-    # is_finding_accepted, jamais une exclusion globale du compte.
-    from analysis.risk_acceptance import is_finding_accepted
-
-    def _count_excluding_accepted(flag_col: str, control_key: str = None) -> int:
-        control_key = control_key or flag_col
-        if "accepted_finding_keys" not in df.columns:
-            return int(df[flag_col].sum())
-        mask = df[flag_col] & ~df.apply(lambda r: is_finding_accepted(r, control_key), axis=1)
-        return int(mask.sum())
-
-    df_all_accounts = df
-    total_accounts_reviewed = len(df)
-    risk_counts = df["risk_level"].value_counts() if "risk_level" in df.columns else {}
-    summary_data = [["Indicator", "Value"], ["Total Accounts Reviewed", str(total_accounts_reviewed)]]
-    for risk in RISK_COLORS_HEX:
-        summary_data.append([_translate_value(risk), str(int(risk_counts.get(risk, 0)))])
-    if "is_terminated_but_active" in df.columns:
-        summary_data.append(["Active Accounts of Departed Employees", str(_count_excluding_accepted("is_terminated_but_active"))])
-    if "is_dormant" in df.columns:
-        summary_data.append(["Dormant Accounts", str(_count_excluding_accepted("is_dormant"))])
-    if "is_never_used" in df.columns:
-        summary_data.append(["Never Used Accounts", str(_count_excluding_accepted("is_never_used"))])
-    if "is_password_stale" in df.columns:
-        summary_data.append(["Stale Passwords", str(_count_excluding_accepted("is_password_stale"))])
-    if "is_privileged_flag" in df.columns and "has_non_expiring_password" in df.columns:
-        combined_mask = df["is_privileged_flag"] & df["has_non_expiring_password"]
-        if "accepted_finding_keys" in df.columns:
-            combined_mask = combined_mask & ~df.apply(
-                lambda r: is_finding_accepted(r, "has_non_expiring_password"), axis=1
-            )
-        summary_data.append(["Privileged Accounts with Non-Expiring Password", str(int(combined_mask.sum()))])
-    if "is_duplicate_account" in df.columns:
-        summary_data.append(["Duplicate Accounts", str(_count_excluding_accepted("is_duplicate_account"))])
-    if "is_locked" in df.columns:
-        summary_data.append(["Locked Accounts (outside dormancy)", str(_count_excluding_accepted("is_locked"))])
-
-    summary_table = Table(summary_data, colWidths=[9 * cm, 4 * cm])
-    summary_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
-        ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
-    ]))
-    elements.append(summary_table)
 
     # ---- Exceptions : comptes dont le risque a été formellement accepté ----
-    # Section RÉELLE, alimentée par de vraies données (contrairement à
-    # l'ancienne section "Exceptions Report" retirée plus tôt, qui
-    # n'était qu'un texte descriptif sans donnée derrière). Ne couvre que
-    # le constat précis accepté — voir analysis/risk_acceptance.py.
     elements.append(Paragraph("Exceptions — Risques acceptés", section_style))
-    df = df_all_accounts  # restaure l'ensemble complet (voir Executive Summary plus haut)
+    df_all_accounts = df  # préserve l'ensemble complet pour la section Exceptions
+    df = df_all_accounts  # alias explicite
     accepted_detail = get_accepted_findings_detail(df)
     if accepted_detail:
         exc_labels = ["Account", "System", "Accepted Finding", "Justification", "Accepted By", "Expiration"]

@@ -1,0 +1,1234 @@
+[
+  {
+    "date": "2026-09-12 17:23",
+    "period_label": "2026-09-12",
+    "recorded_by": "",
+    "systems": [
+      "Active Directory",
+      "CRM",
+      "HRIS",
+      "SAP",
+      "SIEM ArcSight"
+    ],
+    "total_accounts": 6,
+    "risk_counts": {
+      "Critique": 3,
+      "Élevé": 0,
+      "Moyen": 0,
+      "Faible": 3
+    },
+    "metrics": {
+      "is_dormant": 3,
+      "is_never_used": 0,
+      "is_password_stale": 0,
+      "is_duplicate_account": 0,
+      "is_locked": 0,
+      "is_terminated_but_active": 1,
+      "sod_conflict": 0
+    },
+    "by_system": {
+      "Active Directory": {
+        "total_accounts": 2,
+        "metrics": {
+          "is_dormant": 1,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "CRM": {
+        "total_accounts": 1,
+        "metrics": {
+          "is_dormant": 1,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 1,
+          "sod_conflict": 0
+        }
+      },
+      "HRIS": {
+        "total_accounts": 1,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "SAP": {
+        "total_accounts": 1,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "SIEM ArcSight": {
+        "total_accounts": 1,
+        "metrics": {
+          "is_dormant": 1,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      }
+    }
+  },
+  {
+    "date": "2026-09-13 18:00",
+    "period_label": "2026-09-13",
+    "recorded_by": "",
+    "systems": [
+      "Active Directory",
+      "CRM",
+      "GitLab",
+      "Jira",
+      "Office 365",
+      "Salesforce",
+      "VPN"
+    ],
+    "total_accounts": 60,
+    "risk_counts": {
+      "Critique": 7,
+      "Élevé": 0,
+      "Moyen": 7,
+      "Faible": 46
+    },
+    "metrics": {
+      "is_dormant": 14,
+      "is_never_used": 0,
+      "is_password_stale": 0,
+      "is_duplicate_account": 0,
+      "is_locked": 0,
+      "is_terminated_but_active": 5,
+      "sod_conflict": 0
+    },
+    "by_system": {
+      "Active Directory": {
+        "total_accounts": 13,
+        "metrics": {
+          "is_dormant": 2,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 1,
+          "sod_conflict": 0
+        }
+      },
+      "CRM": {
+        "total_accounts": 5,
+        "metrics": {
+          "is_dormant": 1,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 1,
+          "sod_conflict": 0
+        }
+      },
+      "GitLab": {
+        "total_accounts": 11,
+        "metrics": {
+          "is_dormant": 4,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "Jira": {
+        "total_accounts": 9,
+        "metrics": {
+          "is_dormant": 1,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 1,
+          "sod_conflict": 0
+        }
+      },
+      "Office 365": {
+        "total_accounts": 5,
+        "metrics": {
+          "is_dormant": 2,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 1,
+          "sod_conflict": 0
+        }
+      },
+      "Salesforce": {
+        "total_accounts": 4,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "VPN": {
+        "total_accounts": 13,
+        "metrics": {
+          "is_dormant": 4,
+          "is_never_used": 0,
+          "is_password_stale": 0,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 1,
+          "sod_conflict": 0
+        }
+      }
+    }
+  },
+  {
+    "date": "2026-09-14 10:40",
+    "period_label": "2026-09-14",
+    "recorded_by": "",
+    "systems": [
+      "ACS-DB01",
+      "LIMO3EMM01",
+      "LIMO3EMM02",
+      "LIMO3EMM03",
+      "LIMO3EMM04",
+      "LRSVR-EDB01A",
+      "LRSVR-EDB01B",
+      "LRSVR-EDB01C",
+      "LRSVR-EDB01D",
+      "LRSVR-GW01A",
+      "LRSVR-GW01B",
+      "LRSVR-NMS01A",
+      "LRSVR-TRS01A",
+      "LRSVR-TRS01B",
+      "LRSVR-WEB01A",
+      "LRSVR-WEB01B",
+      "acs-app01.lonestarcell.com",
+      "acs-app02.lonestarcell.com",
+      "acs-app03-svr",
+      "acs-bkp01.lonestarcell.com",
+      "acs-crit-app01.lonestarcell.com",
+      "acs-crit-app02.lonestarcell.com",
+      "acs-crit-db01.lonestarcell.com",
+      "acs-crit-db02.lonestarcell.com",
+      "acs-crit-lb01.lonestarcell.com",
+      "acs-db02.lonestarcell.com",
+      "acs-iat.lonestarcell.com",
+      "acs-lb01.lonestarcell.com",
+      "acs-mtr01.lonestarcell.com",
+      "acs-staging.lonestarcell.com",
+      "axon-lb01",
+      "bibcom1",
+      "bibcom2",
+      "jarvis",
+      "lim02occ02",
+      "lim03occ01",
+      "limo1sdp07a",
+      "limo1sdp07b",
+      "limo2air02",
+      "limo2ecmsapp02",
+      "limo2ecmsdb02",
+      "limo2ngvs02a",
+      "limo2ngvs02b",
+      "limo2ngvs02c",
+      "limo2sdp06a",
+      "limo2sdp06b",
+      "limo2sdp08a",
+      "limo2sdp08b",
+      "limo3air01",
+      "limo3crs01bi",
+      "limo3crs01dm",
+      "limo3crs01ds1",
+      "limo3crs01hl1",
+      "limo3crs01hm",
+      "limo3crs01hsm",
+      "limo3ecmsapp01",
+      "limo3ecmsdb01",
+      "limo3ngvs01a",
+      "limo3ngvs01b",
+      "limo3ngvs01c",
+      "limo3sdp05a",
+      "limo3sdp05b",
+      "lr-irafmapps-01",
+      "lr-irafmdbs-01",
+      "lr-irafmwebs-01",
+      "node1",
+      "node2",
+      "sdpmon3b",
+      "sdpmon4a",
+      "sdpmon4b",
+      "simregistration",
+      "tabsapp01.lonestarcell.com",
+      "tabsapp03.lonestarcell.com",
+      "tabsdb01.lonestarcell.com",
+      "tabsdb02.lonestarcell.com",
+      "tabsdb03.lonestarcell.com",
+      "tabsuatdb.lonestarcell.com"
+    ],
+    "total_accounts": 2165,
+    "risk_counts": {
+      "Critique": 1342,
+      "Élevé": 232,
+      "Moyen": 588,
+      "Faible": 3
+    },
+    "metrics": {
+      "is_dormant": 1025,
+      "is_never_used": 874,
+      "is_password_stale": 2162,
+      "is_duplicate_account": 0,
+      "is_locked": 0,
+      "is_terminated_but_active": 0,
+      "sod_conflict": 0
+    },
+    "by_system": {
+      "ACS-DB01": {
+        "total_accounts": 26,
+        "metrics": {
+          "is_dormant": 17,
+          "is_never_used": 5,
+          "is_password_stale": 26,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LIMO3EMM01": {
+        "total_accounts": 61,
+        "metrics": {
+          "is_dormant": 15,
+          "is_never_used": 34,
+          "is_password_stale": 61,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LIMO3EMM02": {
+        "total_accounts": 43,
+        "metrics": {
+          "is_dormant": 14,
+          "is_never_used": 22,
+          "is_password_stale": 43,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LIMO3EMM03": {
+        "total_accounts": 46,
+        "metrics": {
+          "is_dormant": 14,
+          "is_never_used": 25,
+          "is_password_stale": 46,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LIMO3EMM04": {
+        "total_accounts": 76,
+        "metrics": {
+          "is_dormant": 33,
+          "is_never_used": 35,
+          "is_password_stale": 76,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-EDB01A": {
+        "total_accounts": 14,
+        "metrics": {
+          "is_dormant": 8,
+          "is_never_used": 3,
+          "is_password_stale": 14,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-EDB01B": {
+        "total_accounts": 14,
+        "metrics": {
+          "is_dormant": 8,
+          "is_never_used": 3,
+          "is_password_stale": 14,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-EDB01C": {
+        "total_accounts": 14,
+        "metrics": {
+          "is_dormant": 8,
+          "is_never_used": 3,
+          "is_password_stale": 14,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-EDB01D": {
+        "total_accounts": 14,
+        "metrics": {
+          "is_dormant": 8,
+          "is_never_used": 3,
+          "is_password_stale": 14,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-GW01A": {
+        "total_accounts": 14,
+        "metrics": {
+          "is_dormant": 9,
+          "is_never_used": 2,
+          "is_password_stale": 14,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-GW01B": {
+        "total_accounts": 14,
+        "metrics": {
+          "is_dormant": 9,
+          "is_never_used": 2,
+          "is_password_stale": 14,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-NMS01A": {
+        "total_accounts": 14,
+        "metrics": {
+          "is_dormant": 6,
+          "is_never_used": 5,
+          "is_password_stale": 14,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-TRS01A": {
+        "total_accounts": 11,
+        "metrics": {
+          "is_dormant": 8,
+          "is_never_used": 1,
+          "is_password_stale": 11,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-TRS01B": {
+        "total_accounts": 11,
+        "metrics": {
+          "is_dormant": 8,
+          "is_never_used": 1,
+          "is_password_stale": 11,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-WEB01A": {
+        "total_accounts": 16,
+        "metrics": {
+          "is_dormant": 9,
+          "is_never_used": 3,
+          "is_password_stale": 16,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "LRSVR-WEB01B": {
+        "total_accounts": 14,
+        "metrics": {
+          "is_dormant": 9,
+          "is_never_used": 2,
+          "is_password_stale": 14,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-app01.lonestarcell.com": {
+        "total_accounts": 38,
+        "metrics": {
+          "is_dormant": 20,
+          "is_never_used": 13,
+          "is_password_stale": 38,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-app02.lonestarcell.com": {
+        "total_accounts": 38,
+        "metrics": {
+          "is_dormant": 12,
+          "is_never_used": 20,
+          "is_password_stale": 38,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-app03-svr": {
+        "total_accounts": 22,
+        "metrics": {
+          "is_dormant": 15,
+          "is_never_used": 2,
+          "is_password_stale": 22,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-bkp01.lonestarcell.com": {
+        "total_accounts": 37,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 37,
+          "is_password_stale": 37,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-crit-app01.lonestarcell.com": {
+        "total_accounts": 26,
+        "metrics": {
+          "is_dormant": 17,
+          "is_never_used": 2,
+          "is_password_stale": 26,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-crit-app02.lonestarcell.com": {
+        "total_accounts": 24,
+        "metrics": {
+          "is_dormant": 16,
+          "is_never_used": 2,
+          "is_password_stale": 24,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-crit-db01.lonestarcell.com": {
+        "total_accounts": 12,
+        "metrics": {
+          "is_dormant": 4,
+          "is_never_used": 6,
+          "is_password_stale": 12,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-crit-db02.lonestarcell.com": {
+        "total_accounts": 23,
+        "metrics": {
+          "is_dormant": 15,
+          "is_never_used": 4,
+          "is_password_stale": 23,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-crit-lb01.lonestarcell.com": {
+        "total_accounts": 23,
+        "metrics": {
+          "is_dormant": 16,
+          "is_never_used": 2,
+          "is_password_stale": 23,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-db02.lonestarcell.com": {
+        "total_accounts": 43,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 42,
+          "is_password_stale": 43,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-iat.lonestarcell.com": {
+        "total_accounts": 36,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 36,
+          "is_password_stale": 36,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-lb01.lonestarcell.com": {
+        "total_accounts": 36,
+        "metrics": {
+          "is_dormant": 18,
+          "is_never_used": 12,
+          "is_password_stale": 36,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-mtr01.lonestarcell.com": {
+        "total_accounts": 37,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 37,
+          "is_password_stale": 37,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "acs-staging.lonestarcell.com": {
+        "total_accounts": 30,
+        "metrics": {
+          "is_dormant": 16,
+          "is_never_used": 13,
+          "is_password_stale": 30,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "axon-lb01": {
+        "total_accounts": 12,
+        "metrics": {
+          "is_dormant": 6,
+          "is_never_used": 3,
+          "is_password_stale": 12,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "bibcom1": {
+        "total_accounts": 21,
+        "metrics": {
+          "is_dormant": 14,
+          "is_never_used": 3,
+          "is_password_stale": 21,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "bibcom2": {
+        "total_accounts": 18,
+        "metrics": {
+          "is_dormant": 11,
+          "is_never_used": 4,
+          "is_password_stale": 18,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "jarvis": {
+        "total_accounts": 32,
+        "metrics": {
+          "is_dormant": 15,
+          "is_never_used": 10,
+          "is_password_stale": 32,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "lim02occ02": {
+        "total_accounts": 28,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 27,
+          "is_password_stale": 28,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "lim03occ01": {
+        "total_accounts": 29,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 29,
+          "is_password_stale": 29,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo1sdp07a": {
+        "total_accounts": 31,
+        "metrics": {
+          "is_dormant": 19,
+          "is_never_used": 8,
+          "is_password_stale": 31,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo1sdp07b": {
+        "total_accounts": 30,
+        "metrics": {
+          "is_dormant": 20,
+          "is_never_used": 7,
+          "is_password_stale": 30,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2air02": {
+        "total_accounts": 30,
+        "metrics": {
+          "is_dormant": 21,
+          "is_never_used": 6,
+          "is_password_stale": 30,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2ecmsapp02": {
+        "total_accounts": 34,
+        "metrics": {
+          "is_dormant": 24,
+          "is_never_used": 8,
+          "is_password_stale": 34,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2ecmsdb02": {
+        "total_accounts": 37,
+        "metrics": {
+          "is_dormant": 22,
+          "is_never_used": 11,
+          "is_password_stale": 37,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2ngvs02a": {
+        "total_accounts": 23,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 23,
+          "is_password_stale": 23,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2ngvs02b": {
+        "total_accounts": 27,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 27,
+          "is_password_stale": 27,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2ngvs02c": {
+        "total_accounts": 23,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 23,
+          "is_password_stale": 23,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2sdp06a": {
+        "total_accounts": 38,
+        "metrics": {
+          "is_dormant": 26,
+          "is_never_used": 9,
+          "is_password_stale": 38,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2sdp06b": {
+        "total_accounts": 36,
+        "metrics": {
+          "is_dormant": 25,
+          "is_never_used": 8,
+          "is_password_stale": 36,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2sdp08a": {
+        "total_accounts": 32,
+        "metrics": {
+          "is_dormant": 20,
+          "is_never_used": 9,
+          "is_password_stale": 32,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo2sdp08b": {
+        "total_accounts": 34,
+        "metrics": {
+          "is_dormant": 22,
+          "is_never_used": 9,
+          "is_password_stale": 34,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3air01": {
+        "total_accounts": 31,
+        "metrics": {
+          "is_dormant": 20,
+          "is_never_used": 3,
+          "is_password_stale": 31,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3crs01bi": {
+        "total_accounts": 25,
+        "metrics": {
+          "is_dormant": 15,
+          "is_never_used": 7,
+          "is_password_stale": 25,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3crs01dm": {
+        "total_accounts": 23,
+        "metrics": {
+          "is_dormant": 16,
+          "is_never_used": 4,
+          "is_password_stale": 23,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3crs01ds1": {
+        "total_accounts": 25,
+        "metrics": {
+          "is_dormant": 17,
+          "is_never_used": 6,
+          "is_password_stale": 25,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3crs01hl1": {
+        "total_accounts": 18,
+        "metrics": {
+          "is_dormant": 12,
+          "is_never_used": 4,
+          "is_password_stale": 18,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3crs01hm": {
+        "total_accounts": 23,
+        "metrics": {
+          "is_dormant": 15,
+          "is_never_used": 6,
+          "is_password_stale": 23,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3crs01hsm": {
+        "total_accounts": 22,
+        "metrics": {
+          "is_dormant": 14,
+          "is_never_used": 6,
+          "is_password_stale": 22,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3ecmsapp01": {
+        "total_accounts": 39,
+        "metrics": {
+          "is_dormant": 23,
+          "is_never_used": 13,
+          "is_password_stale": 38,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3ecmsdb01": {
+        "total_accounts": 40,
+        "metrics": {
+          "is_dormant": 25,
+          "is_never_used": 10,
+          "is_password_stale": 40,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3ngvs01a": {
+        "total_accounts": 28,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 28,
+          "is_password_stale": 28,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3ngvs01b": {
+        "total_accounts": 26,
+        "metrics": {
+          "is_dormant": 0,
+          "is_never_used": 26,
+          "is_password_stale": 26,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3ngvs01c": {
+        "total_accounts": 27,
+        "metrics": {
+          "is_dormant": 17,
+          "is_never_used": 5,
+          "is_password_stale": 27,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3sdp05a": {
+        "total_accounts": 39,
+        "metrics": {
+          "is_dormant": 29,
+          "is_never_used": 7,
+          "is_password_stale": 39,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "limo3sdp05b": {
+        "total_accounts": 38,
+        "metrics": {
+          "is_dormant": 26,
+          "is_never_used": 9,
+          "is_password_stale": 38,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "lr-irafmapps-01": {
+        "total_accounts": 27,
+        "metrics": {
+          "is_dormant": 15,
+          "is_never_used": 6,
+          "is_password_stale": 27,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "lr-irafmdbs-01": {
+        "total_accounts": 11,
+        "metrics": {
+          "is_dormant": 5,
+          "is_never_used": 2,
+          "is_password_stale": 11,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "lr-irafmwebs-01": {
+        "total_accounts": 22,
+        "metrics": {
+          "is_dormant": 10,
+          "is_never_used": 8,
+          "is_password_stale": 22,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "node1": {
+        "total_accounts": 26,
+        "metrics": {
+          "is_dormant": 13,
+          "is_never_used": 7,
+          "is_password_stale": 25,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "node2": {
+        "total_accounts": 26,
+        "metrics": {
+          "is_dormant": 12,
+          "is_never_used": 9,
+          "is_password_stale": 25,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "sdpmon3b": {
+        "total_accounts": 39,
+        "metrics": {
+          "is_dormant": 17,
+          "is_never_used": 21,
+          "is_password_stale": 39,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "sdpmon4a": {
+        "total_accounts": 35,
+        "metrics": {
+          "is_dormant": 17,
+          "is_never_used": 16,
+          "is_password_stale": 35,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "sdpmon4b": {
+        "total_accounts": 40,
+        "metrics": {
+          "is_dormant": 20,
+          "is_never_used": 18,
+          "is_password_stale": 40,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "simregistration": {
+        "total_accounts": 17,
+        "metrics": {
+          "is_dormant": 7,
+          "is_never_used": 6,
+          "is_password_stale": 17,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "tabsapp01.lonestarcell.com": {
+        "total_accounts": 22,
+        "metrics": {
+          "is_dormant": 12,
+          "is_never_used": 6,
+          "is_password_stale": 22,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "tabsapp03.lonestarcell.com": {
+        "total_accounts": 20,
+        "metrics": {
+          "is_dormant": 9,
+          "is_never_used": 8,
+          "is_password_stale": 20,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "tabsdb01.lonestarcell.com": {
+        "total_accounts": 38,
+        "metrics": {
+          "is_dormant": 25,
+          "is_never_used": 9,
+          "is_password_stale": 38,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "tabsdb02.lonestarcell.com": {
+        "total_accounts": 38,
+        "metrics": {
+          "is_dormant": 24,
+          "is_never_used": 8,
+          "is_password_stale": 38,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "tabsdb03.lonestarcell.com": {
+        "total_accounts": 41,
+        "metrics": {
+          "is_dormant": 23,
+          "is_never_used": 11,
+          "is_password_stale": 41,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      },
+      "tabsuatdb.lonestarcell.com": {
+        "total_accounts": 17,
+        "metrics": {
+          "is_dormant": 10,
+          "is_never_used": 4,
+          "is_password_stale": 17,
+          "is_duplicate_account": 0,
+          "is_locked": 0,
+          "is_terminated_but_active": 0,
+          "sod_conflict": 0
+        }
+      }
+    }
+  }
+]

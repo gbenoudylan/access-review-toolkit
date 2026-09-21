@@ -26,6 +26,12 @@ from datetime import datetime
 import pandas as pd
 
 logger = logging.getLogger("access_review")
+# Clé dans df.attrs indiquant si les données de mot de passe étaient présentes
+# dans le fichier source — permet au Control Coverage de distinguer "0 MDP
+# périmé" (données présentes, tout va bien) de "N/A" (données absentes, on
+# ne sait pas). Sans cette distinction, un fichier sans colonne password_last_set
+# afficherait "OK 0" à tort, suggérant que tous les mots de passe sont à jour.
+PASSWORD_DATA_PRESENT_ATTR = "_pwd_data_present"
 
 DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
 PASSWORD_STALE_THRESHOLD_DAYS = 90  # standard interne MTN : 90 jours pour les comptes standards
@@ -42,20 +48,20 @@ ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "
 LOCKED_STATUS_VALUES = {"locked", "verrouillé", "verrouille"}
 TERMINATED_STATUS_VALUES = {
     "terminated", "termine", "terminé", "parti", "departed", "left",
-    "inactive", "inactif", "resigned", "démissionné",
+    # "inactive"/"inactif" = disabled — ne pas afficher dans les observations
+    # (comptes actifs uniquement). Retour terrain : le terme "inactif" crée
+    # de la confusion avec les comptes jamais utilisés depuis leur création.
+    "inactive", "inactif",
+    "resigned", "démissionné",
     "retired", "retraité", "leaver", "ex-employee", "former employee",
     "fired", "dismissed", "licencié", "licencie", "no longer employed",
     "not employed", "separated", "redundant",
-    "disabled", "désactivé", "desactive",
+    "disabled", "désactivé", "desactive", "desactivé",
     "suspended", "suspendu", "blocked", "bloqué", "expired", "expiré",
-    # NB : "locked" / "verrouillé" est intentionnellement ABSENT de cette
-    # liste — un compte verrouillé n'est PAS inactif pour un audit : il
-    # peut être déverrouillé à tout moment, ses rôles sont toujours actifs
-    # (conflits SoD, accès privilégiés), et s'il appartient à un employé
-    # parti c'est une anomalie critique même verrouillé. Il est traité
-    # comme potentiellement actif (pire cas) et signalé séparément via la
-    # colonne is_locked. L'auditeur peut le mapper manuellement vers
-    # 'inactive' dans le dashboard s'il veut l'exclure explicitement.
+    # LOCKED = DISABLED (retour terrain BSS/MTN) : un compte verrouillé
+    # est un compte désactivé dans ce contexte — il ne doit pas apparaître
+    # dans les observations comme un compte actif.
+    "locked", "verrouillé", "verrouille",
 }
 PRIVILEGED_VALUES = {"oui", "yes", "y", "true", "1", "admin", "administrateur"}
 NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais", "no expiry", "does not expire"}
@@ -543,6 +549,99 @@ def _days_since(
         return None
 
 
+# Un compte peut être signalé privilégié de deux façons différentes
+# selon l'export : une colonne booléenne dédiée ('Sudo Privileges:
+# Yes/No'), OU seulement via l'intitulé du rôle lui-même ('Role:
+# Administrator') sans colonne booléenne séparée — cas réel rencontré
+# sur des exports serveur. Ignorer la seconde ferait passer à travers
+# les mailles du filet tous les comptes administrateurs d'un fichier
+# qui n'a que ce seul indicateur.
+#
+# Recherche par MOT ENTIER (limites \b), pas par simple sous-chaîne :
+# un simple "in" faisait remonter en masse de faux positifs sur des
+# intitulés qui contiennent "admin" sans être un privilège IT réel
+# ('Administrative Assistant', 'Sales Administration'...) — repéré
+# sur un vrai fichier où ça avait fait exploser le compteur de
+# comptes privilégiés à un niveau franchement irréaliste (~60% du
+# fichier), signe évident du faux positif plutôt que d'un vrai
+# résultat.
+# ── Mots-clés standard (frontières de mot anglaises) ──────────────────
+# Rôles dont le nom contient ces termes comme mots entiers — capturés
+# par la regex \b(keyword)\b. Les tirets et espaces fonctionnent comme
+# frontières. ATTENTION : l'underscore _ est un caractère de mot en
+# regex Python, donc \b ne sépare PAS "mtn_fa_responsable" en mots
+# distincts — les rôles MTN underscore sont gérés séparément ci-dessous.
+_STD_PRIVILEGED_KEYWORDS = [
+    # Admin générique
+    "admin", "administrator", "administrateur", "sysadmin", "sys admin",
+    "superadmin", "super admin",
+    # Super user (espace entre super et user : frontières correctes)
+    "superuser", "super user",
+    # Rôles Oracle EBS avec espaces (word boundaries fonctionnent)
+    "system administrator", "system administration",
+    "application developer",
+    "cash management superuser",
+    "general ledger superuser", "general ledger super user",
+    "payables superuser", "receivables superuser",
+    "inventory superuser", "purchasing superuser",
+    "order management super user", "order management superuser",
+    "hr superuser", "treasury superuser",
+    "general ledger euro super user",
+    "bis super user", "gl super user",
+    "fixed assets administrator", "fixed assets manager",
+    "demand planning administrator", "demand planning system administrator",
+    "global warehouse administrator",
+    "warehouse manager",
+    "trading community manager",
+    "oracle pricing manager",
+    # Superviseur Oracle EBS
+    "general ledger budget supervisor",
+    "ax general ledger supervisor", "ax payables supervisor", "ax receivables supervisor",
+    "ax developer",
+    # Accès complets
+    "full access", "full control", "all access",
+    "privileged user", "power user",
+    # Unix/Linux/AD
+    "root", "sudoer", "domain admin", "enterprise admin", "schema admin",
+    "local admin", "backup operator", "account operator",
+    # BD
+    "dba", "database admin", "database administrator",
+    # Outil tiers à accès direct GL
+    "excel4apps",  # Excel4apps Wands = écriture directe dans Oracle GL via Excel
+]
+_STD_RE = re.compile(
+    r"(?<![a-z0-9_])(" + "|".join(re.escape(k) for k in _STD_PRIVILEGED_KEYWORDS) + r")(?![a-z0-9_])",
+    re.IGNORECASE,
+)
+
+# ── Patterns MTN underscore ────────────────────────────────────────────
+# Les codes MTN utilisent _ comme séparateur (mtn_fa_responsable,
+# mtn_inv_resp_stock_ventes) : \b ne fonctionne pas car _ est un
+# caractère de mot. On utilise une recherche de sous-chaîne directe.
+_MTN_PRIVILEGED_SUBSTRINGS = [
+    "responsable",    # mtn_ap - responsable, mtn_fa_responsable,
+                      # mtn_gl - responsable_*, mtn_inv_responsable_stock_*
+    "_resp_",         # mtn_om_resp_pnr, mtn_om_resp_oue, mtn_inv_resp_stock_*
+    "gestionnaire",   # mtn_inv_gestionnaire_stock
+    "_manager",       # mtn_po_manager (mais PAS "mtn_OM_Vendeur" → bien)
+    "accès complet",  # mtn_accès complet à isupplier portal (accès total)
+    "_ajustement",    # mtn_inv_ajustement = peut modifier le stock directement
+    "_ar - responsable",   # mtn_ar - responsable interface bscs
+]
+
+def _is_privileged_role_value(role_str: str) -> bool:
+    """
+    Détection de privilège depuis le contenu d'un rôle — deux niveaux :
+    1. Regex sur mots-clés anglais (word boundaries adaptés).
+    2. Sous-chaîne pour les codes MTN underscore où \b ne s'applique pas.
+    """
+    if not role_str or role_str in ("nan", "none", ""):
+        return False
+    low = role_str.strip().lower()
+    if _STD_RE.search(low):
+        return True
+    return any(sub in low for sub in _MTN_PRIVILEGED_SUBSTRINGS)
+
 def analyze_access(
     df: pd.DataFrame,
     dormant_threshold_days: int = DORMANT_THRESHOLD_DAYS,
@@ -551,6 +650,7 @@ def analyze_access(
     recently_created_threshold_days: int = RECENTLY_CREATED_THRESHOLD_DAYS,
     reference_datetime: datetime | None = None,
     custom_status_mappings: dict | None = None,
+    custom_rights_mappings: dict | None = None,
 ) -> pd.DataFrame:
     """
     Analyse un DataFrame standardisé (sortie du module d'ingestion) et
@@ -627,8 +727,10 @@ def analyze_access(
             | (stripped_lower == "")
             | stripped_lower.isin(NEVER_LOGGED_IN_MARKERS)
         )
+        df.attrs["_login_data_present"] = True
     else:
         never_logged_in = pd.Series(False, index=df.index)
+        df.attrs["_login_data_present"] = False
 
     df["is_dormant"] = df["days_since_last_login"].apply(
         lambda d: d is not None and d > dormant_threshold_days
@@ -768,7 +870,12 @@ def analyze_access(
             if norm in TERMINATED_STATUS_VALUES or (tokens & TERMINATED_STATUS_VALUES):
                 return False, False
             if not norm or norm in ("nan", "none", ""):
-                return False, False
+                # Champ vide = actif dans certains systèmes (ex. BSS où la
+                # colonne identity/accountState vide signifie "unlock/actif").
+                # Traité comme actif (pire cas audit) — non signalé comme
+                # inconnu puisque c'est un comportement documenté de certains
+                # exports. L'auditeur peut mapper "" → "inactive" si besoin.
+                return True, False
             # Vraiment inconnue → pire cas (potentiellement actif)
             return True, True
 
@@ -826,56 +933,56 @@ def analyze_access(
             and _is_terminated_employee(r["employee_status"]),
             axis=1,
         )
+        df.attrs["_hr_data_present"] = True
     else:
         logger.warning(
             "Colonnes 'account_status' et/ou 'employee_status' absentes : "
             "détection des comptes orphelins post-départ désactivée."
         )
         df["is_terminated_but_active"] = False
+        df.attrs["_hr_data_present"] = False
 
-    # Un compte peut être signalé privilégié de deux façons différentes
-    # selon l'export : une colonne booléenne dédiée ('Sudo Privileges:
-    # Yes/No'), OU seulement via l'intitulé du rôle lui-même ('Role:
-    # Administrator') sans colonne booléenne séparée — cas réel rencontré
-    # sur des exports serveur. Ignorer la seconde ferait passer à travers
-    # les mailles du filet tous les comptes administrateurs d'un fichier
-    # qui n'a que ce seul indicateur.
-    #
-    # Recherche par MOT ENTIER (limites \b), pas par simple sous-chaîne :
-    # un simple "in" faisait remonter en masse de faux positifs sur des
-    # intitulés qui contiennent "admin" sans être un privilège IT réel
-    # ('Administrative Assistant', 'Sales Administration'...) — repéré
-    # sur un vrai fichier où ça avait fait exploser le compteur de
-    # comptes privilégiés à un niveau franchement irréaliste (~60% du
-    # fichier), signe évident du faux positif plutôt que d'un vrai
-    # résultat.
-    PRIVILEGED_ROLE_KEYWORDS = [
-        "admin", "administrator", "administrateur", "root", "superuser",
-        "super user", "superadmin", "super admin", "sysadmin",
-    ]
-    _PRIVILEGED_ROLE_RE = re.compile(
-        r"\b(" + "|".join(re.escape(k) for k in PRIVILEGED_ROLE_KEYWORDS) + r")\b"
-    )
+
     privileged_from_flag = pd.Series(False, index=df.index)
     if "is_privileged" in df.columns:
         privileged_from_flag = df["is_privileged"].apply(_is_privileged)
 
     privileged_from_role = pd.Series(False, index=df.index)
-    if "role" in df.columns:
-        # .astype(str) seul ne suffit PAS à garantir une vraie chaîne pour
-        # chaque ligne : avec le nouveau type dédié "str" de pandas 3.0,
-        # une valeur manquante (NaN) reste un float même après
-        # .astype(str) (résultat "nan" typé float, pas la chaîne "nan"
-        # comme dans les versions précédentes de pandas) — .fillna("")
-        # après coup comble ce trou, sans quoi une colonne 'role'
-        # partiellement vide fait planter la recherche regex qui suit
-        # avec "expected string or bytes-like object, got 'float'".
-        role_lower = df["role"].astype(str).fillna("").str.strip().str.lower()
-        privileged_from_role = role_lower.apply(
-            lambda r: bool(_PRIVILEGED_ROLE_RE.search(r))
-        )
+    for priv_col in ("role", "user_rights"):
+        if priv_col in df.columns:
+            col_data = df[priv_col].astype(str).fillna("").str.strip()
+            from_col = col_data.apply(
+                lambda raw: any(
+                    _is_privileged_role_value(r.strip())
+                    for r in (raw.split("\n") if "\n" in raw
+                              else raw.split(";") if ";" in raw
+                              else raw.split(","))
+                    if r.strip()
+                )
+            )
+            privileged_from_role = privileged_from_role | from_col
 
-    df["is_privileged_flag"] = privileged_from_flag | privileged_from_role
+    # Troisième source : droits qualifiés manuellement comme "admin" dans
+    # le dashboard (custom_rights_mappings). Permet de marquer un droit
+    # spécifique (ex. "MTN_INV_Ajustement") comme admin sans modifier le
+    # code, pour des droits propres à un OPCO que les mots-clés génériques
+    # ne peuvent pas deviner.
+    privileged_from_custom_rights = pd.Series(False, index=df.index)
+    if custom_rights_mappings:
+        for priv_col in ("user_rights", "role"):
+            if priv_col in df.columns:
+                col_data = df[priv_col].astype(str).fillna("").str.strip()
+                privileged_from_custom_rights = privileged_from_custom_rights | col_data.apply(
+                    lambda raw: any(
+                        custom_rights_mappings.get(r.strip()) == "admin"
+                        for r in (raw.split("\n") if "\n" in raw
+                                  else raw.split(";") if ";" in raw
+                                  else raw.split(","))
+                        if r.strip()
+                    )
+                )
+
+    df["is_privileged_flag"] = privileged_from_flag | privileged_from_role | privileged_from_custom_rights
 
     if "manager" in df.columns:
         df["has_no_manager"] = df["manager"].isna() | (df["manager"].astype(str).str.strip() == "")
@@ -888,9 +995,11 @@ def analyze_access(
         df["days_since_password_change"] = df["password_last_set"].apply(
             lambda v: _days_since(v, dayfirst=_dayfirst_pwd, yearfirst=_yearfirst_pwd, reference_datetime=reference_datetime, column_convention_status=_combine_convention_status(_password_date_status, _yearfirst_pwd_status))
         )
+        df.attrs[PASSWORD_DATA_PRESENT_ATTR] = True
     else:
         logger.warning("Colonne 'password_last_set' absente : détection de mot de passe périmé désactivée.")
         df["days_since_password_change"] = None
+        df.attrs[PASSWORD_DATA_PRESENT_ATTR] = False
 
     df["password_change_future"] = df["days_since_password_change"].apply(
         lambda d: d is not None and d < 0

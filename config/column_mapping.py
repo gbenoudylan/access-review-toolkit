@@ -71,15 +71,38 @@ COLUMN_MAPPING = {
         "resource", "ressource",
     ],
     "role": [
-        "role", "permission", "permissions", "access_level", "niveau_acces", "droit",
-        "droits", "group", "groupe", "profil",
-        "memberof",  # LDAP : groupes d'appartenance
-        "assigned user roles", "user roles", "assigned roles",  # variantes espacées
-        "user rights", "user rights permissions", "rights",  # export Oracle EBS type MTN
+        # Champ "rôle" : profil métier, fonction, poste dans le système.
+        # Noms de colonnes qui décrivent CE QUE L'UTILISATEUR EST (son rôle).
+        "role", "roles", "profile", "profil", "profils",
+        "user profile", "user type", "account type", "account role",
+        "function", "functions", "group", "groupe",
+        "memberof",  # LDAP
+        "assigned user roles", "user roles", "assigned roles",
+        "security role", "system role", "application roles",
+        "responsibility", "responsibilities",
+    ],
+    "user_rights": [
+        # Champ "droits / permissions" : ce que l'utilisateur PEUT FAIRE —
+        # les permissions, droits d'accès, entitlements réellement octroyés.
+        # Distinct de "role" : dans Oracle EBS, USER RIGHTS/PERMISSIONS liste
+        # les modules et actions accessibles, indépendamment du rôle métier.
+        "user rights/permissions", "user rights permissions",
+        "user rights", "user rights and privileges", "user rights & privileges",
+        "permissions", "permission", "rights", "droits", "droit",
+        "access rights", "access level", "access_level", "niveau_acces",
+        "entitlement", "entitlements",
+        "privilege", "privileges",
+        "authority", "authorization", "authorizations",
+        "application access", "user access",
+        "assigned access", "access granted",
     ],
     "description": [
         "description", "job_description", "job description", "account_description",
-        "account description", "notes", "commentaire", "commentaires",
+        "account description", "account_comment", "account comment",
+        "notes", "note", "commentaire", "commentaires", "comment", "comments",
+        "remarks", "remark", "info", "information",
+        # Variantes fréquentes dans les exports AD/LDAP
+        "displayname", "display name", "full description", "user description",
     ],
     "account_status": [
         "account_status", "status", "statut", "etat_compte", "compte_status",
@@ -102,10 +125,15 @@ COLUMN_MAPPING = {
         "date_derniere_connexion", "last_logon",
         "lastlogontimestamp", "whenchanged",  # LDAP
         "lastlogondate",  # variante sans espace
-        "when changed",  # variante espacée — même écart fuzzy que "when created"
-        "identity lastlogintime",  # export IAM type WSO2 ('identity/lastLoginTime') —
-        # critique : sans cette variante, la détection de dormance est
-        # silencieusement désactivée sur ce type d'export.
+        "when changed",   # variante espacée
+        "identity lastlogintime",  # export IAM type WSO2 ('identity/lastLoginTime')
+        # Oracle EBS : MODIFICATION_DATE est la dernière date de modification du
+        # compte (changement de rôle, réinitialisation mdp...) — utilisée comme
+        # proxy de dernière activité quand last_login_date n'est pas disponible
+        # dans l'export. Décision de l'auditeur : s'il ne veut pas l'utiliser,
+        # il peut réassigner cette colonne à "Ignorée" dans le dashboard.
+        "modification_date", "last_modified", "date_modification",
+        "modified_date", "date_modif",
     ],
     "account_created_date": [
         "account_created_date", "date_creation", "created_date", "creation_date",
