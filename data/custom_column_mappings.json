@@ -1,6 +1,5 @@
 {
   "user creation date": "account_created_date",
-  "group id": "role",
   "last login time": "last_login_date",
   "enabled": "account_status",
   "userstatus.keyword: descending": "account_status",
@@ -13,5 +12,6 @@
   "user status": "account_status",
   "member of group": "user_rights",
   "ou name": "user_rights",
-  "last logon time": "last_login_date"
+  "last logon time": "last_login_date",
+  "profile": "user_rights"
 }

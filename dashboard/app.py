@@ -85,6 +85,7 @@ def run_pipeline(
     extraction_date: str = None,
     transfer_file_bytes: bytes = None, transfer_filename: str = None,
     transfer_sheet_name: str = None,
+    terminated_file_bytes: bytes = None, terminated_filename: str = None,
 ) -> tuple[pd.DataFrame, list, list, dict, dict, list]:
     suffix = Path(filename).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -196,17 +197,77 @@ def run_pipeline(
                 transfer_tmp_path, sheet_name=transfer_sheet_name or None, custom_mappings=transfer_custom_mappings,
             )
             df = flag_transferred_but_still_active(df, transferred)
-            # Contrôle 18 ("Terminated Users AND Transferred users") : les
-            # deux anomalies (parti mais actif / transféré mais actif)
-            # relèvent du même contrôle dans le référentiel officiel —
-            # combinées ici pour que le rapport les fasse ressortir
-            # ensemble, sans dupliquer la logique de rendu du contrôle.
-            df["is_terminated_but_active"] = (
-                df.get("is_terminated_but_active", False) | df["is_transferred_but_active"]
-            )
+            df.attrs["_transfer_data_present"] = True
         except (ValueError, KeyError, IngestionError) as e:
             logging.getLogger("dashboard").warning(f"Fichier de mutations ignoré : {e}")
             df.attrs["transfer_ingestion_error"] = str(e)
+
+    # Cross-référence avec la liste des employés partis (Terminated)
+    # Même logique que les transferts mais sans structure de feuilles —
+    # un fichier simple avec une colonne de noms et une date de départ.
+    if terminated_file_bytes is not None:
+        terminated_suffix = Path(terminated_filename).suffix
+        with tempfile.NamedTemporaryFile(suffix=terminated_suffix, delete=False) as term_tmp:
+            term_tmp.write(terminated_file_bytes)
+            term_tmp_path = term_tmp.name
+        try:
+            from ingestion.ingest import load_file as _lf
+            # Passer default_system="HR" pour éviter que le nom du fichier
+            # temporaire (tmp2t9h_xu9) ne s'affiche comme système dans la section 18
+            terminated_raw = _lf(term_tmp_path, default_system="HR", raise_on_missing_required=False)
+            # Supprimer la colonne system artificielle (non pertinente pour la liste RH)
+            if "system" in terminated_raw.columns:
+                terminated_raw = terminated_raw.drop(columns=["system"])
+            # Chercher une colonne "name" / "nom" / "full_name" dans le fichier terminated
+            name_col = None
+            for col in terminated_raw.columns:
+                if any(k in str(col).lower() for k in ("name","nom","prenom","full")):
+                    name_col = col
+                    break
+            if name_col and not terminated_raw.empty:
+                from analysis.hr_crossref import _names_match as _nm
+                hr_names = terminated_raw[name_col].dropna().astype(str).str.strip().tolist()
+                hr_names = [n for n in hr_names if n and n.lower() not in ("nan","none","")]
+                if hr_names:
+                    from analysis.access_review import _is_active_account as _iaa
+                    is_active_mask = (
+                        df["account_status"].apply(_iaa)
+                        if "account_status" in df.columns
+                        else pd.Series(True, index=df.index)
+                    )
+
+                    def _any_match(iam_name: str) -> bool:
+                        if not iam_name or not iam_name.strip():
+                            return False
+                        return any(_nm(iam_name, hr) for hr in hr_names)
+
+                    # Comparer contre full_name ET username (au cas où le fichier
+                    # n'a pas de colonne Nom séparée — ex. Linux/BSS où full_name
+                    # = username comme "tinaudN", "blekpyee"...)
+                    match_by_name = df["full_name"].fillna("").astype(str).apply(_any_match) \
+                        if "full_name" in df.columns else pd.Series(False, index=df.index)
+                    match_by_user = df["username"].fillna("").astype(str).apply(_any_match) \
+                        if "username" in df.columns else pd.Series(False, index=df.index)
+                    is_terminated_match = match_by_name | match_by_user
+
+                    df["is_terminated_but_active"] = (
+                        df.get("is_terminated_but_active", pd.Series(False, index=df.index))
+                        | (is_terminated_match & is_active_mask)
+                    )
+                    df.attrs["_hr_data_present"] = True
+                    n = int((is_terminated_match & is_active_mask).sum())
+                    if n:
+                        logging.getLogger("dashboard").info(
+                            f"{n} compte(s) actif(s) d'employés partis détecté(s) "
+                            "(matching nom + username avec initiales)."
+                        )
+        except Exception as e:
+            logging.getLogger("dashboard").warning(f"Fichier terminated ignoré : {e}")
+
+    # Combiner terminated + transferred dans is_terminated_but_active
+    if "is_transferred_but_active" in df.columns:
+        existing = df.get("is_terminated_but_active", pd.Series(False, index=df.index))
+        df["is_terminated_but_active"] = existing | df["is_transferred_but_active"]
 
     unknown_status_values = list(df.attrs.get("unknown_status_values", []))
     return df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping, unknown_status_values
@@ -228,7 +289,16 @@ def _check_transfer_file_columns(file_bytes: bytes, filename: str, sheet_name: s
         raw_columns = result.attrs.get("raw_columns", [])
         matched = result.attrs.get("matched_columns", [])
         full_mapping = dict(result.attrs.get("full_column_mapping", {}))
-        return list(raw_columns), [c for c in raw_columns if c not in matched], True, None, full_mapping
+        # Dédupliquer les colonnes — un fichier avec deux tableaux empilés
+        # dans la même feuille peut avoir le même nom de colonne deux fois
+        seen = set()
+        raw_columns_dedup = []
+        for col in raw_columns:
+            key = str(col).strip().lower()
+            if key and key not in ("nan","none","") and col not in seen:
+                seen.add(col)
+                raw_columns_dedup.append(col)
+        return raw_columns_dedup, [c for c in raw_columns_dedup if c not in matched], True, None, full_mapping
     except TransferNameColumnNotFoundError as e:
         return list(e.raw_columns), list(e.raw_columns), False, None, {}
     except ValueError as e:
@@ -415,12 +485,23 @@ def main():
         if uploaded_file is None:
             use_sample = st.checkbox("Utiliser un fichier d'exemple", value=True)
 
+        # ── Comptes partis (Terminated) ──────────────────────────────────────
+        st.divider()
+        st.subheader("🚪 Employés partis — Terminated (optionnel)")
+        terminated_uploaded_file = st.file_uploader(
+            "Liste des employés dont le contrat est terminé",
+            type=["xlsx", "xls", "csv"],
+            key="terminated_upload",
+            help="Fichier RH listant les employés partis cette année — utilisé dans le contrôle 18A.",
+        )
+
         # ── Comptes transférés/mutés ─────────────────────────────────────────
         st.divider()
-        st.subheader("🔄 Comptes transférés/mutés (optionnel)")
+        st.subheader("🔄 Employés transférés/mutés — Transferred (optionnel)")
         transfer_uploaded_file = st.file_uploader(
             "Fichier RH de mouvements (feuille Affectation/Mutation)",
             type=["xlsx", "xls"],
+            key="transferred_upload",
             help="Classeur RH multi-feuilles : seule la feuille "
                  "mutation/affectation est utilisée.",
         )
@@ -485,6 +566,8 @@ def main():
                 hr_name = hr_uploaded_file.name if hr_uploaded_file else None
                 transfer_bytes = transfer_uploaded_file.getvalue() if transfer_uploaded_file else None
                 transfer_name = transfer_uploaded_file.name if transfer_uploaded_file else None
+                terminated_bytes = terminated_uploaded_file.getvalue() if terminated_uploaded_file else None
+                terminated_name = terminated_uploaded_file.name if terminated_uploaded_file else None
                 df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping, unknown_status_values = run_pipeline(
                     uploaded_file.getvalue(), uploaded_file.name, hr_bytes, hr_name,
                     default_system=default_system,
@@ -495,6 +578,7 @@ def main():
                     extraction_date=extraction_date.strftime('%Y-%m-%d'),
                     transfer_file_bytes=transfer_bytes, transfer_filename=transfer_name,
                     transfer_sheet_name=transfer_sheet_name or None,
+                    terminated_file_bytes=terminated_bytes, terminated_filename=terminated_name,
                 )
         elif use_sample:
             sample_path = Path(__file__).parent.parent / "data" / "export_test_A.csv"
@@ -545,13 +629,35 @@ def main():
     ]
     missing_required = list(df.attrs.get("missing_required_fields") or [])
     # full_column_mapping vient du tuple de retour de run_pipeline.
-    # Si pour n'importe quelle raison il est vide (cache, sérialisation...),
-    # on se rabat sur les colonnes actuelles du df pour que la section
-    # de correspondances s'affiche TOUJOURS — c'est l'objectif demandé.
+    # Colonnes internes produites par analyze_access — jamais à configurer
+    _INTERNAL_COLS = frozenset({
+        "days_since_last_login","last_login_date_convention_uncertain",
+        "last_login_date_convention_status","last_login_future","is_dormant",
+        "last_login_date_unparseable","days_since_creation","is_never_used",
+        "is_recently_created","status_is_unknown","is_active_for_audit",
+        "is_terminated_but_active","is_transferred_but_active",
+        "is_privileged_flag","has_no_manager","days_since_password_change",
+        "password_change_future","password_change_unknown","is_password_stale",
+        "has_non_expiring_password","is_service_account","is_test_account",
+        "is_orphaned_account","is_non_compliant_naming","is_duplicate_account",
+        "temporal_inconsistency","review_action","risk_level","risk_score",
+        "risk_score_reasons","sod_conflict","sod_conflict_detail",
+        "transferred_name_ambiguous","accepted_finding_keys","hr_cross_referenced",
+    })
+
     if not full_column_mapping and not unmapped_columns:
-        # Reconstituer depuis les colonnes du df analysé : chaque colonne
-        # standard présente est mappée à elle-même (nom déjà normalisé).
-        full_column_mapping = {col: col for col in df.columns if col not in ("system",)}
+        # Fallback : reconstituer depuis les colonnes du df analysé,
+        # en excluant les colonnes internes (dérivées par analyze_access)
+        full_column_mapping = {
+            col: col for col in df.columns
+            if col not in ("system",) and col not in _INTERNAL_COLS
+        }
+    else:
+        # Filtrer aussi les colonnes internes du mapping si elles s'y sont glissées
+        full_column_mapping = {
+            k: v for k, v in full_column_mapping.items()
+            if k not in _INTERNAL_COLS
+        }
     # Filtrer les colonnes sans nom valide (NaN, vides) — elles génèrent
     # des clés de widgets dupliquées dans Streamlit ("main_map_nan")
     def _is_valid_col(c) -> bool:
@@ -985,8 +1091,23 @@ def main():
                 # correspondances apprises, pas un magasin séparé : une
                 # correction apprise sur l'un doit s'appliquer à l'autre.
                 previous_custom_mappings = load_custom_column_mappings()
-                previous_raw = load_file(tmp_prev_path, default_system=None, custom_mappings=previous_custom_mappings)
+                # Passer le même système par défaut que la revue courante —
+                # évite que l'ancienne revue hérite d'un nom de système
+                # bizarre déduit de son nom de fichier, ce qui fausse la
+                # comparaison entre cycles (système "Extraction_prev" vs
+                # "Oracle EBS" par exemple).
+                current_system = (
+                    df["system"].dropna().astype(str).str.strip().mode()[0]
+                    if "system" in df.columns and not df["system"].isna().all()
+                    else default_system or None
+                )
+                previous_raw = load_file(
+                    tmp_prev_path, default_system=current_system,
+                    custom_mappings=previous_custom_mappings,
+                )
                 previous_unmapped = list(previous_raw.attrs.get("unmapped_columns", []))
+                if not previous_raw.index.is_unique:
+                    previous_raw = previous_raw.reset_index(drop=True)
                 previous_df = analyze_access(
                     previous_raw,
                     dormant_threshold_days=dormant_threshold_days,
@@ -1008,10 +1129,26 @@ def main():
                 logo_path = str(default_logo)
         return previous_df, logo_path, previous_unmapped
 
+    def _load_hr_df(uploaded_file_obj):
+        """Charge un fichier RH (terminated ou transferred) en DataFrame brut."""
+        if uploaded_file_obj is None:
+            return None
+        try:
+            suffix = Path(uploaded_file_obj.name).suffix
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(uploaded_file_obj.getvalue())
+                path = tmp.name
+            df_hr = load_file(path, raise_on_missing_required=False)
+            return df_hr if len(df_hr) > 0 else None
+        except Exception:
+            return None
+
     with report_col2:
         if st.button("Générer le rapport PDF", use_container_width=True):
             with st.spinner("Génération..."):
                 previous_df, logo_path, _ = _resolve_previous_df_and_logo()
+                terminated_df_report = _load_hr_df(terminated_uploaded_file)
+                transferred_df_report = _load_hr_df(transfer_uploaded_file)
                 tmp_pdf = Path(tempfile.gettempdir()) / "rapport_revue_acces.pdf"
                 generate_pdf_report(
                     filtered, tmp_pdf, period=period_label or None,
@@ -1030,6 +1167,8 @@ def main():
                     previous_extraction_date=(
                         previous_extraction_date.strftime("%Y-%m-%d") if previous_extraction_date else None
                     ),
+                    terminated_df=terminated_df_report,
+                    transferred_df=transferred_df_report,
                 )
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(
@@ -1041,6 +1180,8 @@ def main():
         if st.button("Générer le rapport Word", use_container_width=True):
             with st.spinner("Génération..."):
                 previous_df, logo_path, _ = _resolve_previous_df_and_logo()
+                terminated_df_report = _load_hr_df(terminated_uploaded_file)
+                transferred_df_report = _load_hr_df(transfer_uploaded_file)
                 tmp_docx = Path(tempfile.gettempdir()) / "rapport_revue_acces.docx"
                 generate_word_report(
                     filtered, tmp_docx, period=period_label or None,
@@ -1058,6 +1199,8 @@ def main():
                     previous_extraction_date=(
                         previous_extraction_date.strftime("%Y-%m-%d") if previous_extraction_date else None
                     ),
+                    terminated_df=terminated_df_report,
+                    transferred_df=transferred_df_report,
                 )
                 buf = BytesIO(tmp_docx.read_bytes())
             st.download_button(

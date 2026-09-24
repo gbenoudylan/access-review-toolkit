@@ -96,6 +96,10 @@ COLUMN_MAPPING = {
         "application access", "user access",
         "assigned access", "access granted",
     ],
+    "days_since_last_login_precomputed": [
+        "days since last login", "days since last login ", "days_since_last_login",
+        "days since last logon", "days inactive", "inactivity days",
+    ],
     "description": [
         "description", "job_description", "job description", "account_description",
         "account description", "account_comment", "account comment",
@@ -110,6 +114,10 @@ COLUMN_MAPPING = {
         "useraccountcontrol",  # LDAP (décodé au parsing LDIF, voir ingestion)
         "accountstatus",  # variante sans espace
         "identity accountstate",  # export IAM type WSO2 ('identity/accountState')
+        "enabled", "is_enabled",  # PKI / AD exports (True/False) — NOM de colonne uniquement
+        # "active" intentionnellement absent : c'est une VALEUR de statut
+        # (ex. "Active", "Inactive"), pas un nom de colonne, et l'ajouter
+        # ici confond le détecteur de header sur les fichiers sans en-tête.
     ],
     "is_privileged": [
         "is_privileged", "privileged", "admin", "is_admin", "compte_privilegie",
@@ -121,6 +129,7 @@ COLUMN_MAPPING = {
         "account_lockout", "is_lockedout",
     ],
     "last_login_date": [
+        "last login (raw)", "last login raw", "latest login", "latest login date",  # export Oracle BIB/TABS/GGATE
         "last_login_date", "last_login", "derniere_connexion",
         "date_derniere_connexion", "last_logon",
         "lastlogontimestamp", "whenchanged",  # LDAP
@@ -136,6 +145,7 @@ COLUMN_MAPPING = {
         "modified_date", "date_modif",
     ],
     "account_created_date": [
+        "user created", "user creation date", "created date",
         "account_created_date", "date_creation", "created_date", "creation_date",
         "date_creation_compte",
         "whencreated",  # LDAP

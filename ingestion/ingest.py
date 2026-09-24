@@ -168,6 +168,54 @@ def _match_column(
     return None
 
 
+def _fix_generic_username(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Certains exports PKI/RBAC mettent un nom générique ("ADMINISTRATOR",
+    "SYSTEM", "SERVICE") dans la colonne Username pour des comptes qui ont
+    pourtant un identifiant réel dans la colonne Identity (ex. "MTN\\oakinrinde_sa").
+    Dans ce cas, on extrait la partie après le \\ de Identity comme username.
+    """
+    if "username" not in df.columns:
+        return df
+    # Valeurs considérées comme génériques (à remplacer si possible)
+    GENERIC_USERNAMES = {"administrator", "admin", "system", "service", "root", "guest", ""}
+
+    # Colonne Identity présente ? (souvent "MTN\username" dans exports AD/PKI)
+    identity_col = None
+    for col in df.columns:
+        if str(col).strip().lower() in ("identity", "samaccountname", "distinguishedname"):
+            identity_col = col
+            break
+
+    if identity_col is None:
+        return df
+
+    def _fix_row(row):
+        uname = str(row["username"]).strip().lower()
+        if uname in GENERIC_USERNAMES or not uname or uname == "nan":
+            identity = str(row[identity_col]).strip()
+            # Extraire après le dernier \ ou /
+            if "\\" in identity:
+                extracted = identity.rsplit("\\", 1)[-1].strip()
+            elif "/" in identity:
+                extracted = identity.rsplit("/", 1)[-1].strip()
+            else:
+                extracted = identity
+            if extracted and extracted.lower() not in GENERIC_USERNAMES:
+                return extracted
+        return row["username"]
+
+    fixed = df.apply(_fix_row, axis=1)
+    if (fixed != df["username"]).any():
+        n = (fixed != df["username"]).sum()
+        logger.info(
+            f"{n} username(s) générique(s) remplacé(s) par la valeur extraite de '{identity_col}' "
+            f"(ex. 'ADMINISTRATOR' → identifiant réel)."
+        )
+    df["username"] = fixed
+    return df
+
+
 def _synthesize_full_name(df: pd.DataFrame) -> pd.DataFrame:
     """
     Certains exports ne fournissent le nom qu'en deux colonnes séparées
@@ -193,6 +241,68 @@ def _synthesize_full_name(df: pd.DataFrame) -> pd.DataFrame:
         logger.info("'full_name' reconstitué à partir de 'first_name' + 'last_name'.")
 
     return df
+
+
+def _deduplicate_by_username(df: pd.DataFrame, rights_col: str = "user_rights") -> pd.DataFrame:
+    """
+    Consolide les exports "une ligne par permission" en une ligne par
+    utilisateur. Cas typique : export PKI / certificats où chaque droit
+    (Enroll, Read, Write, Auto-Enroll...) génère une ligne distincte
+    pour le même compte.
+
+    Règles de consolidation :
+    - username (+ system) = clé de déduplication
+    - rights_col : valeurs concaténées par \\n (Enroll\\nRead\\nWrite)
+    - last_login_date : date la plus récente conservée
+    - account_status : valeur de la première ligne (cohérente par compte)
+    - autres colonnes : valeur de la première ligne non vide
+    """
+    if df["username"].duplicated().sum() == 0:
+        return df  # aucun doublon → rien à faire
+
+    logger.info(
+        f"Déduplication : {len(df)} lignes → une ligne par utilisateur "
+        f"({df['username'].nunique()} comptes distincts). "
+        f"Les permissions multiples sont concaténées dans '{rights_col}'."
+    )
+
+    key_cols = ["username"] + (["system"] if "system" in df.columns else [])
+    grouped = df.groupby(key_cols, sort=False, dropna=False)
+
+    def _agg_group(g):
+        row = g.iloc[0].copy()
+        # Droits : concaténer toutes les valeurs distinctes
+        if rights_col in g.columns:
+            vals = g[rights_col].dropna().astype(str).str.strip()
+            vals = [v for v in vals if v and v.lower() not in ("nan","none","")]
+            unique_vals = list(dict.fromkeys(vals))  # ordre préservé, dédupliqué
+            row[rights_col] = "\n".join(unique_vals) if unique_vals else ""
+        # Date de connexion : la plus récente
+        if "last_login_date" in g.columns:
+            try:
+                dates = pd.to_datetime(g["last_login_date"], errors="coerce", dayfirst=True)
+                if dates.notna().any():
+                    row["last_login_date"] = g["last_login_date"].iloc[dates.idxmax()]
+            except Exception:
+                pass
+        # Autres colonnes : première valeur non vide
+        for col in g.columns:
+            if col in (key_cols + [rights_col, "last_login_date"]):
+                continue
+            non_null = g[col].dropna()
+            non_null = non_null[non_null.astype(str).str.strip().str.lower().notna()]
+            if len(non_null) > 0:
+                row[col] = non_null.iloc[0]
+        return row
+
+    result = grouped.apply(_agg_group)
+    # Si le groupby a mis les clés dans l'index, les remettre en colonnes
+    if isinstance(result.index, pd.MultiIndex) or key_cols[0] not in result.columns:
+        result = result.reset_index()
+    result = result.reset_index(drop=True)
+    # Préserver les attrs
+    result.attrs = df.attrs.copy()
+    return result
 
 
 def standardize_columns(
@@ -1062,7 +1172,10 @@ def _read_pdf(
         group_df = standardize_columns(group_df, column_mapping, custom_mappings=custom_mappings)
         key = f"Tableau {i}"
         if key in named_tables:
-            named_tables[key] = pd.concat([named_tables[key], group_df], ignore_index=True)
+            named_tables[key] = _combine_mapping_attrs(
+                [named_tables[key], group_df],
+                pd.concat([named_tables[key], group_df], ignore_index=True),
+            )
         else:
             named_tables[key] = group_df
 
@@ -1165,6 +1278,35 @@ _GENERIC_ACCOUNT_NAME_RE = re.compile(
     r"anonymous|public)([_\-.]?\d*)?$",
     re.IGNORECASE,
 )
+
+
+def _combine_mapping_attrs(source_dfs, result: pd.DataFrame) -> pd.DataFrame:
+    """
+    Réattache à `result` (empilement/fusion de plusieurs feuilles, fichiers
+    ou tableaux) la correspondance de colonnes BRUTES -> champs reconnus
+    et la liste des colonnes non reconnues, agrégées depuis chaque source.
+
+    pd.concat() / merge() ne propagent pas df.attrs : sans cette
+    réagrégation, un classeur multi-feuilles (ex. 39 feuilles = 39
+    serveurs), un ZIP multi-fichiers ou un Word multi-tableaux
+    arrivait au dashboard SANS full_column_mapping, qui se rabattait
+    alors sur les colonnes DÉJÀ ANALYSÉES (is_dormant, is_privileged_flag...)
+    au lieu des colonnes brutes du fichier à configurer.
+    """
+    full: dict = {}
+    unmapped: list = []
+    for d in source_dfs:
+        for raw, std in (d.attrs.get("full_column_mapping") or {}).items():
+            full.setdefault(raw, std)
+        for c in (d.attrs.get("unmapped_columns") or []):
+            if c not in unmapped:
+                unmapped.append(c)
+    # Une colonne reconnue dans au moins une source n'est pas "non reconnue".
+    unmapped = [c for c in unmapped if c not in full]
+    result.attrs = {}
+    result.attrs["full_column_mapping"] = full
+    result.attrs["unmapped_columns"] = unmapped
+    return result
 
 
 def _merge_or_stack_named_tables(
@@ -1327,7 +1469,9 @@ def _merge_or_stack_named_tables(
         f"{len(named_dfs)} élément(s) source, regroupés en {len(processed)} bloc(s) "
         f"après fusion/empilement."
     )
-    return pd.concat(processed, ignore_index=True)
+    return _combine_mapping_attrs(
+        list(named_dfs.values()), pd.concat(processed, ignore_index=True),
+    )
 
 
 def _read_excel_all_sheets(
@@ -1335,22 +1479,38 @@ def _read_excel_all_sheets(
     custom_mappings: dict = None,
 ) -> pd.DataFrame:
     """
-    Lit TOUTES les feuilles d'un classeur Excel, pas seulement la première,
-    en distinguant deux cas de figure bien différents :
-
-    1. Chaque feuille décrit des comptes DIFFÉRENTS (ex. une feuille par
-       système) -> les feuilles sont empilées (concaténées), et le nom de
-       chaque feuille sert de valeur par défaut pour 'system'.
-    2. Les feuilles décrivent les MÊMES comptes mais avec des colonnes
-       différentes (ex. une feuille "Identités" avec noms/dates de
-       connexion, une feuille "Rôles" avec les habilitations) -> les
-       empiler produirait des lignes à moitié vides pour chaque compte ;
-       il faut au contraire les FUSIONNER par colonne (jointure sur
-       'username'), pour obtenir un enregistrement complet par compte.
-
-    Voir _merge_or_stack_named_tables pour la logique de décision.
+    Lit TOUTES les feuilles d'un classeur Excel (.xlsx ou .xls).
+    Pour les fichiers .xls (ancien format Excel 97-2003) : utilise xlrd
+    si disponible, sinon tente openpyxl avec xlrd en fallback.
     """
-    sheets = pd.read_excel(path, header=None, sheet_name=None)
+    path = Path(path)
+    suffix = path.suffix.lower()
+
+    # Choisir le bon moteur selon l'extension
+    if suffix == ".xls":
+        # .xls = ancien format binaire Excel 97-2003
+        # xlrd gère ce format ; openpyxl refuse les fichiers .xls
+        try:
+            import xlrd  # noqa
+            engine = "xlrd"
+        except ImportError:
+            raise IngestionError(
+                f"Le fichier '{path.name}' est au format .xls (ancien Excel 97-2003). "
+                "Installez xlrd : pip install xlrd==1.2.0  ou convertissez le fichier en .xlsx."
+            )
+        try:
+            sheets = pd.read_excel(path, header=None, sheet_name=None, engine=engine)
+        except Exception as e:
+            raise IngestionError(
+                f"Impossible de lire '{path.name}' en format .xls : {e}. "
+                "Ouvrez le fichier dans Excel et enregistrez-le en .xlsx."
+            )
+    else:
+        # .xlsx, .xlsm, etc. — openpyxl (par défaut dans pandas)
+        try:
+            sheets = pd.read_excel(path, header=None, sheet_name=None)
+        except Exception as e:
+            raise IngestionError(f"Impossible de lire '{path.name}' : {e}")
 
     # openpyxl reconnaît automatiquement les cellules d'erreur de formule
     # ('#REF!', '#DIV/0!', '#N/A', '#VALUE!'...) comme un type de donnée
@@ -1412,25 +1572,144 @@ def _read_excel_all_sheets(
         logger.warning(f"Cellules fusionnées non traitées ({e}) — poursuite sans ce remplissage.")
 
     sheet_dfs: dict = {}
+    skipped = []
     for sheet_name, raw in sheets.items():
         raw = raw.dropna(how="all")
         if raw.empty:
             continue
+
+        # Tentative 1 : détection automatique du header
+        header_row_idx = None
         try:
             header_row_idx = _detect_header_row(raw, column_mapping)
         except IngestionError:
-            logger.warning(f"Feuille '{sheet_name}' ignorée : aucun en-tête reconnaissable.")
-            continue
+            pass
+
+        # Tentative 2 : si score insuffisant, essayer quand même la ligne 0
+        # plutôt que d'ignorer la feuille entièrement — une feuille avec des
+        # colonnes inhabituelles est préférable à une feuille perdue
+        if header_row_idx is None:
+            # Vérification minimale : la ligne 0 contient-elle au moins du texte ?
+            row0 = raw.iloc[0]
+            has_text = any(isinstance(v, str) and len(str(v).strip()) > 0 for v in row0)
+            if has_text:
+                header_row_idx = 0
+                logger.warning(
+                    f"Feuille '{sheet_name}' : en-tête non reconnu automatiquement, "
+                    "utilisation de la ligne 0 par défaut."
+                )
+            else:
+                skipped.append(sheet_name)
+                logger.warning(f"Feuille '{sheet_name}' ignorée : vide ou illisible.")
+                continue
+
         sheet_df = raw.iloc[header_row_idx + 1:].copy()
         sheet_df.columns = raw.iloc[header_row_idx]
+        # Supprimer les colonnes sans nom (NaN)
+        bad_cols = [c for c in sheet_df.columns if not str(c).strip() or str(c).strip().lower() in ("nan","none","")]
+        if bad_cols:
+            sheet_df = sheet_df.drop(columns=bad_cols)
         sheet_df = sheet_df.dropna(how="all").reset_index(drop=True)
+        if sheet_df.empty:
+            skipped.append(sheet_name)
+            continue
         sheet_df = standardize_columns(sheet_df, column_mapping, custom_mappings=custom_mappings)
+
+        # Mémoriser le nom de la feuille pour l'assigner comme système APRÈS
+        # la décision merge/stack (l'assigner avant fausserait la détection
+        # de recouvrement qui détermine si deux feuilles doivent être fusionnées)
+        sheet_df.attrs["_sheet_name"] = str(sheet_name)
         sheet_dfs[str(sheet_name)] = sheet_df
+
+    if skipped:
+        logger.warning(f"{len(skipped)} feuille(s) ignorée(s) : {', '.join(skipped[:10])}"
+                       + (f" (+{len(skipped)-10})" if len(skipped) > 10 else ""))
 
     if not sheet_dfs:
         raise IngestionError(f"Aucune feuille exploitable trouvée dans {path.name}.")
 
-    return _merge_or_stack_named_tables(sheet_dfs, default_system, allow_name_as_system=True)
+    logger.info(
+        f"Excel '{path.name}' : {len(sheet_dfs)} feuille(s) chargée(s)"
+        + (f", {len(skipped)} ignorée(s)" if skipped else "")
+        + f". Systèmes : {', '.join(list(sheet_dfs.keys())[:10])}"
+        + (f"..." if len(sheet_dfs) > 10 else "")
+    )
+
+    # ── Décision empiler vs fusionner pour les fichiers multi-feuilles ──────
+    # Règle simple et fiable :
+    # - Mêmes colonnes sur toutes les feuilles → systèmes distincts → EMPILER
+    #   (même export, serveurs/systèmes différents : 2 feuilles, 3 ou 39)
+    # - Colonnes différentes → même système, données éclatées → FUSIONNER
+    #   (ex. feuille "Identités" + feuille "Permissions" pour les mêmes users)
+    if len(sheet_dfs) >= 2:
+        col_sets = [frozenset(df.columns) for df in sheet_dfs.values()]
+        all_same_columns = len(set(col_sets)) == 1
+
+        if all_same_columns:
+            # Même structure partout. Deux cas possibles :
+            # A) Les feuilles ont déjà une colonne "system" avec une valeur
+            #    → laisser _merge_or_stack_named_tables décider (fusion possible)
+            # B) Pas de colonne "system" → chaque feuille = un système distinct
+            #    (nom de feuille comme système) → empiler
+            # Cas BSS : 39 serveurs Linux, pas de colonne system → empiler
+            # Cas test conflit : colonne system="AD" dans les 2 feuilles → fusionner
+            has_explicit_system = all(
+                "system" in df.columns
+                and df["system"].notna().any()
+                and (df["system"].astype(str).str.strip() != "").any()
+                for df in sheet_dfs.values()
+            )
+            if not has_explicit_system:
+                # Pas de système explicite → chaque feuille est un système distinct
+                frames = []
+                for sname, sdf in sheet_dfs.items():
+                    sdf = sdf.copy()
+                    sys_to_use = default_system if default_system else sname
+                    if "system" not in sdf.columns:
+                        sdf["system"] = sys_to_use
+                    else:
+                        empty = sdf["system"].isna() | (sdf["system"].astype(str).str.strip() == "")
+                        if empty.any():
+                            sdf.loc[empty, "system"] = sys_to_use
+                    frames.append(sdf)
+                result = _combine_mapping_attrs(
+                    list(sheet_dfs.values()), pd.concat(frames, ignore_index=True),
+                )
+                return result
+            # has_explicit_system=True → tomber sur _merge_or_stack_named_tables
+
+        # Colonnes différentes → vérifier le recouvrement d'utilisateurs
+        # pour décider merge (même système) vs stack (systèmes distincts)
+        if all("username" in df.columns for df in sheet_dfs.values()):
+            sheet_names_list = list(sheet_dfs.keys())
+            user_sets = {n: set(sheet_dfs[n]["username"].dropna().astype(str)) for n in sheet_names_list}
+            s1, s2 = user_sets[sheet_names_list[0]], user_sets[sheet_names_list[1]]
+            if s1 and s2:
+                overlap = len(s1 & s2) / min(len(s1), len(s2))
+                if overlap < 0.20:
+                    # Peu d'utilisateurs en commun → systèmes distincts → empiler
+                    frames = []
+                    for sname, sdf in sheet_dfs.items():
+                        sdf = sdf.copy()
+                        sys_to_use = default_system if default_system else sname
+                        if "system" not in sdf.columns:
+                            sdf["system"] = sys_to_use
+                        else:
+                            empty = sdf["system"].isna() | (sdf["system"].astype(str).str.strip() == "")
+                            if empty.any():
+                                sdf.loc[empty, "system"] = sys_to_use
+                        frames.append(sdf)
+                    result = _combine_mapping_attrs(
+                        list(sheet_dfs.values()), pd.concat(frames, ignore_index=True),
+                    )
+                    return result
+
+    result = _merge_or_stack_named_tables(sheet_dfs, default_system, allow_name_as_system=True)
+    if "system" in result.columns:
+        empty = result["system"].isna() | (result["system"].astype(str).str.strip() == "")
+        if empty.any() and default_system:
+            result.loc[empty, "system"] = default_system
+    return result
 
 
 def _load_single_file(
@@ -1512,6 +1791,18 @@ def _load_single_file(
 
     df = standardize_columns(df, column_mapping, custom_mappings=custom_mappings)
     df = _synthesize_full_name(df)
+    df = _fix_generic_username(df)  # fallback Identity si Username est générique
+    # Déduplication des exports "une ligne par permission" (PKI, certificats,
+    # RBAC...) : si le même utilisateur apparaît plusieurs fois avec des
+    # droits différents, on consolide en une seule ligne par username en
+    # concaténant les permissions avec \n — la même logique que pour les
+    # rôles Oracle EBS. Sans ça, chaque permission génère une ligne
+    # distincte et l'analyse de dormance, de privilège, etc. travaille sur
+    # des doublons silencieux.
+    if "username" in df.columns and "user_rights" in df.columns:
+        df = _deduplicate_by_username(df)
+    elif "username" in df.columns and "role" in df.columns:
+        df = _deduplicate_by_username(df, rights_col="role")
 
     if _defer_finalize:
         return df

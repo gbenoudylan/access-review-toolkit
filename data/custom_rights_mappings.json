@@ -1,3 +1,6 @@
 {
-  "administration/Compte de Service": "admin"
+  "administration/Compte de Service": "admin",
+  "system": "admin",
+  "user": "standard",
+  "user-sudo": "standard"
 }

@@ -45,6 +45,14 @@ from reporting.template_sections import (
     DUMP_COMPLETENESS_COLUMNS, CONTROL_SUBSECTIONS, CONCLUSION_HEADING,
 )
 from analysis.access_review import _is_active_account
+
+def _active_accounts(df: pd.DataFrame) -> pd.DataFrame:
+    """Filtre les comptes actifs en respectant les mappings personnalisés."""
+    if "is_active_for_audit" in df.columns:
+        return df[df["is_active_for_audit"]]
+    if "account_status" in df.columns:
+        return df[df["account_status"].apply(_is_active_account)]
+    return df
 from analysis.risk_acceptance import get_accepted_findings_detail
 from ingestion.ingest import compute_data_quality_report
 
@@ -397,7 +405,7 @@ def default_report_filename(df: pd.DataFrame, extension: str, extraction_origin:
         system_label = "Global"
 
     system_label = re.sub(r"[^A-Za-z0-9\-]+", "_", system_label).strip("_") or "Global"
-    date_label = datetime.now().strftime("%d%m%Y")
+    date_label = datetime.now().strftime("%d%m%Y_%H%M")
     extension = extension.lstrip(".")
     return f"Rapport_revue_acces_{system_label}_{date_label}.{extension}"
 
@@ -512,13 +520,11 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
             status, count_display = "N/A", "—"
 
         elif key == "_active_count":
-            # Contrôle 5 : comptes actifs — toujours évaluable si account_status présent.
-            if "account_status" in df.columns:
-                count = int(df["account_status"].apply(_is_active_account).astype(bool).sum())
-                status = "OK"
-                count_display = str(count)
-            else:
-                status, count_display = "N/A", "—"
+            # Contrôle 5 : _active_accounts respecte is_active_for_audit
+            # (mappings personnalisés : EXPIRED → active inclus ici).
+            count = len(_active_accounts(df))
+            status = "OK"
+            count_display = str(count)
 
         elif key == "_created":
             # Priorité à la comparaison avec une revue précédente quand
@@ -542,17 +548,16 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
                 status, count_display = ("⚠️" if value > 0 else "OK"), str(value)
 
         elif key == "is_password_stale":
-            # Contrôle 14 : MDP périmé — N/A si la colonne source est absente.
-            # Un fichier sans 'password_last_set' laisse is_password_stale=False
-            # pour tous les comptes (valeur par défaut), ce qui donnerait "OK 0"
-            # à tort : le reviewer croirait que tous les mots de passe sont à
-            # jour, alors qu'on n'a tout simplement pas l'information.
             from analysis.access_review import PASSWORD_DATA_PRESENT_ATTR
             has_pwd_data = df.attrs.get(PASSWORD_DATA_PRESENT_ATTR, "password_last_set" in df.columns)
             if not has_pwd_data:
                 status, count_display = "N/A", "—"
             elif "is_password_stale" in df.columns:
-                count = _count_excluding_accepted("is_password_stale")
+                # Compter seulement les comptes ACTIFS avec mot de passe périmé
+                active_df = _active_accounts(df)
+                count = int((active_df["is_password_stale"] & ~active_df.apply(
+                    lambda r: is_finding_accepted(r, "is_password_stale"), axis=1
+                )).sum()) if "is_password_stale" in active_df.columns else 0
                 status = "⚠️" if count > 0 else "OK"
                 count_display = str(count)
             else:
@@ -591,15 +596,26 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
                 count_display = str(count)
 
         elif key in df.columns:
-            # Contrôle 2 (is_dormant) et autres : N/A si les données
-            # nécessaires à l'évaluation étaient absentes du fichier source.
+            # Contrôles génériques : filtrer les comptes actifs seulement
+            # pour éviter de compter les disabled/locked dans les findings.
             if key == "is_dormant":
                 has_login_data = df.attrs.get("_login_data_present", "last_login_date" in df.columns)
                 if not has_login_data:
                     status, count_display = "N/A", "—"
                     rows.append((number, title, status, count_display))
                     continue
-            count = _count_excluding_accepted(key)
+            # Pour is_privileged_flag (Ctrl 16) et autres : actifs seulement
+            ACTIVE_ONLY_KEYS = {
+                "is_privileged_flag", "is_dormant", "is_orphaned_account",
+                "is_test_account", "is_service_account", "is_duplicate_account",
+            }
+            if key in ACTIVE_ONLY_KEYS:
+                active_df = _active_accounts(df)
+                count = int((active_df[key] & ~active_df.apply(
+                    lambda r: is_finding_accepted(r, key), axis=1
+                )).sum()) if key in active_df.columns else 0
+            else:
+                count = _count_excluding_accepted(key)
             status = "⚠️" if count > 0 else "OK"
             count_display = str(count)
 
@@ -804,9 +820,157 @@ def _build_signoff_block(roles: list[str], filled_values: list[str | None], avai
 
 
 
+def _build_section_18_pdf(
+    df, number, title, guidance, terminated_df, transferred_df,
+    note_style, section_style, action_style, available_width, is_finding_accepted,
+) -> list:
+    """Section 18 spéciale : A-Terminated Employee + B-Transferred Employee."""
+    EXCEPTION_GREEN = colors.HexColor("#16A34A")
+    # Système dominant du df courant (pour affichage dans les findings)
+    _system_label = (
+        df["system"].dropna().astype(str).str.strip().mode()[0]
+        if "system" in df.columns and not df["system"].isna().all()
+        else ""
+    )
+    elements = []
+    elements.append(Paragraph(f"{number}.{title}", section_style))
+    if guidance:
+        body = guidance.split(":", 1)[1].strip() if ":" in guidance else guidance
+        elements.append(Paragraph(
+            f'<font color="#16A34A"><b>Expectations:</b></font> {body}', note_style
+        ))
+
+    NB_TERMINATED = (
+        "As information security don't know the exact naming convention of this application, "
+        "application owners must ensure the access of the terminated users below are disabled "
+        "for internal staff below."
+    )
+    NB_TRANSFERRED = (
+        "As Information Security is not familiar with the application's specific naming conventions, "
+        "the Application Owner must ensure that the following users who have changed roles, departments, "
+        "or have been transferred to another department have any access rights associated with their "
+        "previous position revoked or disabled."
+    )
+    cell_s = ParagraphStyle("C18", fontSize=7.5, leading=9, fontName=DEFAULT_FONT)
+    hdr_s  = ParagraphStyle("H18", fontSize=7.5, leading=9, fontName=DEFAULT_FONT_BOLD, textColor=colors.white)
+
+    def _owner_tracking_row():
+        cols = ["Owner", "Comment", "Due Date", "Status"]
+        w4 = available_width / 4
+        hdr = [Paragraph(c, hdr_s) for c in cols]
+        empty = ["", "", "", ""]
+        t = Table([hdr, empty], colWidths=[w4]*4, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0,0),(-1,0), colors.HexColor("#1F2937")),
+            ("TEXTCOLOR", (0,0),(-1,0), colors.white),
+            ("GRID", (0,0),(-1,-1), 0.4, colors.HexColor("#D9D9D9")),
+            ("FONTSIZE", (0,0),(-1,-1), 8),
+            ("TOPPADDING",(0,0),(-1,-1), 4), ("BOTTOMPADDING",(0,0),(-1,-1), 4),
+        ]))
+        return t
+
+    def _finding_table(subset_df):
+        if subset_df is None or len(subset_df) == 0:
+            return [Paragraph("0 account(s) concerned.", action_style)]
+        cols = [c for c in ["username","full_name","system","account_status","user_rights","review_action"] if c in subset_df.columns]
+        labels = [ALL_COLUMN_LABELS.get(c,c) for c in cols]
+        ws = _compute_column_widths(labels, available_width)
+        hdr = [Paragraph(l, hdr_s) for l in labels]
+        rows = []
+        for rec in subset_df[cols].fillna("").astype(str).values.tolist():
+            row = []
+            for label, val in zip(labels, rec):
+                val = "" if label == "OWNER comments" else _translate_value(val)
+                row.append(Paragraph(val, cell_s) if label in WRAP_COLUMNS else val)
+            rows.append(row)
+        t = Table([hdr]+rows, colWidths=ws, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0), colors.HexColor("#1F2937")),
+            ("TEXTCOLOR",(0,0),(-1,0), colors.white),
+            ("GRID",(0,0),(-1,-1), 0.4, colors.HexColor("#D9D9D9")),
+            ("FONTSIZE",(0,0),(-1,-1), 8),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, colors.HexColor("#F9F9F9")]),
+            ("TOPPADDING",(0,0),(-1,-1),4), ("BOTTOMPADDING",(0,0),(-1,-1),4),
+        ]))
+        return [Paragraph(f"<b>{len(subset_df)}</b> account(s) concerned.", action_style), Spacer(1,0.1*cm), t]
+
+    # ---- A : Terminated ----
+    elements.append(Paragraph("<b>A — Terminated Employee</b>", action_style))
+    elements.append(Paragraph(f"NB: {NB_TERMINATED}", note_style))
+    elements.append(Paragraph("Find below the list of internal terminated employees for this year:", note_style))
+    elements.append(Spacer(1, 0.1*cm))
+    if terminated_df is not None and len(terminated_df):
+        # Afficher le fichier terminated fourni
+        disp_cols = [c for c in terminated_df.columns if str(c).strip().lower() not in ("nan","none","")][:6]
+        labs = [str(c) for c in disp_cols]
+        ws_t = _compute_column_widths(labs, available_width)
+        hdr_t = [Paragraph(l, hdr_s) for l in labs]
+        rows_t = []
+        for rec in terminated_df[disp_cols].fillna("").astype(str).values.tolist():
+            rows_t.append([Paragraph(v, cell_s) if i==0 else v for i,v in enumerate(rec)])
+        t_term = Table([hdr_t]+rows_t, colWidths=ws_t, repeatRows=1)
+        t_term.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0), colors.HexColor("#1F2937")),
+            ("TEXTCOLOR",(0,0),(-1,0), colors.white),
+            ("GRID",(0,0),(-1,-1), 0.4, colors.HexColor("#D9D9D9")),
+            ("FONTSIZE",(0,0),(-1,-1),8),
+            ("TOPPADDING",(0,0),(-1,-1),4), ("BOTTOMPADDING",(0,0),(-1,-1),4),
+        ]))
+        elements.append(t_term)
+    else:
+        elements.append(Paragraph("No terminated employees list provided.", note_style))
+    elements.append(Spacer(1, 0.15*cm))
+    elements.append(Paragraph("<b>Owner tracking:</b>", note_style))
+    elements.append(_owner_tracking_row())
+    elements.append(Spacer(1, 0.15*cm))
+    elements.append(Paragraph("<b>FINDING — Find below the possible Terminated employee(s) still active on the system, please investigate to identify the relevant one and take appropriate action.</b>", note_style))
+    active_only = _active_accounts(df)
+    term_finding = (active_only[active_only["is_terminated_but_active"]==True]
+                    if "is_terminated_but_active" in active_only.columns else None)
+    elements.extend(_finding_table(term_finding))
+    elements.append(Spacer(1, 0.3*cm))
+
+    # ---- B : Transferred ----
+    elements.append(Paragraph("<b>B — Transferred Employee</b>", action_style))
+    elements.append(Paragraph(f"NB: {NB_TRANSFERRED}", note_style))
+    elements.append(Paragraph("Find below the list of employees where the department or direction has changed:", note_style))
+    elements.append(Spacer(1, 0.1*cm))
+    if transferred_df is not None and len(transferred_df):
+        disp_cols2 = [c for c in transferred_df.columns if str(c).strip().lower() not in ("nan","none","")][:6]
+        labs2 = [str(c) for c in disp_cols2]
+        ws_t2 = _compute_column_widths(labs2, available_width)
+        hdr_t2 = [Paragraph(l, hdr_s) for l in labs2]
+        rows_t2 = []
+        for rec in transferred_df[disp_cols2].fillna("").astype(str).values.tolist():
+            rows_t2.append([Paragraph(v, cell_s) if i==0 else v for i,v in enumerate(rec)])
+        t_trans = Table([hdr_t2]+rows_t2, colWidths=ws_t2, repeatRows=1)
+        t_trans.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0), colors.HexColor("#1F2937")),
+            ("TEXTCOLOR",(0,0),(-1,0), colors.white),
+            ("GRID",(0,0),(-1,-1), 0.4, colors.HexColor("#D9D9D9")),
+            ("FONTSIZE",(0,0),(-1,-1),8),
+            ("TOPPADDING",(0,0),(-1,-1),4), ("BOTTOMPADDING",(0,0),(-1,-1),4),
+        ]))
+        elements.append(t_trans)
+    else:
+        elements.append(Paragraph("No transferred employees list provided.", note_style))
+    elements.append(Spacer(1, 0.15*cm))
+    elements.append(Paragraph("<b>Owner tracking:</b>", note_style))
+    elements.append(_owner_tracking_row())
+    elements.append(Spacer(1, 0.15*cm))
+    elements.append(Paragraph("<b>FINDING — Find below the possible Transfered employee(s) still active on the system, please investigate to identify the relevant one and take appropriate action when possible.</b>", note_style))
+    trans_finding = (active_only[active_only["is_transferred_but_active"]==True]
+                     if "is_transferred_but_active" in active_only.columns else None)
+    elements.extend(_finding_table(trans_finding))
+    elements.append(Spacer(1, 0.3*cm))
+    return elements
+
+
 def _build_control_subsections(
     df: pd.DataFrame, comparison_stats: dict, section_style, system_style, note_style, action_style,
     available_width: float, previous_df: pd.DataFrame | None = None,
+    terminated_df: pd.DataFrame | None = None,
+    transferred_df: pd.DataFrame | None = None,
 ) -> list:
     """
     Reproduit fidèlement les sous-sections 2 à 18 de la section IV du
@@ -839,10 +1003,10 @@ def _build_control_subsections(
         if guidance:
             # "Exceptions:" en vert, reste du texte en noir
             EXCEPTION_GREEN = colors.HexColor("#16A34A")
-            if guidance.startswith("Exception:"):
-                body = guidance[len("Exception:"):].strip()
+            if guidance.startswith("Expectations:")or guidance.startswith("Exception:"):
+                body = guidance.split(":", 1)[1].strip() if ":" in guidance else guidance
                 para_text = (
-                    f'<font color="#16A34A"><b>Exceptions:</b></font> {body}'
+                    f'<font color="#16A34A"><b>Expectations:</b></font> {body}'
                 )
                 elements.append(Paragraph(para_text, note_style))
             else:
@@ -852,13 +1016,22 @@ def _build_control_subsections(
         note = None
         subset = None
         comparison_detail = None
+
+        # Section 18 : traitement spécial A (Terminated) + B (Transferred)
+        if number == 18:
+            elements.extend(_build_section_18_pdf(
+                df, number, title, guidance, terminated_df, transferred_df,
+                note_style, section_style, action_style, available_width,
+                is_finding_accepted,
+            ))
+            continue
+
         if key is None:
             note = "N/A — requires company-specific configuration, not derivable from the ingested data alone."
         elif key == "_active_count":
-            if "account_status" in df.columns:
-                subset = df[df["account_status"].apply(_is_active_account)]
-                count = len(subset)
-            else:
+            subset = _active_accounts(df)
+            count = len(subset)
+            if not count and "account_status" not in df.columns:
                 note = "N/A — 'account_status' column missing."
         elif key == "_deleted":
             # Un compte supprimé, par définition, n'existe plus dans le
@@ -1049,18 +1222,24 @@ def _build_review_comparison_section(
                         if was_inactive and is_active_now:
                             reactivated_accounts.append(str(uname))
                             reactivated_detail.append({
-                                "username": str(uname), "system": str(curr_row.get("system", "")),
+                                "username": str(uname), "system": str(curr_row.get("system", df["system"].dropna().mode()[0] if "system" in df.columns and not df["system"].isna().all() else "")),
                                 "old_status": str(prev_row.get("account_status", "")),
                                 "old_date": previous_extraction_date or "",
                                 "new_status": str(curr_row.get("account_status", "")),
                                 "new_date": current_extraction_date or "",
                             })
-                    if "role" in df.columns:
-                        old_role, new_role = str(prev_row.get("role")), str(curr_row.get("role"))
+                    # Profile Modified : comparer user_rights EN PRIORITÉ
+                    # (droits réels octroyés — colonne USER RIGHTS/PERMISSIONS),
+                    # puis role comme fallback. Les deux colonnes peuvent
+                    # coexister selon le système source.
+                    _rights_col = "user_rights" if "user_rights" in df.columns else "role" if "role" in df.columns else None
+                    if _rights_col and _rights_col in previous_df.columns:
+                        old_role = str(prev_row.get(_rights_col, ""))
+                        new_role = str(curr_row.get(_rights_col, ""))
                         if old_role != new_role:
                             profile_modified_accounts.append(str(uname))
                             profile_modified_detail.append({
-                                "username": str(uname), "system": str(curr_row.get("system", "")),
+                                "username": str(uname), "system": str(curr_row.get("system", df["system"].dropna().mode()[0] if "system" in df.columns and not df["system"].isna().all() else "")),
                                 "old_role": old_role, "old_date": previous_extraction_date or "",
                                 "new_role": new_role, "new_date": current_extraction_date or "",
                             })
@@ -1339,6 +1518,96 @@ def _add_custom_docx_styles(doc) -> None:
         body_style.font.size = Pt(8.5)
 
 
+def _build_section_18_word(doc, df, terminated_df, transferred_df, is_finding_accepted):
+    """Section 18 Word : A-Terminated + B-Transferred avec tableaux complets."""
+    NB_T = (
+        "As information security don't know the exact naming convention of this application, "
+        "application owners must ensure the access of the terminated users below are disabled "
+        "for internal staff below."
+    )
+    NB_TR = (
+        "As Information Security is not familiar with the application's specific naming conventions, "
+        "the Application Owner must ensure that the following users who have changed roles, departments, "
+        "or have been transferred to another department have any access rights associated with their "
+        "previous position revoked or disabled."
+    )
+
+    def _add_owner_table():
+        t = doc.add_table(rows=2, cols=4)
+        t.style = "Table Grid"
+        for j, h in enumerate(["Owner", "Comment", "Due Date", "Status"]):
+            c = t.rows[0].cells[j]
+            c.text = h
+            run = c.paragraphs[0].runs[0]
+            run.bold = True
+
+    def _add_data_table(source_df):
+        if source_df is None or len(source_df) == 0:
+            doc.add_paragraph("No list provided.")
+            return
+        _SKIP_W = {"system", "is_active_for_audit", "is_terminated_but_active",
+                   "is_transferred_but_active", "username", "account_status",
+                   "user_rights", "role", "is_dormant", "is_privileged_flag"}
+        cols = [c for c in source_df.columns
+                if str(c).strip().lower() not in ("nan","none","")
+                and c not in _SKIP_W][:6]
+        if not cols:
+            cols = [c for c in source_df.columns if str(c).strip().lower() not in ("nan","none","")][:6]
+        t = doc.add_table(rows=1+len(source_df), cols=len(cols))
+        t.style = "Table Grid"
+        for j, col in enumerate(cols):
+            t.rows[0].cells[j].text = str(col)
+        for i, row in enumerate(source_df[cols].fillna("").astype(str).values.tolist()):
+            for j, val in enumerate(row):
+                t.rows[i+1].cells[j].text = str(val)
+
+    def _add_finding_table(subset_df):
+        if subset_df is None or len(subset_df) == 0:
+            doc.add_paragraph("0 account(s) concerned.")
+            return
+        show_cols = [c for c in ["username","full_name","system","account_status","user_rights"] if c in subset_df.columns]
+        p = doc.add_paragraph()
+        p.add_run(f"{len(subset_df)} account(s) concerned.").bold = True
+        t = doc.add_table(rows=1+len(subset_df), cols=len(show_cols))
+        t.style = "Table Grid"
+        for j, col in enumerate(show_cols):
+            t.rows[0].cells[j].text = ALL_COLUMN_LABELS.get(col, col)
+        for i, row in enumerate(subset_df[show_cols].fillna("").astype(str).values.tolist()):
+            for j, val in enumerate(row):
+                t.rows[i+1].cells[j].text = val
+
+    active_only = _active_accounts(df)
+
+    # A : Terminated
+    p = doc.add_paragraph(); p.add_run("A — Terminated Employee").bold = True
+    doc.add_paragraph(f"NB: {NB_T}")
+    doc.add_paragraph("Find below the list of internal terminated employees for this year:")
+    _add_data_table(terminated_df)
+    doc.add_paragraph()
+    p2 = doc.add_paragraph(); p2.add_run("Owner tracking:").bold = True
+    _add_owner_table()
+    doc.add_paragraph()
+    p3 = doc.add_paragraph(); p3.add_run("FINDING — Find below the possible Terminated employee(s) still active on the system, please investigate to identify the relevant one and take appropriate action.").bold = True
+    term_finding = (active_only[active_only["is_terminated_but_active"]==True]
+                    if "is_terminated_but_active" in active_only.columns else None)
+    _add_finding_table(term_finding)
+    doc.add_paragraph()
+
+    # B : Transferred
+    p = doc.add_paragraph(); p.add_run("B — Transferred Employee").bold = True
+    doc.add_paragraph(f"NB: {NB_TR}")
+    doc.add_paragraph("Find below the list of employees where the department or direction has changed:")
+    _add_data_table(transferred_df)
+    doc.add_paragraph()
+    p2 = doc.add_paragraph(); p2.add_run("Owner tracking:").bold = True
+    _add_owner_table()
+    doc.add_paragraph()
+    p3 = doc.add_paragraph(); p3.add_run("FINDING — Find below the possible Transfered employee(s) still active on the system, please investigate to identify the relevant one and take appropriate action when possible.").bold = True
+    trans_finding = (active_only[active_only["is_transferred_but_active"]==True]
+                     if "is_transferred_but_active" in active_only.columns else None)
+    _add_finding_table(trans_finding)
+
+
 def generate_word_report(
     df: pd.DataFrame,
     output_path: str | Path,
@@ -1355,6 +1624,8 @@ def generate_word_report(
     logo_path: str | Path | None = None,
     current_extraction_date: str | None = None,
     previous_extraction_date: str | None = None,
+    terminated_df: pd.DataFrame | None = None,
+    transferred_df: pd.DataFrame | None = None,
 ) -> Path:
     """
     Génère le même rapport que generate_pdf_report, au format Word plutôt
@@ -1448,7 +1719,7 @@ def generate_word_report(
     )
     doc.add_paragraph()
     _docx_add_signoff_block(
-        doc, ["SYSTEM OWNER", "OPCOS LISO", "SM Information Security OPCOS"],
+        doc, ["SYSTEM OWNER", "OPCO INFORMATION SECURITY MANAGER", "SM Information Security OPCOS"],
         [None, None, None],
     )
     doc.add_paragraph()
@@ -1561,7 +1832,7 @@ def generate_word_report(
             status, count_display = "N/A", "—"
         elif key == "_active_count":
             status = "OK"
-            count_display = str(int(df["account_status"].apply(_is_active_account).astype(bool).sum())) if "account_status" in df.columns else "—"
+            count_display = str(len(_active_accounts(df)))
         elif key == "_created":
             value = comparison_stats.get("created")
             if value is not None:
@@ -1601,25 +1872,31 @@ def generate_word_report(
     for number, ctrl_title, guidance, key in CONTROL_SUBSECTIONS:
         doc.add_heading(f"{number}.{ctrl_title}", level=2)
         if guidance:
-            # "Exceptions:" en vert, reste en noir
-            if guidance.startswith("Exception:"):
-                body = guidance[len("Exception:"):].strip()
+            # "Expectations:" en vert, reste en noir
+            if guidance.startswith("Expectations:")or guidance.startswith("Exception:"):
+                body = guidance.split(":", 1)[1].strip() if ":" in guidance else guidance
                 p = doc.add_paragraph()
-                run_label = p.add_run("Exceptions: ")
+                run_label = p.add_run("Expectations: ")
                 run_label.bold = True
                 run_label.font.color.rgb = RGBColor(0x16, 0xA3, 0x4A)  # vert
                 run_body = p.add_run(body)
                 run_body.font.color.rgb = RGBColor(0, 0, 0)  # noir
             else:
                 doc.add_paragraph(guidance)
+
+        # Section 18 : traitement spécial A (Terminated) + B (Transferred)
+        if number == 18:
+            _build_section_18_word(doc, df, terminated_df, transferred_df, is_finding_accepted)
+            doc.add_paragraph()
+            continue
+
         count, note, subset, comparison_detail = None, None, None, None
         if key is None:
             note = "N/A — requires company-specific configuration, not derivable from the ingested data alone."
         elif key == "_active_count":
-            if "account_status" in df.columns:
-                subset = df[df["account_status"].apply(_is_active_account)]
-                count = len(subset)
-            else:
+            subset = _active_accounts(df)
+            count = len(subset)
+            if not count and "account_status" not in df.columns:
                 note = "N/A — 'account_status' column missing."
         elif key == "_deleted":
             # Un compte supprimé n'existe plus dans le fichier ACTUEL —
@@ -1663,7 +1940,7 @@ def generate_word_report(
                 comparison_detail = comparison_stats.get("profile_modified_detail") or []
         elif key in df.columns:
             # Exclure les comptes Disabled — on cherche les actifs à risque
-            active_only_w = df[df["account_status"].apply(_is_active_account)] if "account_status" in df.columns else df
+            active_only_w = _active_accounts(df)
             subset = active_only_w[active_only_w[key] == True]  # noqa: E712
             if len(subset):
                 subset = subset[~subset.apply(lambda r: is_finding_accepted(r, key), axis=1)]
@@ -1808,6 +2085,8 @@ def generate_pdf_report(
     logo_path: str | Path | None = None,
     current_extraction_date: str | None = None,
     previous_extraction_date: str | None = None,
+    terminated_df: pd.DataFrame | None = None,
+    transferred_df: pd.DataFrame | None = None,
 ) -> Path:
     """
     Génère un rapport PDF de revue d'accès structuré et réutilisable d'un
@@ -1966,7 +2245,7 @@ def generate_pdf_report(
     ))
     elements.append(Spacer(1, 0.3 * cm))
     elements.append(_build_signoff_block(
-        ["SYSTEM OWNER", "OPCOS LISO", "SM Information Security OPCOS"],
+        ["SYSTEM OWNER", "OPCO INFORMATION SECURITY MANAGER", "SM Information Security OPCOS"],
         [None, None, None],
         available_width,
     ))
@@ -2086,6 +2365,8 @@ def generate_pdf_report(
     elements.extend(_build_control_subsections(
         df, comparison_stats, section_style, system_style, note_style, action_style, available_width,
         previous_df=previous_df,
+        terminated_df=terminated_df,
+        transferred_df=transferred_df,
     ))
 
     # ---- V. CONCLUSION ----

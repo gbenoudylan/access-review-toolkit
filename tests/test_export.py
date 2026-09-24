@@ -615,12 +615,12 @@ def test_control_action_clarification_note_present():
     pdf_output = generate_pdf_report(result, "output/test_clarif_pdf.pdf")
     with pdfplumber.open(pdf_output) as pdf:
         pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    assert "OWNER comments" in pdf_text  # note retirée, OWNER comments à la place
+    assert "Expectations:" in pdf_text  # Expectations: au début de chaque contrôle
 
     word_output = generate_word_report(result, "output/test_clarif_word.docx")
     doc = Document(str(word_output))
     word_text = "\n".join(p.text for p in doc.paragraphs)
-    assert "Exceptions:" in word_text  # Exceptions: en vert au début de chaque contrôle
+    assert "Expectations:" in word_text  # Expectations: au début de chaque contrôle
     print("OK - test_control_action_clarification_note_present")
 
 
@@ -790,16 +790,16 @@ def test_default_report_filename_uses_system_and_date():
 
     df_single = pd.DataFrame({"system": ["AD", "AD"]})
     today = datetime.now().strftime("%d%m%Y")
-    assert default_report_filename(df_single, "pdf") == f"Rapport_revue_acces_AD_{today}.pdf"
+    assert default_report_filename(df_single, "pdf").startswith(f"Rapport_revue_acces_AD_{today}")
 
     df_multi = pd.DataFrame({"system": ["AD", "SAP"]})
-    assert default_report_filename(df_multi, "docx") == f"Rapport_revue_acces_AD-SAP_{today}.docx"
+    assert default_report_filename(df_multi, "docx").startswith(f"Rapport_revue_acces_AD-SAP_{today}")
 
     df_many = pd.DataFrame({"system": ["AD", "SAP", "VPN", "Cloud", "Firewall"]})
-    assert default_report_filename(df_many, "xlsx") == f"Rapport_revue_acces_Multi-systemes_{today}.xlsx"
+    assert default_report_filename(df_many, "xlsx").startswith(f"Rapport_revue_acces_Multi-systemes_{today}")
 
     df_none = pd.DataFrame({"username": ["u1"]})
-    assert default_report_filename(df_none, "pdf") == f"Rapport_revue_acces_Global_{today}.pdf"
+    assert default_report_filename(df_none, "pdf").startswith(f"Rapport_revue_acces_Global_{today}")
     print("OK - test_default_report_filename_uses_system_and_date")
 
 
@@ -821,7 +821,7 @@ def test_validation_table_uses_new_role_structure():
     with pdfplumber.open(pdf_path) as pdf:
         pdf_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     for role in ["Control Performer", "Manager HUB", "HUB senior Manager LISO",
-                 "SYSTEM OWNER", "OPCOS LISO", "SM Information Security OPCOS"]:
+                 "SYSTEM OWNER", "OPCO INFORMATION SECURITY MANAGER", "SM Information Security OPCOS"]:
         assert role in pdf_text, f"'{role}' absent du PDF"
     validation_idx = pdf_text.find("VALIDATION")
     validation_snippet = pdf_text[validation_idx:validation_idx + 400]
@@ -834,7 +834,7 @@ def test_validation_table_uses_new_role_structure():
         for row in table.rows:
             word_text += "\n" + " ".join(c.text for c in row.cells)
     for role in ["Control Performer", "Manager HUB", "HUB senior Manager LISO",
-                 "SYSTEM OWNER", "OPCOS LISO", "SM Information Security OPCOS"]:
+                 "SYSTEM OWNER", "OPCO INFORMATION SECURITY MANAGER", "SM Information Security OPCOS"]:
         assert role in word_text, f"'{role}' absent du Word"
     validation_idx_word = word_text.find("VALIDATION")
     validation_snippet_word = word_text[validation_idx_word:validation_idx_word + 400]
@@ -925,13 +925,13 @@ def test_extraction_origin_overrides_filename_system():
     df = pd.DataFrame({"system": ["AD"]})
     today = datetime.now().strftime("%d%m%Y")
 
-    assert default_report_filename(df, "pdf") == f"Rapport_revue_acces_AD_{today}.pdf"
+    assert default_report_filename(df, "pdf").startswith(f"Rapport_revue_acces_AD_{today}")
     assert (
         default_report_filename(df, "pdf", extraction_origin="Extraction ServiceNow mensuelle")
-        == f"Rapport_revue_acces_Extraction_ServiceNow_mensuelle_{today}.pdf"
+        .startswith(f"Rapport_revue_acces_Extraction_ServiceNow_mensuelle_{today}")
     )
-    assert default_report_filename(df, "pdf", extraction_origin="   ") == f"Rapport_revue_acces_AD_{today}.pdf"
-    assert default_report_filename(df, "pdf", extraction_origin=None) == f"Rapport_revue_acces_AD_{today}.pdf"
+    assert default_report_filename(df, "pdf", extraction_origin="   ").startswith(f"Rapport_revue_acces_AD_{today}")
+    assert default_report_filename(df, "pdf", extraction_origin=None).startswith(f"Rapport_revue_acces_AD_{today}")
     print("OK - test_extraction_origin_overrides_filename_system")
 
 

@@ -48,9 +48,7 @@ ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "
 LOCKED_STATUS_VALUES = {"locked", "verrouillé", "verrouille"}
 TERMINATED_STATUS_VALUES = {
     "terminated", "termine", "terminé", "parti", "departed", "left",
-    # "inactive"/"inactif" = disabled — ne pas afficher dans les observations
-    # (comptes actifs uniquement). Retour terrain : le terme "inactif" crée
-    # de la confusion avec les comptes jamais utilisés depuis leur création.
+    # "inactive"/"inactif" = disabled
     "inactive", "inactif",
     "resigned", "démissionné",
     "retired", "retraité", "leaver", "ex-employee", "former employee",
@@ -58,10 +56,12 @@ TERMINATED_STATUS_VALUES = {
     "not employed", "separated", "redundant",
     "disabled", "désactivé", "desactive", "desactivé",
     "suspended", "suspendu", "blocked", "bloqué", "expired", "expiré",
-    # LOCKED = DISABLED (retour terrain BSS/MTN) : un compte verrouillé
-    # est un compte désactivé dans ce contexte — il ne doit pas apparaître
-    # dans les observations comme un compte actif.
+    # LOCKED = DISABLED (retour terrain BSS/MTN)
     "locked", "verrouillé", "verrouille",
+    # Compte Linux désactivé
+    "deactive", "inactive user", "account deactivated",
+    # Valeurs booléennes False pour la colonne "Enabled" (PKI, AD exports)
+    "false", "0", "no", "non", "n",
 }
 PRIVILEGED_VALUES = {"oui", "yes", "y", "true", "1", "admin", "administrateur"}
 NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais", "no expiry", "does not expire"}
@@ -430,6 +430,45 @@ def _days_since(
 
     text_value = str(date_value).strip()
 
+    # Format date Linux (commande `last`) : "Nov 26 22:23:06 +0100 2025"
+    # Mois abrégé + Jour + Heure + Timezone + Année (année en FIN)
+    _linux_last_pattern = re.compile(
+        r"^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{1,2}:\d{2}:\d{2})\s+([+-]\d{4})\s+(\d{4})$"
+    )
+    m_linux = _linux_last_pattern.match(text_value.strip())
+    if m_linux:
+        month, day, time_, tz, year = m_linux.groups()
+        try:
+            reconstructed = f"{day} {month} {year} {time_} {tz}"
+            parsed_dt = pd.to_datetime(reconstructed, format="%d %b %Y %H:%M:%S %z", dayfirst=True)
+            if parsed_dt.tzinfo is not None:
+                parsed_dt = parsed_dt.tz_convert("UTC").tz_localize(None)
+            ref_naive = reference_datetime.replace(tzinfo=None)
+            return (ref_naive - parsed_dt.to_pydatetime()).days
+        except Exception:
+            pass
+
+    # Format Oracle nanoseconde : "2/14/2021 8:40:26.000000000 AM +00:00"
+    # Les 9 chiffres après la virgule sont des nanosecondes — non supporté
+    # nativement par strptime. On les retire avant de parser.
+    _nano_pattern = re.compile(
+        r"^(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2})\.\d+(\s*[AP]M\s*.*)$",
+        re.IGNORECASE,
+    )
+    nano_m = _nano_pattern.match(text_value)
+    if nano_m:
+        text_value = nano_m.group(1) + nano_m.group(2).rstrip()
+        # Supprimer le timezone tronqué "+00:" → "+00:00"
+        text_value = re.sub(r"\+00:0?$", "+00:00", text_value)
+        try:
+            parsed_dt = pd.to_datetime(text_value, dayfirst=False)
+            if parsed_dt.tzinfo is not None:
+                parsed_dt = parsed_dt.tz_convert("UTC").tz_localize(None)
+            ref_naive = reference_datetime.replace(tzinfo=None)
+            return (ref_naive - parsed_dt.to_pydatetime()).days
+        except Exception:
+            pass
+
     # Colonne prouvée "mixed" (voir _detect_dayfirst) : une valeur qui n'a
     # PAS sa propre preuve individuelle (ni premier ni second groupe > 12)
     # ne peut être rattachée en confiance à aucune des deux conventions
@@ -738,34 +777,48 @@ def analyze_access(
         never_logged_in = pd.Series(False, index=df.index)
         df.attrs["_login_data_present"] = False
 
+    # ── Jours pré-calculés dans le fichier source ─────────────────────────────
+    # Certains exports (Oracle BIB, TABS, etc.) fournissent directement
+    # "Days Since Last Login" comme colonne pré-calculée par le système source.
+    # On l'utilise en priorité : plus fiable que recalculer depuis une date brute
+    # avec des fuseaux horaires, des formats nanosecondes, etc.
+    if "days_since_last_login_precomputed" in df.columns:
+        precomputed = pd.to_numeric(df["days_since_last_login_precomputed"], errors="coerce")
+        # Pour les lignes où le pré-calculé est disponible, l'utiliser en
+        # remplacement de ce qu'on a calculé depuis la date brute
+        has_precomputed = precomputed.notna()
+        if has_precomputed.any():
+            df.loc[has_precomputed, "days_since_last_login"] = precomputed[has_precomputed]
+            logger.info(
+                f"Jours depuis dernière connexion pré-calculés utilisés pour "
+                f"{int(has_precomputed.sum())} compte(s) (colonne 'Days Since Last Login')."
+            )
+
     df["is_dormant"] = df["days_since_last_login"].apply(
         lambda d: d is not None and d > dormant_threshold_days
     )
 
-    # Fiabilité maximale, même principe que pour 'password_last_set' (une
-    # date non déterminable est traitée comme le pire cas, pas ignorée) :
-    # une valeur RÉELLEMENT PRÉSENTE (donc une connexion a bien eu lieu)
-    # mais dont le format ne permet pas de déterminer la date exacte —
-    # ex. une date tronquée sans jour de semaine ni mois ('4 20:09:01
-    # +0000 2025', rencontré en pratique sur des exports où ces champs
-    # sont parfois manquants) — ne doit PAS silencieusement laisser le
-    # compte hors de portée du contrôle de dormance. Distinct de
-    # 'never_logged_in' (qui signale l'ABSENCE de connexion) : ici, une
-    # connexion a eu lieu, seule sa date précise reste inconnue — un
-    # signal différent, marqué séparément pour rester honnête sur ce
-    # qu'on sait vraiment plutôt que de le confondre avec une vraie
-    # dormance mesurée.
+    # Compte dont la date n'a pas pu être décodée (format inconnu, valeur
+    # tronquée, etc.) MAIS une valeur était présente — connexion a eu lieu,
+    # date inconnue → signalé comme dormant par prudence (pire cas audit).
+    # EXCEPTION : les comptes avec date VIDE / blank → "jamais connecté",
+    # pas "dormant". L'utilisateur veut les voir dans is_never_used, pas
+    # dans is_dormant. On ne propage PAS last_login_date_unparseable aux
+    # comptes vides — seulement aux comptes avec date présente mais illisible.
     if "last_login_date" in df.columns:
         raw_present = (
             df["last_login_date"].notna()
             & (df["last_login_date"].astype(str).str.strip() != "")
+            & ~df["last_login_date"].astype(str).str.strip().str.lower().isin(NEVER_LOGGED_IN_MARKERS)
         )
         df["last_login_date_unparseable"] = (
             raw_present & ~never_logged_in & df["days_since_last_login"].isna()
         )
+        # Uniquement les comptes avec date PRÉSENTE mais illisible → dormant par défaut
+        # Les comptes BLANK restent dans never_logged_in → is_never_used
+        df["is_dormant"] = df["is_dormant"] | df["last_login_date_unparseable"]
     else:
         df["last_login_date_unparseable"] = False
-    df["is_dormant"] = df["is_dormant"] | df["last_login_date_unparseable"]
 
     # Distinction du référentiel (contrôles 2 et 6) : "Dormant" suppose
     # une connexion déjà survenue, simplement ancienne ; "Never Used" est
@@ -885,6 +938,10 @@ def analyze_access(
         is_active_status = resolved.apply(lambda x: x[0])
         is_unknown_status = resolved.apply(lambda x: x[1])
         df["status_is_unknown"] = is_unknown_status
+        # Conserver is_active_status comme colonne booléenne utilisable
+        # par les rapports PDF/Word pour filtrer les comptes actifs avec
+        # respect des mappings personnalisés (ex. EXPIRED mappé en "active").
+        df["is_active_for_audit"] = is_active_status
         # Collecte des valeurs inconnues distinctes pour le dashboard
         unknown_vals = df.loc[is_unknown_status, "account_status"].astype(str).str.strip().unique().tolist()
         df.attrs["unknown_status_values"] = unknown_vals
