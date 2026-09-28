@@ -456,6 +456,43 @@ def standardize_columns(
 
     if unmatched:
         logger.info(f"Colonnes non reconnues (ignorées) : {unmatched}")
+
+    # ── Détection automatique des colonnes de dates non mappées ─────────
+    # Si une colonne non reconnue contient quasi-exclusivement des dates
+    # (LDAP Generalized Time, ISO...), on la mappe automatiquement.
+    # Cas typique : colonne nommée "C", "whenChanged", "lastLogon"...
+    import re as _re
+    _DATE_PATTERNS = _re.compile(
+        r"^\d{14}[Z+\-]"          # LDAP: 20250701001352+0000
+        r"|^\d{4}-\d{2}-\d{2}[T ]"  # ISO 8601
+        r"|^\d{1,2}/\d{1,2}/\d{4}"  # MM/DD ou DD/MM
+        r"|^[A-Za-z]{3}\s+\d{1,2}\s+"  # Jan 31...
+    )
+    _DATE_TARGETS = ["last_login_date", "password_last_set", "account_created_date"]
+    _already_target = set(rename_map.values())
+
+    for col in list(unmatched):
+        if col not in df.columns:
+            continue
+        sample = df[col].dropna().astype(str).str.strip()
+        sample = sample[sample.str.len() > 5]
+        if len(sample) == 0:
+            continue
+        is_date_like = sample.apply(lambda v: bool(_DATE_PATTERNS.match(v))).mean()
+        if is_date_like < 0.80:
+            continue
+        for target in _DATE_TARGETS:
+            if target not in _already_target:
+                rename_map[col] = target
+                full_column_mapping[col] = target
+                _already_target.add(target)
+                unmatched = [c for c in unmatched if c != col]
+                logger.info(
+                    f"Colonne '{col}' ({is_date_like:.0%} valeurs date) → "
+                    f"mappée automatiquement sur '{target}'."
+                )
+                break
+
     result = df.rename(columns=rename_map)
     result.attrs["unmapped_columns"] = unmatched
     result.attrs["full_column_mapping"] = full_column_mapping
@@ -639,11 +676,21 @@ def _read_ragged_csv(path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _try_delimited(lines: list[str], column_mapping: dict = None) -> pd.DataFrame | None:
+def _try_delimited(
+    lines: list[str], column_mapping: dict = None, require_recognized_header: bool = True,
+) -> pd.DataFrame | None:
     """
     Tentative n°1 : le texte est en fait délimité (virgule, point-virgule,
     tabulation, pipe) mais juste enregistré en .txt plutôt qu'en .csv —
     cas très fréquent (export brut d'un outil, copier-coller de tableur).
+
+    `require_recognized_header=False` : n'exige plus qu'au moins une
+    colonne soit reconnue pour valider la structure — utilisé en dernier
+    recours (voir _read_txt/_read_docx) quand l'appelant tolère un fichier
+    dont AUCUNE colonne n'est reconnaissable (mapping manuel côté
+    dashboard), plutôt que de traiter un texte réellement délimité comme
+    "non structuré" simplement parce que ses en-têtes sont inconnus —
+    exactement le même repli que pour un CSV (voir _detect_header_row).
     """
     import csv, io
 
@@ -664,18 +711,26 @@ def _try_delimited(lines: list[str], column_mapping: dict = None) -> pd.DataFram
     rows = [r + [None] * (max_cols - len(r)) for r in rows]
     df = pd.DataFrame(rows)
 
+    if not require_recognized_header:
+        return df
+
     best_score = max(_score_header_row(df.iloc[i], column_mapping) for i in range(min(5, len(df))))
     if best_score <= 0:
         return None
     return df
 
 
-def _try_fixed_width(lines: list[str], column_mapping: dict = None) -> pd.DataFrame | None:
+def _try_fixed_width(
+    lines: list[str], column_mapping: dict = None, require_recognized_header: bool = True,
+) -> pd.DataFrame | None:
     """
     Tentative n°2 : colonnes alignées par des espaces multiples, typique
     des rapports générés par des outils en ligne de commande ou des
     exports de systèmes legacy (ex. sortie brute d'un annuaire, rapport
     imprimé puis converti en texte).
+
+    `require_recognized_header=False` : voir _try_delimited — même repli
+    de dernier recours pour un fichier dont aucune colonne n'est connue.
     """
     rows = [re.split(r"\s{2,}", line.strip()) for line in lines if line.strip()]
     rows = [r for r in rows if len(r) >= 2]
@@ -685,6 +740,9 @@ def _try_fixed_width(lines: list[str], column_mapping: dict = None) -> pd.DataFr
     max_cols = max(len(r) for r in rows)
     rows = [r + [None] * (max_cols - len(r)) for r in rows]
     df = pd.DataFrame(rows)
+
+    if not require_recognized_header:
+        return df
 
     best_score = max(_score_header_row(df.iloc[i], column_mapping) for i in range(min(5, len(df))))
     if best_score <= 0:
@@ -742,6 +800,7 @@ def _try_key_value_blocks(raw_text: str, column_mapping: dict = None) -> pd.Data
 
 def _read_txt(
     path: Path, column_mapping: dict = None, custom_mappings: dict = None,
+    raise_on_missing_required: bool = True,
 ) -> tuple[pd.DataFrame, bool]:
     """
     Lit un fichier .txt en essayant plusieurs interprétations dans l'ordre
@@ -819,6 +878,29 @@ def _read_txt(
         logger.info(f"Fichier texte interprété comme {len(df)} bloc(s) clé-valeur.")
         return df, True
 
+    if not raise_on_missing_required:
+        # Dernier recours (dashboard, mode tolérant) : la structure est
+        # peut-être bien délimitée/alignée, mais AUCUNE colonne n'est
+        # reconnue — jusqu'ici on traitait ça comme "pas de structure du
+        # tout" et on abandonnait, alors qu'un CSV dans la même situation
+        # est accepté (voir _detect_header_row) et laissé à la correction
+        # manuelle. Réessaie sans exiger d'en-tête reconnu avant d'échouer
+        # pour de bon.
+        df = _try_delimited(non_empty_lines, column_mapping, require_recognized_header=False)
+        if df is not None:
+            logger.info(
+                "Fichier texte interprété comme des données délimitées "
+                "(aucune colonne reconnue — mapping manuel requis)."
+            )
+            return df, False
+        df = _try_fixed_width(non_empty_lines, column_mapping, require_recognized_header=False)
+        if df is not None:
+            logger.info(
+                "Fichier texte interprété comme des colonnes alignées "
+                "(aucune colonne reconnue — mapping manuel requis)."
+            )
+            return df, False
+
     raise IngestionError(
         f"Impossible d'interpréter la structure de {path.name}. "
         "Formats texte reconnus : valeurs délimitées (virgule, point-virgule, "
@@ -829,6 +911,7 @@ def _read_txt(
 
 def _read_docx(
     path: Path, column_mapping: dict = None, custom_mappings: dict = None,
+    raise_on_missing_required: bool = True,
 ) -> tuple[pd.DataFrame, bool]:
     """
     Lit un fichier Word. Essaie d'abord d'y trouver un tableau ; si aucun
@@ -897,6 +980,23 @@ def _read_docx(
     if df is not None:
         logger.info(f"Contenu du document interprété comme {len(df)} bloc(s) clé-valeur.")
         return df, True
+
+    if not raise_on_missing_required:
+        # Dernier recours (dashboard, mode tolérant) — voir _read_txt.
+        df = _try_delimited(non_empty, column_mapping, require_recognized_header=False)
+        if df is not None:
+            logger.info(
+                "Contenu du document interprété comme des données délimitées "
+                "(aucune colonne reconnue — mapping manuel requis)."
+            )
+            return df, False
+        df = _try_fixed_width(non_empty, column_mapping, require_recognized_header=False)
+        if df is not None:
+            logger.info(
+                "Contenu du document interprété comme des colonnes alignées "
+                "(aucune colonne reconnue — mapping manuel requis)."
+            )
+            return df, False
 
     raise IngestionError(
         f"Aucun tableau ni structure de données reconnaissable dans {path.name}. "
@@ -1635,81 +1735,25 @@ def _read_excel_all_sheets(
         + (f"..." if len(sheet_dfs) > 10 else "")
     )
 
-    # ── Décision empiler vs fusionner pour les fichiers multi-feuilles ──────
-    # Règle simple et fiable :
-    # - Mêmes colonnes sur toutes les feuilles → systèmes distincts → EMPILER
-    #   (même export, serveurs/systèmes différents : 2 feuilles, 3 ou 39)
-    # - Colonnes différentes → même système, données éclatées → FUSIONNER
-    #   (ex. feuille "Identités" + feuille "Permissions" pour les mêmes users)
-    if len(sheet_dfs) >= 2:
-        col_sets = [frozenset(df.columns) for df in sheet_dfs.values()]
-        all_same_columns = len(set(col_sets)) == 1
-
-        if all_same_columns:
-            # Même structure partout. Deux cas possibles :
-            # A) Les feuilles ont déjà une colonne "system" avec une valeur
-            #    → laisser _merge_or_stack_named_tables décider (fusion possible)
-            # B) Pas de colonne "system" → chaque feuille = un système distinct
-            #    (nom de feuille comme système) → empiler
-            # Cas BSS : 39 serveurs Linux, pas de colonne system → empiler
-            # Cas test conflit : colonne system="AD" dans les 2 feuilles → fusionner
-            has_explicit_system = all(
-                "system" in df.columns
-                and df["system"].notna().any()
-                and (df["system"].astype(str).str.strip() != "").any()
-                for df in sheet_dfs.values()
-            )
-            if not has_explicit_system:
-                # Pas de système explicite → chaque feuille est un système distinct
-                frames = []
-                for sname, sdf in sheet_dfs.items():
-                    sdf = sdf.copy()
-                    sys_to_use = default_system if default_system else sname
-                    if "system" not in sdf.columns:
-                        sdf["system"] = sys_to_use
-                    else:
-                        empty = sdf["system"].isna() | (sdf["system"].astype(str).str.strip() == "")
-                        if empty.any():
-                            sdf.loc[empty, "system"] = sys_to_use
-                    frames.append(sdf)
-                result = _combine_mapping_attrs(
-                    list(sheet_dfs.values()), pd.concat(frames, ignore_index=True),
-                )
-                return result
-            # has_explicit_system=True → tomber sur _merge_or_stack_named_tables
-
-        # Colonnes différentes → vérifier le recouvrement d'utilisateurs
-        # pour décider merge (même système) vs stack (systèmes distincts)
-        if all("username" in df.columns for df in sheet_dfs.values()):
-            sheet_names_list = list(sheet_dfs.keys())
-            user_sets = {n: set(sheet_dfs[n]["username"].dropna().astype(str)) for n in sheet_names_list}
-            s1, s2 = user_sets[sheet_names_list[0]], user_sets[sheet_names_list[1]]
-            if s1 and s2:
-                overlap = len(s1 & s2) / min(len(s1), len(s2))
-                if overlap < 0.20:
-                    # Peu d'utilisateurs en commun → systèmes distincts → empiler
-                    frames = []
-                    for sname, sdf in sheet_dfs.items():
-                        sdf = sdf.copy()
-                        sys_to_use = default_system if default_system else sname
-                        if "system" not in sdf.columns:
-                            sdf["system"] = sys_to_use
-                        else:
-                            empty = sdf["system"].isna() | (sdf["system"].astype(str).str.strip() == "")
-                            if empty.any():
-                                sdf.loc[empty, "system"] = sys_to_use
-                        frames.append(sdf)
-                    result = _combine_mapping_attrs(
-                        list(sheet_dfs.values()), pd.concat(frames, ignore_index=True),
-                    )
-                    return result
-
-    result = _merge_or_stack_named_tables(sheet_dfs, default_system, allow_name_as_system=True)
-    if "system" in result.columns:
-        empty = result["system"].isna() | (result["system"].astype(str).str.strip() == "")
-        if empty.any() and default_system:
-            result.loc[empty, "system"] = default_system
-    return result
+    # ── Toujours empiler — jamais fusionner ──────────────────────────────
+    # Règle unique : chaque feuille = un système distinct.
+    # Le nom de la feuille est utilisé comme système si absent.
+    # Le default_system explicite prime sur le nom de feuille.
+    frames = []
+    for sname, sdf in sheet_dfs.items():
+        sdf = sdf.copy()
+        sys_to_use = default_system if default_system else sname
+        if "system" not in sdf.columns:
+            sdf["system"] = sys_to_use
+        else:
+            empty = sdf["system"].isna() | (sdf["system"].astype(str).str.strip() == "")
+            if empty.any():
+                sdf.loc[empty, "system"] = sys_to_use
+        frames.append(sdf)
+    return _combine_mapping_attrs(
+        list(sheet_dfs.values()),
+        pd.concat(frames, ignore_index=True),
+    )
 
 
 def _load_single_file(
@@ -1747,9 +1791,15 @@ def _load_single_file(
     elif suffix == ".csv":
         raw = _read_ragged_csv(path)
     elif suffix == ".docx":
-        raw, header_already_named = _read_docx(path, column_mapping, custom_mappings=custom_mappings)
+        raw, header_already_named = _read_docx(
+            path, column_mapping, custom_mappings=custom_mappings,
+            raise_on_missing_required=raise_on_missing_required,
+        )
     elif suffix == ".txt":
-        raw, header_already_named = _read_txt(path, column_mapping, custom_mappings=custom_mappings)
+        raw, header_already_named = _read_txt(
+            path, column_mapping, custom_mappings=custom_mappings,
+            raise_on_missing_required=raise_on_missing_required,
+        )
     elif suffix == ".json":
         raw = _read_json(path)
         header_already_named = True

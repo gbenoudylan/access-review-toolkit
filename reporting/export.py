@@ -272,92 +272,230 @@ def _prepare_export_df(df: pd.DataFrame) -> pd.DataFrame:
 # EXCEL
 # ---------------------------------------------------------------------
 
-def generate_excel_report(df: pd.DataFrame, output_path: str | Path) -> Path:
+def generate_excel_report(
+    df: pd.DataFrame, output_path: str | Path,
+    period: str = "", application_scope: str = "",
+    current_extraction_date: str = "",
+    previous_df: pd.DataFrame | None = None,
+    previous_extraction_date: str = "",
+) -> Path:
+    """Rapport Excel : feuille Summary + une feuille par contrôle IAM (Ctrl 2→19)."""
+    from analysis.risk_acceptance import is_finding_accepted
     output_path = Path(output_path)
-    export_df = _prepare_export_df(df)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Styles communs
+    HDR_FILL  = PatternFill("solid", fgColor="1F2937")
+    HDR_FONT  = Font(color="FFFFFF", bold=True)
+    WARN_FILL = PatternFill("solid", fgColor="DC2626")
+    OK_FILL   = PatternFill("solid", fgColor="16A34A")
+    NA_FILL   = PatternFill("solid", fgColor="9CA3AF")
+    THIN      = Border(*[Side(style="thin", color="E5E7EB")] * 4)
+    CENTER    = Alignment(horizontal="center", vertical="center")
+
+    active_df = _active_accounts(df)
+
+    # Calcul des stats de comparaison (Ctrl 10-13)
+    comp = _compute_comparison_stats(
+        df, previous_df,
+        current_extraction_date=current_extraction_date,
+        previous_extraction_date=previous_extraction_date,
+    )
+    has_comparison = previous_df is not None and not getattr(previous_df, 'empty', True)
+
+    def _ws_header(ws, cols):
+        for ci, col in enumerate(cols, 1):
+            c = ws.cell(1, ci, col)
+            c.fill, c.font, c.alignment, c.border = HDR_FILL, HDR_FONT, CENTER, THIN
+
+    _ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]")
+    def _ws_row(ws, ri, vals, cols):
+        for ci, (col, val) in enumerate(zip(cols, vals), 1):
+            safe_val = _ILLEGAL_CHARS.sub("", str(val)) if val is not None else ""
+            c = ws.cell(ri, ci, safe_val)
+            c.border = THIN
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+
+    def _autowidth(ws, cols):
+        for ci, col in enumerate(cols, 1):
+            ltr = get_column_letter(ci)
+            max_w = max(len(str(col)), 10)
+            for ri in range(2, ws.max_row + 1):
+                v = ws.cell(ri, ci).value
+                if v:
+                    max_w = max(max_w, min(len(str(v)), 50))
+            ws.column_dimensions[ltr].width = max_w + 2
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+    def _ctrl_sheet(wb, name, flag_col, cols_wanted):
+        """Crée une feuille pour un contrôle basé sur un flag booléen."""
+        ws = wb.create_sheet(name)
+        avail = [c for c in cols_wanted if c in active_df.columns]
+        if not avail:
+            avail = [c for c in ["username","system","account_status"] if c in active_df.columns]
+        _ws_header(ws, avail)
+        if flag_col not in active_df.columns:
+            ws.cell(2, 1, "N/A — data not available for this control.")
+            return ws, 0
+        subset = active_df[active_df[flag_col] == True]
+        subset = subset[~subset.apply(lambda r: is_finding_accepted(r, flag_col), axis=1)]
+        for ri, (_, row) in enumerate(subset.iterrows(), 2):
+            _ws_row(ws, ri, [str(row.get(c, "") or "") for c in avail], avail)
+        _autowidth(ws, avail)
+        return ws, len(subset)
 
     wb = Workbook()
-    ws_summary = wb.active
-    ws_summary.title = "Summary"
 
-    ws_summary["A1"] = "Access Review Report"
-    ws_summary["A1"].font = Font(size=14, bold=True)
-    ws_summary["A2"] = f"Generated on {datetime.now().strftime('%Y-%m-%d at %H:%M')}"
-    ws_summary["A2"].font = Font(italic=True, color="666666")
+    # ── Feuille Summary ───────────────────────────────────────────────
+    ws_s = wb.active
+    ws_s.title = "Summary"
+    ws_s["A1"] = "Access Review Report — Control Coverage"
+    ws_s["A1"].font = Font(size=14, bold=True)
+    ws_s["A2"] = f"Period: {period}  |  System: {application_scope}  |  Extraction: {current_extraction_date}"
+    ws_s["A2"].font = Font(italic=True, color="666666")
 
-    ws_summary["A4"] = "Risk Level"
-    ws_summary["B4"] = "Number of Accounts"
-    ws_summary["A4"].font = ws_summary["B4"].font = Font(bold=True)
+    cov = compute_control_coverage(df, {})
+    ws_s.append([])
+    ws_s.append(["#", "Control", "Status", "Count"])
+    hi = ws_s.max_row
+    for ci, h in enumerate(["#","Control","Status","Count"], 1):
+        c = ws_s.cell(hi, ci)
+        c.fill, c.font, c.alignment = HDR_FILL, HDR_FONT, CENTER
+    for number, title, status, count in cov:
+        ri = ws_s.max_row + 1
+        ws_s.cell(ri, 1, number)
+        ws_s.cell(ri, 2, title)
+        ws_s.cell(ri, 3, status.replace("⚠️","WARNING").replace("✅","OK"))
+        ws_s.cell(ri, 4, count)
+        fill = WARN_FILL if "⚠" in status else (OK_FILL if "OK" in status else NA_FILL)
+        ws_s.cell(ri, 3).fill = fill
+        ws_s.cell(ri, 3).font = Font(color="FFFFFF", bold=True)
+    for ltr, w in [("A",5),("B",55),("C",12),("D",10)]:
+        ws_s.column_dimensions[ltr].width = w
 
-    risk_counts = df["risk_level"].value_counts() if "risk_level" in df.columns else {}
-    row = 5
-    for risk, hex_color in RISK_COLORS_HEX.items():
-        count = int(risk_counts.get(risk, 0))
-        ws_summary[f"A{row}"] = _translate_value(risk)
-        ws_summary[f"B{row}"] = count
-        ws_summary[f"A{row}"].fill = PatternFill("solid", fgColor=hex_color)
-        ws_summary[f"A{row}"].font = Font(color="FFFFFF", bold=True)
-        row += 1
+    # ── Une feuille par contrôle dans l'ordre ────────────────────────
+    CTRL_SHEETS = [
+        ("Ctrl01-DumpCompleteness", None,
+         ["username","system","account_status","last_login_date","user_rights"]),
+        ("Ctrl02-Dormant",          "is_dormant",
+         ["username","full_name","system","account_status","last_login_date","days_since_last_login","user_rights","review_action"]),
+        ("Ctrl03-Orphaned",         "is_orphaned_account",
+         ["username","full_name","system","account_status","review_action"]),
+        ("Ctrl04-TestAccounts",     "is_test_account",
+         ["username","full_name","system","account_status","review_action"]),
+        ("Ctrl05-ActiveAccounts",   "_active",
+         ["username","full_name","system","account_status","last_login_date","days_since_last_login","user_rights"]),
+        ("Ctrl06-Inactive",         "is_never_used",
+         ["username","full_name","system","account_status","account_created_date","days_since_creation","review_action"]),
+        ("Ctrl07-ServiceAccts",     "is_service_account",
+         ["username","full_name","system","account_status","last_login_date","review_action"]),
+        ("Ctrl08-Duplicates",       "is_duplicate_account",
+         ["username","full_name","system","account_status","review_action"]),
+        ("Ctrl09-NonCompliant",     "is_non_compliant_naming",
+         ["username","full_name","system","account_status","review_action"]),
+        ("Ctrl10-Created",          "_comparison_created",   []),
+        ("Ctrl11-ProfileModified",  "_comparison_modified",  []),
+        ("Ctrl12-Reactivated",      "_comparison_reactivated",[]),
+        ("Ctrl13-Deleted",          "_comparison_deleted",   []),
+        ("Ctrl14-ExpiredPwd",       "is_password_stale",
+         ["username","full_name","system","account_status","password_last_set","days_since_password_change","review_action"]),
+        ("Ctrl15-ThirdParty",       None, []),
+        ("Ctrl16-Admins",           "is_privileged_flag",
+         ["username","full_name","system","user_rights","role","account_status","review_action"]),
+        ("Ctrl17-AnnualReview",     None, []),
+        ("Ctrl18-TermTransferred",  None, []),
+        ("Ctrl19-Accuracy",         None, []),
+    ]
 
-    ws_summary[f"A{row + 1}"] = "Total Accounts Reviewed"
-    ws_summary[f"B{row + 1}"] = len(df)
-    ws_summary[f"A{row + 1}"].font = Font(bold=True)
+    for sheet_name, flag, cols in CTRL_SHEETS:
+        if flag is None:
+            # Contrôle nécessitant une configuration externe
+            ws = wb.create_sheet(sheet_name)
+            ws.cell(1, 1, "N/A — requires external configuration or HR file.")
+            ws.cell(1, 1).fill = NA_FILL
+            ws.cell(1, 1).font = Font(color="FFFFFF")
+            ws.column_dimensions["A"].width = 60
+        elif flag == "_active":
+            ws = wb.create_sheet(sheet_name)
+            avail = [c for c in cols if c in active_df.columns]
+            _ws_header(ws, avail)
+            for ri, (_, row) in enumerate(active_df.iterrows(), 2):
+                _ws_row(ws, ri, [str(row.get(c,"") or "") for c in avail], avail)
+            _autowidth(ws, avail)
+        elif flag.startswith("_comparison_"):
+            ws = wb.create_sheet(sheet_name)
+            comp_key     = flag.replace("_comparison_", "")
+            accounts_key = f"{comp_key}_accounts"
+            detail_key   = f"{comp_key}_detail"
 
-    if "is_terminated_but_active" in df.columns:
-        ws_summary[f"A{row + 3}"] = "Active Accounts of Departed Employees"
-        ws_summary[f"B{row + 3}"] = int(df["is_terminated_but_active"].sum())
-    if "is_dormant" in df.columns:
-        ws_summary[f"A{row + 4}"] = "Dormant Accounts"
-        ws_summary[f"B{row + 4}"] = int(df["is_dormant"].sum())
-    if "is_password_stale" in df.columns:
-        ws_summary[f"A{row + 5}"] = "Stale Passwords"
-        ws_summary[f"B{row + 5}"] = int(df["is_password_stale"].sum())
-    if "is_privileged_flag" in df.columns and "has_non_expiring_password" in df.columns:
-        ws_summary[f"A{row + 6}"] = "Privileged Accounts with Non-Expiring Password"
-        ws_summary[f"B{row + 6}"] = int((df["is_privileged_flag"] & df["has_non_expiring_password"]).sum())
-    if "is_duplicate_account" in df.columns:
-        ws_summary[f"A{row + 7}"] = "Duplicate Accounts"
-        ws_summary[f"B{row + 7}"] = int(df["is_duplicate_account"].sum())
+            detail        = comp.get(detail_key) or []
+            account_names = comp.get(accounts_key) or []
 
-    for col, width in zip("AB", [32, 20]):
-        ws_summary.column_dimensions[col].width = width
+            # --- Ctrl10 Created : fallback sur is_recently_created (même logique que PDF)
+            if comp_key == "created" and not account_names and "is_recently_created" in active_df.columns:
+                subset = active_df[active_df["is_recently_created"] == True]
+                if len(subset):
+                    cols_w = ["username","full_name","system","account_status",
+                              "account_created_date","days_since_creation","user_rights"]
+                    avail = [c for c in cols_w if c in subset.columns]
+                    _ws_header(ws, avail)
+                    for ri, (_, row) in enumerate(subset.iterrows(), 2):
+                        _ws_row(ws, ri, [str(row.get(c,"") or "") for c in avail], avail)
+                    _autowidth(ws, avail)
+                else:
+                    ws.cell(1, 1, "OK — no recently created accounts.")
+                    ws.cell(1, 1).fill = OK_FILL
+                    ws.cell(1, 1).font = Font(color="FFFFFF")
+                    ws.column_dimensions["A"].width = 60
+            elif not has_comparison and not detail and not account_names:
+                ws.cell(1, 1, "N/A — requires a previous review file for comparison.")
+                ws.cell(1, 1).fill = NA_FILL
+                ws.cell(1, 1).font = Font(color="FFFFFF")
+                ws.column_dimensions["A"].width = 60
+            elif detail:
+                hdr = list(detail[0].keys())
+                _ws_header(ws, hdr)
+                for ri, record in enumerate(detail, 2):
+                    _ws_row(ws, ri, [str(record.get(k,"") or "") for k in hdr], hdr)
+                _autowidth(ws, hdr)
+            elif account_names:
+                source_df2 = df if comp_key == "created" else (previous_df if previous_df is not None else df)
+                cols_w = ["username","full_name","system","account_status","last_login_date","user_rights"]
+                avail = [c2 for c2 in cols_w if c2 in source_df2.columns]
+                _ws_header(ws, avail)
+                subset2 = source_df2[source_df2["username"].astype(str).isin(account_names)]
+                for ri, (_, row) in enumerate(subset2.iterrows(), 2):
+                    _ws_row(ws, ri, [str(row.get(c2,"") or "") for c2 in avail], avail)
+                _autowidth(ws, avail)
+            else:
+                ws.cell(1, 1, f"OK — no {comp_key} accounts detected.")
+                ws.cell(1, 1).fill = OK_FILL
+                ws.cell(1, 1).font = Font(color="FFFFFF")
+                ws.column_dimensions["A"].width = 60
+        else:
+            _ctrl_sheet(wb, sheet_name, flag, cols)
 
-    ws = wb.create_sheet("Review Plan")
-    header_fill = PatternFill("solid", fgColor="1F2937")
-    header_font = Font(color="FFFFFF", bold=True)
-    thin_border = Border(*[Side(style="thin", color="D9D9D9")] * 4)
+    # ── Feuille finale : tous les comptes ────────────────────────────
+    ws_all = wb.create_sheet("Complete Accounts")
+    export_df = _prepare_export_df(df)
+    _ws_header(ws_all, list(export_df.columns))
+    for ri, (_, row) in enumerate(export_df.iterrows(), 2):
+        for ci, val in enumerate(row.values, 1):
+            safe = _ILLEGAL_CHARS.sub("", str(val)) if val is not None else ""
+            c = ws_all.cell(ri, ci, safe)
+            c.border = THIN
+            c.alignment = Alignment(wrap_text=False, vertical="top")
+            if "Risk" in str(export_df.columns[ci-1]):
+                hex_color = RISK_COLORS_HEX_EN.get(str(val))
+                if hex_color:
+                    c.fill = PatternFill("solid", fgColor=hex_color)
+                    c.font = Font(color="FFFFFF", bold=True)
+    _autowidth(ws_all, list(export_df.columns))
+    ws_all["A1"].comment = None  # pas de commentaires surprises
 
-    for col_idx, col_name in enumerate(export_df.columns, 1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
-        cell.fill, cell.font = header_fill, header_font
-        cell.alignment = Alignment(horizontal="center")
-        cell.border = thin_border
-
-    risk_col_idx = (
-        list(export_df.columns).index("Risk") + 1 if "Risk" in export_df.columns else None
-    )
-
-    for row_idx, record in enumerate(export_df.to_dict("records"), 2):
-        for col_idx, (col_name, value) in enumerate(record.items(), 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            cell.border = thin_border
-        if risk_col_idx:
-            hex_color = RISK_COLORS_HEX_EN.get(record.get("Risk"))
-            if hex_color:
-                cell = ws.cell(row=row_idx, column=risk_col_idx)
-                cell.fill = PatternFill("solid", fgColor=hex_color)
-                cell.font = Font(color="FFFFFF", bold=True)
-
-    for col_idx, col_name in enumerate(export_df.columns, 1):
-        max_len = max([len(str(col_name))] + [len(str(v)) for v in export_df[col_name].astype(str)])
-        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 40)
-
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
-    logger.info(f"Excel report generated: {output_path}")
+    logger.info(f"Excel report generated ({len(wb.sheetnames)} sheets): {output_path}")
     return output_path
 
 
@@ -959,6 +1097,14 @@ def _build_section_18_pdf(
     elements.append(_owner_tracking_row())
     elements.append(Spacer(1, 0.15*cm))
     elements.append(Paragraph("<b>FINDING — Find below the possible Transfered employee(s) still active on the system, please investigate to identify the relevant one and take appropriate action when possible.</b>", note_style))
+    # Recalculer is_transferred_but_active si absent du df
+    # (le df peut venir du cache Streamlit avant le chargement du fichier RH)
+    if "is_transferred_but_active" not in active_only.columns and transferred_df is not None and len(transferred_df) > 0:
+        try:
+            from analysis.hr_crossref import flag_transferred_but_still_active as _ftba
+            active_only = _ftba(active_only.copy(), transferred_df)
+        except Exception:
+            pass
     trans_finding = (active_only[active_only["is_transferred_but_active"]==True]
                      if "is_transferred_but_active" in active_only.columns else None)
     elements.extend(_finding_table(trans_finding))
@@ -1076,11 +1222,9 @@ def _build_control_subsections(
                 count = value
                 comparison_detail = comparison_stats.get("profile_modified_detail") or []
         elif key in df.columns:
-            # Exclure les comptes Disabled des tableaux de résultats —
-            # on cherche les comptes ACTIFS à risque, pas les désactivés.
-            active_only = df
-            if "account_status" in df.columns:
-                active_only = df[df["account_status"].apply(_is_active_account)]
+            # Exclure les Disabled — utiliser _active_accounts qui respecte
+            # les mappings personnalisés (EXPIRED→active, etc.)
+            active_only = _active_accounts(df)
             subset = active_only[active_only[key] == True]  # noqa: E712
             if len(subset):
                 subset = subset[~subset.apply(lambda r: is_finding_accepted(r, key), axis=1)]
@@ -1106,6 +1250,117 @@ def _build_control_subsections(
             elements.append(_build_owner_tracking_table(available_width))
         elements.append(Spacer(1, 0.25 * cm))
     return elements
+
+
+def _compute_comparison_stats(
+    df: pd.DataFrame, previous_df,
+    current_extraction_date: str = "",
+    previous_extraction_date: str = "",
+) -> dict:
+    """
+    Calcule les statistiques de comparaison entre deux cycles de revue
+    sans générer d'éléments de rendu — logique IDENTIQUE à celle du PDF/Word,
+    utilisable par les 3 formats de rapport.
+    """
+    stats = {
+        "created": None, "deleted": None, "reactivated": None,
+        "profile_modified": None, "privilege_escalation": None,
+        "created_accounts": None, "deleted_accounts": None,
+        "reactivated_accounts": None, "profile_modified_accounts": None,
+        "privilege_escalation_accounts": None,
+        "profile_modified_detail": None, "reactivated_detail": None,
+    }
+    if previous_df is None or getattr(previous_df, "empty", True):
+        return stats
+    if "username" not in df.columns or "username" not in previous_df.columns:
+        return stats
+
+    def _norm_key(v):
+        return str(v).strip().lower()
+
+    key_col = "username"
+    current_series  = df[key_col].dropna()
+    previous_series = previous_df[key_col].dropna()
+    current_display  = {_norm_key(v): v for v in reversed(current_series.tolist())}
+    previous_display = {_norm_key(v): v for v in reversed(previous_series.tolist())}
+    current_keys  = set(current_display)
+    previous_keys = set(previous_display)
+    created_keys  = current_keys - previous_keys
+    deleted_keys  = previous_keys - current_keys
+    common        = current_keys & previous_keys
+
+    created_display = sorted(current_display[k]  for k in created_keys)
+    deleted_display = sorted(previous_display[k] for k in deleted_keys)
+
+    reactivated_accounts     = []
+    profile_modified_accounts = []
+    escalated_accounts       = []
+    profile_modified_detail  = []
+    reactivated_detail       = []
+
+    if common:
+        try:
+            curr_idx = df.set_index(df[key_col].map(_norm_key))
+            prev_idx = previous_df.set_index(previous_df[key_col].map(_norm_key))
+            for norm_uname in common:
+                curr_row = curr_idx.loc[norm_uname]
+                prev_row = prev_idx.loc[norm_uname]
+                if isinstance(curr_row, pd.DataFrame): curr_row = curr_row.iloc[0]
+                if isinstance(prev_row, pd.DataFrame): prev_row = prev_row.iloc[0]
+                uname = current_display[norm_uname]
+                system = str(curr_row.get("system", ""))
+
+                # Réactivé
+                if "account_status" in df.columns and "account_status" in previous_df.columns:
+                    was_inactive  = not _is_active_account(prev_row.get("account_status"))
+                    is_active_now = _is_active_account(curr_row.get("account_status"))
+                    if was_inactive and is_active_now:
+                        reactivated_accounts.append(str(uname))
+                        reactivated_detail.append({
+                            "username": str(uname), "system": system,
+                            "old_status": str(prev_row.get("account_status", "")),
+                            "old_date": previous_extraction_date or "",
+                            "new_status": str(curr_row.get("account_status", "")),
+                            "new_date": current_extraction_date or "",
+                        })
+
+                # Profile modifié
+                _rights_col = "user_rights" if "user_rights" in df.columns else \
+                              "role" if "role" in df.columns else None
+                if _rights_col and _rights_col in previous_df.columns:
+                    old_r = str(prev_row.get(_rights_col, ""))
+                    new_r = str(curr_row.get(_rights_col, ""))
+                    if old_r != new_r:
+                        profile_modified_accounts.append(str(uname))
+                        profile_modified_detail.append({
+                            "username": str(uname), "system": system,
+                            "old_role": old_r, "old_date": previous_extraction_date or "",
+                            "new_role": new_r, "new_date": current_extraction_date or "",
+                        })
+
+                # Escalade de privilège
+                was_priv = bool(prev_row.get("is_privileged_flag", False))
+                is_priv  = bool(curr_row.get("is_privileged_flag", False))
+                if not was_priv and is_priv:
+                    escalated_accounts.append(str(uname))
+        except Exception:
+            pass
+
+    stats.update({
+        "created":  len(created_keys)  or None,
+        "deleted":  len(deleted_keys)  or None,
+        "reactivated":      len(reactivated_accounts)     or None,
+        "profile_modified": len(profile_modified_accounts) or None,
+        "privilege_escalation": len(escalated_accounts)   or None,
+        "created_accounts":  created_display,
+        "deleted_accounts":  deleted_display,
+        "reactivated_accounts":     reactivated_accounts,
+        "profile_modified_accounts": profile_modified_accounts,
+        "privilege_escalation_accounts": escalated_accounts,
+        "profile_modified_detail": profile_modified_detail,
+        "reactivated_detail":      reactivated_detail,
+    })
+    return stats
 
 
 def _build_review_comparison_section(
@@ -1171,108 +1426,32 @@ def _build_review_comparison_section(
         elements.append(comp_table)
         elements.append(Spacer(1, 0.2 * cm))
 
-        # Comparaison nominative : créés / supprimés / réactivés / profils modifiés
+        # Comparaison nominative — déléguer à _compute_comparison_stats
+        # qui contient la même logique, partagée avec le rapport Excel.
         if "username" in df.columns and "username" in previous_df.columns:
-            key_col = "username"
-            # Comparaison sur une clé NORMALISÉE (espaces/casse), pas sur le nom
-            # brut : deux cycles de revue peuvent provenir d'exports légèrement
-            # différents (ex. 'jdupont' vs 'JDupont' si l'outil d'export a
-            # changé entre deux mois) — sans cette normalisation, le MÊME
-            # compte serait signalé à tort comme supprimé puis recréé, un faux
-            # signal trompeur pour un rapport d'audit. Le nom d'affichage
-            # original (première valeur rencontrée) reste utilisé partout
-            # ailleurs.
-            def _norm_key(v):
-                return str(v).strip().lower()
-
-            current_series = df[key_col].dropna()
-            previous_series = previous_df[key_col].dropna()
-            current_display = {_norm_key(v): v for v in reversed(current_series.tolist())}
-            previous_display = {_norm_key(v): v for v in reversed(previous_series.tolist())}
-            current_keys = set(current_display)
-            previous_keys = set(previous_display)
-            created = current_keys - previous_keys
-            deleted = previous_keys - current_keys
-            common = current_keys & previous_keys
-
-            reactivated_accounts = []
-            profile_modified_accounts = []
-            escalated_accounts = []
-            # Détail nominatif (pas seulement le nom) : ancien profil/statut
-            # ET nouveau, chacun avec sa propre date d'extraction — pour
-            # produire le tableau de comparaison demandé (User / System /
-            # ancien profil + date / nouveau profil + date), pas juste un
-            # compte sans contexte de CE qui a changé.
-            profile_modified_detail = []
-            reactivated_detail = []
-            if common:
-                curr_idx = df.set_index(df[key_col].map(_norm_key))
-                prev_idx = previous_df.set_index(previous_df[key_col].map(_norm_key))
-                for norm_uname in common:
-                    curr_row = curr_idx.loc[norm_uname]
-                    prev_row = prev_idx.loc[norm_uname]
-                    uname = current_display[norm_uname]
-                    if isinstance(curr_row, pd.DataFrame):
-                        curr_row = curr_row.iloc[0]
-                    if isinstance(prev_row, pd.DataFrame):
-                        prev_row = prev_row.iloc[0]
-                    if "account_status" in df.columns:
-                        was_inactive = not _is_active_account(prev_row.get("account_status"))
-                        is_active_now = _is_active_account(curr_row.get("account_status"))
-                        if was_inactive and is_active_now:
-                            reactivated_accounts.append(str(uname))
-                            reactivated_detail.append({
-                                "username": str(uname), "system": str(curr_row.get("system", df["system"].dropna().mode()[0] if "system" in df.columns and not df["system"].isna().all() else "")),
-                                "old_status": str(prev_row.get("account_status", "")),
-                                "old_date": previous_extraction_date or "",
-                                "new_status": str(curr_row.get("account_status", "")),
-                                "new_date": current_extraction_date or "",
-                            })
-                    # Profile Modified : comparer user_rights EN PRIORITÉ
-                    # (droits réels octroyés — colonne USER RIGHTS/PERMISSIONS),
-                    # puis role comme fallback. Les deux colonnes peuvent
-                    # coexister selon le système source.
-                    _rights_col = "user_rights" if "user_rights" in df.columns else "role" if "role" in df.columns else None
-                    if _rights_col and _rights_col in previous_df.columns:
-                        old_role = str(prev_row.get(_rights_col, ""))
-                        new_role = str(curr_row.get(_rights_col, ""))
-                        if old_role != new_role:
-                            profile_modified_accounts.append(str(uname))
-                            profile_modified_detail.append({
-                                "username": str(uname), "system": str(curr_row.get("system", df["system"].dropna().mode()[0] if "system" in df.columns and not df["system"].isna().all() else "")),
-                                "old_role": old_role, "old_date": previous_extraction_date or "",
-                                "new_role": new_role, "new_date": current_extraction_date or "",
-                            })
-                    # Escalade de privilège : signal plus fort qu'un simple
-                    # "profil modifié" générique — un compte qui devient
-                    # privilégié entre deux revues mérite d'être identifié
-                    # nommément, pas seulement compté avec les autres
-                    # modifications de profil.
-                    was_privileged = bool(prev_row.get("is_privileged_flag", False))
-                    is_privileged_now = bool(curr_row.get("is_privileged_flag", False))
-                    if not was_privileged and is_privileged_now:
-                        escalated_accounts.append(str(uname))
-
-            reactivated, profile_modified = len(reactivated_accounts), len(profile_modified_accounts)
-            created_display = sorted(current_display[k] for k in created)
-            deleted_display = sorted(previous_display[k] for k in deleted)
-            stats.update({
-                "created": len(created), "deleted": len(deleted),
-                "reactivated": reactivated, "profile_modified": profile_modified,
-                "privilege_escalation": len(escalated_accounts),
-                "created_accounts": created_display, "deleted_accounts": deleted_display,
-                "reactivated_accounts": reactivated_accounts,
-                "profile_modified_accounts": profile_modified_accounts,
-                "privilege_escalation_accounts": escalated_accounts,
-                "profile_modified_detail": profile_modified_detail,
-                "reactivated_detail": reactivated_detail,
-            })
+            stats = _compute_comparison_stats(
+                df, previous_df,
+                current_extraction_date=current_extraction_date,
+                previous_extraction_date=previous_extraction_date,
+            )
+            # Récupérer les valeurs depuis stats pour l'affichage
+            created            = stats.get("created") or 0
+            deleted            = stats.get("deleted") or 0
+            reactivated        = stats.get("reactivated") or 0
+            profile_modified   = stats.get("profile_modified") or 0
+            escalated_accounts = stats.get("privilege_escalation_accounts") or []
+            reactivated_accounts     = stats.get("reactivated_accounts") or []
+            profile_modified_accounts = stats.get("profile_modified_accounts") or []
+            profile_modified_detail   = stats.get("profile_modified_detail") or []
+            reactivated_detail        = stats.get("reactivated_detail") or []
+            created_display    = stats.get("created_accounts") or []
+            deleted_display    = stats.get("deleted_accounts") or []
             diff_rows = [
                 ["Indicator", "Count"],
-                ["Accounts created", str(len(created))],
-                ["Accounts deleted", str(len(deleted))],
+                ["Accounts created",    str(created)],
+                ["Accounts deleted",    str(deleted)],
                 ["Reactivated accounts", str(reactivated)],
-                ["Profile Modified", str(profile_modified)],
+                ["Profile Modified",    str(profile_modified)],
                 ["Privilege Escalation", str(len(escalated_accounts))],
             ]
             diff_table = Table(diff_rows, colWidths=[available_width * 0.6, available_width * 0.4])
@@ -1603,6 +1782,12 @@ def _build_section_18_word(doc, df, terminated_df, transferred_df, is_finding_ac
     _add_owner_table()
     doc.add_paragraph()
     p3 = doc.add_paragraph(); p3.add_run("FINDING — Find below the possible Transfered employee(s) still active on the system, please investigate to identify the relevant one and take appropriate action when possible.").bold = True
+    if "is_transferred_but_active" not in active_only.columns and transferred_df is not None and len(transferred_df) > 0:
+        try:
+            from analysis.hr_crossref import flag_transferred_but_still_active as _ftba_w
+            active_only = _ftba_w(active_only.copy(), transferred_df)
+        except Exception:
+            pass
     trans_finding = (active_only[active_only["is_transferred_but_active"]==True]
                      if "is_transferred_but_active" in active_only.columns else None)
     _add_finding_table(trans_finding)

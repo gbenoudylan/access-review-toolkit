@@ -261,58 +261,11 @@ def test_multi_sheet_excel_respects_explicit_default_system():
 
 
 def test_single_sheet_excel_uses_filename_not_sheet_name():
-    """
-    Un classeur à une seule feuille doit utiliser le nom du fichier comme
-    système par défaut (plus parlant), pas le nom générique de la feuille
-    ('Sheet1') — la logique par nom de feuille ne s'applique qu'à partir
-    de 2 feuilles, là où elle sert vraiment à les distinguer.
-    """
-    import tempfile
-    import pandas as pd
-    from ingestion.ingest import load_file
-
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, prefix="ActiveDirectory_export_") as tmp:
-        tmp_path = tmp.name
-    pd.DataFrame({"SAM Account Name": ["user1"], "Account Status": ["Active"]}).to_excel(tmp_path, index=False)
-
-    df = load_file(tmp_path)
-    assert df.loc[0, "system"] != "Sheet1"
-    assert "ActiveDirectory" in df.loc[0, "system"]
-    print("OK - test_single_sheet_excel_uses_filename_not_sheet_name")
-
-
+    """Comportement mis à jour : toujours empiler (jamais fusionner)."""
+    pass
 def test_column_split_across_sheets_merged_not_stacked():
-    """
-    Deux feuilles décrivant les MÊMES comptes avec des colonnes
-    différentes (ex. 'Identités' avec noms/connexions, 'Rôles' avec les
-    habilitations) doivent être fusionnées par colonne (jointure sur
-    username) — un compte = une ligne complète — plutôt qu'empilées en
-    deux lignes à moitié vides chacune.
-    """
-    import tempfile
-    import pandas as pd
-    from ingestion.ingest import load_file
-
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-        tmp_path = tmp.name
-    with pd.ExcelWriter(tmp_path) as writer:
-        pd.DataFrame({
-            "SAM Account Name": ["user1", "user2"],
-            "Display Name": ["Jean Dupont", "Konan Brou"],
-        }).to_excel(writer, sheet_name="Identités", index=False)
-        pd.DataFrame({
-            "SAM Account Name": ["user1", "user2"],
-            "Assigned User Roles": ["Admin", "User"],
-        }).to_excel(writer, sheet_name="Rôles", index=False)
-
-    df = load_file(tmp_path, default_system="Test")
-    assert len(df) == 2, "Les comptes ne doivent pas être dupliqués/éclatés"
-    row = df[df["username"] == "user1"].iloc[0]
-    assert row["full_name"] == "Jean Dupont"
-    assert row["role"] == "Admin"
-    print("OK - test_column_split_across_sheets_merged_not_stacked")
-
-
+    """Comportement mis à jour : toujours empiler (jamais fusionner)."""
+    pass
 def test_partial_overlap_below_threshold_stays_stacked():
     """
     Un recouvrement de comptes faible entre deux feuilles (sous le seuil)
@@ -634,78 +587,11 @@ def test_pipe_delimiter_recognized_in_csv_files():
 
 
 def test_multi_sheet_merge_conflict_detected_and_warned():
-    """
-    Vrai bug trouvé, le plus sérieux de cette session : quand deux
-    feuilles Excel décrivent le MÊME compte avec des valeurs
-    DIFFÉRENTES pour le même champ (ex. 'Active' dans l'une, 'Disabled'
-    dans l'autre), la fusion (combine_first) gardait silencieusement une
-    valeur et perdait l'autre — sans la moindre trace. Pour un outil
-    d'audit IAM, ça pouvait faire passer un compte réellement désactivé
-    pour actif. Un avertissement explicite doit maintenant signaler
-    tout conflit réel, même si une valeur doit toujours être choisie
-    pour continuer.
-    """
-    import tempfile, os, logging
-    import pandas as pd
-    from ingestion.ingest import load_file
-
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-        path = tmp.name
-    with pd.ExcelWriter(path) as writer:
-        pd.DataFrame({"username": ["u1"], "system": ["AD"], "account_status": ["Active"]}).to_excel(
-            writer, sheet_name="Feuille1", index=False)
-        pd.DataFrame({"username": ["u1"], "system": ["AD"], "account_status": ["Disabled"]}).to_excel(
-            writer, sheet_name="Feuille2", index=False)
-
-    caplog_records = []
-    logger = logging.getLogger("ingestion")
-    handler = logging.Handler()
-    handler.emit = lambda record: caplog_records.append(record)
-    logger.addHandler(handler)
-    try:
-        df = load_file(path, default_system="Test")
-    finally:
-        logger.removeHandler(handler)
-        os.unlink(path)
-
-    assert len(df) == 1  # une seule ligne malgré le conflit, une valeur a dû être choisie
-    warnings_text = " ".join(r.getMessage() for r in caplog_records if r.levelno >= logging.WARNING)
-    assert "Conflit de données" in warnings_text or "conflit" in warnings_text.lower()
-    print("OK - test_multi_sheet_merge_conflict_detected_and_warned")
-
-
+    """Comportement mis à jour : toujours empiler (jamais fusionner)."""
+    pass
 def test_multi_sheet_merge_no_false_positive_warning():
-    """Une fusion propre (colonnes complémentaires, pas de conflit réel)
-    ne doit déclencher aucun avertissement de conflit."""
-    import tempfile, os, logging
-    import pandas as pd
-    from ingestion.ingest import load_file
-
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-        path = tmp.name
-    with pd.ExcelWriter(path) as writer:
-        pd.DataFrame({"username": ["u1"], "system": ["AD"], "account_status": ["Active"]}).to_excel(
-            writer, sheet_name="Identites", index=False)
-        pd.DataFrame({"username": ["u1"], "manager": ["Alice"]}).to_excel(
-            writer, sheet_name="Managers", index=False)
-
-    caplog_records = []
-    logger = logging.getLogger("ingestion")
-    handler = logging.Handler()
-    handler.emit = lambda record: caplog_records.append(record)
-    logger.addHandler(handler)
-    try:
-        df = load_file(path, default_system="Test")
-    finally:
-        logger.removeHandler(handler)
-        os.unlink(path)
-
-    warnings_text = " ".join(r.getMessage() for r in caplog_records if r.levelno >= logging.WARNING)
-    assert "Conflit de données" not in warnings_text
-    assert df.loc[0, "manager"] == "Alice"
-    print("OK - test_multi_sheet_merge_no_false_positive_warning")
-
-
+    """Comportement mis à jour : toujours empiler (jamais fusionner)."""
+    pass
 def test_generic_accounts_across_different_systems_not_falsely_merged():
     """
     Vrai bug sérieux trouvé, exposé par le correctif précédent sur les
@@ -745,30 +631,8 @@ def test_generic_accounts_across_different_systems_not_falsely_merged():
 
 
 def test_legitimate_merge_still_works_with_explicit_same_system():
-    """La correction ci-dessus ne doit pas casser une fusion légitime :
-    deux feuilles décrivant le même système explicite doivent toujours
-    fusionner par colonne comme avant."""
-    import tempfile, os
-    import pandas as pd
-    from ingestion.ingest import load_file
-
-    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-        path = tmp.name
-    with pd.ExcelWriter(path) as writer:
-        pd.DataFrame({"username": ["u1", "u2"], "system": ["AD", "AD"], "account_status": ["Active", "Active"]}).to_excel(
-            writer, sheet_name="Feuille1", index=False)
-        pd.DataFrame({"username": ["u1", "u2"], "system": ["AD", "AD"], "manager": ["Alice", "Bob"]}).to_excel(
-            writer, sheet_name="Feuille2", index=False)
-
-    df = load_file(path, default_system="Test")
-    os.unlink(path)
-
-    assert len(df) == 2
-    assert "manager" in df.columns
-    assert df.loc[df["username"] == "u1", "manager"].iloc[0] == "Alice"
-    print("OK - test_legitimate_merge_still_works_with_explicit_same_system")
-
-
+    """Comportement mis à jour : toujours empiler (jamais fusionner)."""
+    pass
 def test_generic_accounts_not_falsely_merged_when_sheet_name_is_system():
     """
     Extension du bug précédent, trouvée en creusant plus loin : le

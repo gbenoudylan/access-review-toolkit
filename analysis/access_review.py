@@ -67,9 +67,9 @@ PRIVILEGED_VALUES = {"oui", "yes", "y", "true", "1", "admin", "administrateur"}
 NEVER_EXPIRES_VALUES = {"never expires", "n'expire jamais", "never", "jamais", "no expiry", "does not expire"}
 
 # Format "Generalized Time" utilisé par LDAP/Active Directory pour les dates
-# (ex. whenChanged, whenCreated) : YYYYMMDDHHMMSS[.f]Z — non reconnu
-# automatiquement par le parseur de dates générique de pandas.
-_LDAP_GENERALIZED_TIME_RE = re.compile(r"^(\d{14})(\.\d+)?Z?$")
+# (ex. whenChanged, whenCreated) : YYYYMMDDHHMMSS[.f][Z|+HHMM|-HHMM]
+# Supporte maintenant le timezone offset (+0000, -0500, etc.)
+_LDAP_GENERALIZED_TIME_RE = re.compile(r"^(\d{14})(\.\d+)?(Z|[+-]\d{4})?$")
 # Nombre isolé (sans jour de semaine ni mois) suivi d'une heure, d'un
 # fuseau horaire explicite et d'une année — ex. '4 20:09:01 +0000 2025'.
 # Rencontré en pratique sur des exports où le jour de semaine ET le mois
@@ -503,6 +503,14 @@ def _days_since(
         except ValueError:
             return None
 
+    # YYYYMMDD sans heure (ex. "20260622") — 8 chiffres seuls
+    if re.fullmatch(r"\d{8}", text_value):
+        try:
+            parsed_dt = datetime.strptime(text_value, "%Y%m%d")
+            return (reference_datetime - parsed_dt).days
+        except ValueError:
+            pass
+
     # Numéro de série Excel (ex. 45678) : un export Excel dont la colonne
     # a perdu son format "Date" affiche parfois le nombre brut de jours
     # depuis le 30/12/1899. pd.to_datetime() sur un simple entier
@@ -545,47 +553,80 @@ def _days_since(
     translated_text = _translate_french_month(text_value)
     parse_input = translated_text if translated_text != text_value else date_value
 
-    # Date sans année (ex. 'Fri Jan 17 16:05', horodatage type journal
-    # système) : pandas ne suppose PAS l'année courante par défaut, mais
-    # l'année 1 (0001) — une date absurdement lointaine, sans la moindre
-    # erreur visible. On détecte l'absence de toute séquence à 4 chiffres
-    # et on corrige après coup vers l'occurrence la plus récente plausible
-    # (année courante, ou l'année précédente si ça tomberait dans le futur).
+    # Date sans année (ex. 'Fri Jan 17 16:05') : pandas suppose l'année 1.
     has_no_year = not re.search(r"\d{4}", text_value)
 
+    # ── Stratégie 1 : pandas avec la convention détectée ──────────────
     try:
         import warnings
         with warnings.catch_warnings():
-            # dayfirst=True est sans effet sur un format déjà non ambigu
-            # (ISO, ou timestamp Excel/pandas) ; pandas émet un avertissement
-            # informatif dans ce cas précis, sans rapport avec un vrai risque
-            # d'erreur — supprimé ici pour ne pas polluer les journaux.
             warnings.filterwarnings("ignore", message=".*dayfirst.*")
-            # Précision sub-microseconde (ex. 9 décimales) sans incidence
-            # sur un calcul d'ancienneté en jours — pandas tronque
-            # silencieusement le surplus et avertit, sans rapport avec un
-            # vrai risque d'erreur pour cet usage.
             warnings.filterwarnings("ignore", message=".*nanoseconds.*")
             parsed = pd.to_datetime(
                 parse_input, errors="coerce",
                 dayfirst=dayfirst and not year_first,
                 yearfirst=year_first and not year_first_4digit,
             )
-            if pd.isna(parsed):
-                return None
-            parsed_dt = parsed.to_pydatetime().replace(tzinfo=None)
-        if has_no_year and parsed_dt.year < 1900:
-            candidate = parsed_dt.replace(year=reference_datetime.year)
-            # Comparaison au jour près, pas à l'heure près : un horodatage
-            # simplement "plus tard aujourd'hui" ne doit pas déclencher un
-            # recul d'une année entière (seule une date réellement future
-            # — demain ou après — le justifie).
-            if candidate.date() > reference_datetime.date():
-                candidate = candidate.replace(year=candidate.year - 1)
-            parsed_dt = candidate
+            if not pd.isna(parsed):
+                parsed_dt = parsed.to_pydatetime().replace(tzinfo=None)
+                if has_no_year and parsed_dt.year < 1900:
+                    candidate = parsed_dt.replace(year=reference_datetime.year)
+                    if candidate.date() > reference_datetime.date():
+                        candidate = candidate.replace(year=candidate.year - 1)
+                    parsed_dt = candidate
+                return (reference_datetime - parsed_dt).days
+    except Exception:
+        pass
+
+    # ── Stratégie 2 : formats ISO et courants via liste exhaustive ─────
+    _EXPLICIT_FORMATS = [
+        # Avec heure + timezone offset
+        "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%d %H:%M:%S.%f%z",
+        "%d/%m/%Y %H:%M:%S%z", "%m/%d/%Y %H:%M:%S%z",
+        # Sans timezone
+        "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f",
+        "%d/%m/%Y %H:%M:%S", "%m/%d/%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M:%S", "%d.%m.%Y %H:%M:%S",
+        # Date seule
+        "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y",
+        "%d-%m-%Y", "%m-%d-%Y",
+        "%d.%m.%Y", "%Y.%m.%d",
+        "%d %b %Y", "%d %B %Y",
+        "%b %d, %Y", "%B %d, %Y",
+        "%b %d %Y", "%Y/%m/%d",
+        # Avec AM/PM
+        "%m/%d/%Y %I:%M:%S %p", "%d/%m/%Y %I:%M:%S %p",
+        "%m/%d/%Y %I:%M %p",
+    ]
+    clean = text_value.rstrip()
+    for fmt in _EXPLICIT_FORMATS:
+        try:
+            parsed_dt = datetime.strptime(clean, fmt)
+            if parsed_dt.tzinfo is not None:
+                parsed_dt = parsed_dt.replace(tzinfo=None)
+            return (reference_datetime - parsed_dt).days
+        except (ValueError, OverflowError):
+            continue
+
+    # ── Stratégie 3 : dateutil — fallback universel ─────────────────────
+    # dateutil.parser.parse reconnaît pratiquement tous les formats texte
+    # connus. C'est le filet de sécurité final avant d'abandonner.
+    try:
+        from dateutil import parser as _dateutil_parser
+        parsed_dt = _dateutil_parser.parse(
+            translated_text,
+            dayfirst=dayfirst,
+            yearfirst=year_first,
+            fuzzy=False,  # pas de fuzzy : évite de parser du texte non-date
+        )
+        parsed_dt = parsed_dt.replace(tzinfo=None)
         return (reference_datetime - parsed_dt).days
     except Exception:
-        return None
+        pass
+
+    return None
 
 
 # Un compte peut être signalé privilégié de deux façons différentes
@@ -779,19 +820,23 @@ def analyze_access(
 
     # ── Jours pré-calculés dans le fichier source ─────────────────────────────
     # Certains exports (Oracle BIB, TABS, etc.) fournissent directement
-    # "Days Since Last Login" comme colonne pré-calculée par le système source.
-    # On l'utilise en priorité : plus fiable que recalculer depuis une date brute
-    # avec des fuseaux horaires, des formats nanosecondes, etc.
+    # "Days Since Last Login" pré-calculé.
+    # ATTENTION : on ne l'utilise QUE quand la date brute (last_login_date) est
+    # absente. Si la date brute est présente, on recalcule TOUJOURS depuis cette
+    # date avec la date d'extraction fournie par l'utilisateur — les jours
+    # pré-calculés peuvent avoir été calculés à une date différente (ex. un export
+    # AD généré en 2026 sur des données de 2025 aura des jours calculés en 2026).
     if "days_since_last_login_precomputed" in df.columns:
         precomputed = pd.to_numeric(df["days_since_last_login_precomputed"], errors="coerce")
-        # Pour les lignes où le pré-calculé est disponible, l'utiliser en
-        # remplacement de ce qu'on a calculé depuis la date brute
         has_precomputed = precomputed.notna()
-        if has_precomputed.any():
-            df.loc[has_precomputed, "days_since_last_login"] = precomputed[has_precomputed]
+        # N'utiliser le pré-calculé que pour les lignes sans date brute exploitable
+        already_calculated = df["days_since_last_login"].notna()
+        use_precomputed = has_precomputed & ~already_calculated
+        if use_precomputed.any():
+            df.loc[use_precomputed, "days_since_last_login"] = precomputed[use_precomputed]
             logger.info(
-                f"Jours depuis dernière connexion pré-calculés utilisés pour "
-                f"{int(has_precomputed.sum())} compte(s) (colonne 'Days Since Last Login')."
+                f"Jours pré-calculés utilisés en fallback pour "
+                f"{int(use_precomputed.sum())} compte(s) sans date brute."
             )
 
     df["is_dormant"] = df["days_since_last_login"].apply(

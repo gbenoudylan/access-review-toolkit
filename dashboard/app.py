@@ -1063,20 +1063,6 @@ def main():
         with signoff_col3:
             approved_by = st.text_input("Approuvé par", placeholder="Nom, Prénom")
 
-    report_col1, report_col2, report_col3 = st.columns(3)
-    with report_col1:
-        if st.button("Générer le rapport Excel", use_container_width=True):
-            with st.spinner("Génération..."):
-                tmp_xlsx = Path(tempfile.gettempdir()) / "rapport_revue_acces.xlsx"
-                generate_excel_report(filtered, tmp_xlsx)
-                buf = BytesIO(tmp_xlsx.read_bytes())
-            st.download_button(
-                "Télécharger le rapport Excel", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "xlsx", extraction_origin=extraction_origin),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-
     def _resolve_previous_df_and_logo():
         previous_df = None
         previous_unmapped = []
@@ -1128,6 +1114,28 @@ def main():
             if default_logo.exists():
                 logo_path = str(default_logo)
         return previous_df, logo_path, previous_unmapped
+
+    report_col1, report_col2, report_col3 = st.columns(3)
+    with report_col1:
+        if st.button("Générer le rapport Excel", use_container_width=True):
+            with st.spinner("Génération..."):
+                tmp_xlsx = Path(tempfile.gettempdir()) / "rapport_revue_acces.xlsx"
+                previous_df_xl, _, previous_date_xl = _resolve_previous_df_and_logo()
+                generate_excel_report(
+                    filtered, tmp_xlsx,
+                    period=period_label or "",
+                    application_scope=application_scope or "",
+                    current_extraction_date=extraction_date.strftime("%d/%m/%Y") if extraction_date else "",
+                    previous_df=previous_df_xl,
+                    previous_extraction_date=previous_date_xl or "",
+                )
+                buf = BytesIO(tmp_xlsx.read_bytes())
+            st.download_button(
+                "Télécharger le rapport Excel", data=buf.getvalue(),
+                file_name=default_report_filename(filtered, "xlsx", extraction_origin=extraction_origin),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
     def _load_hr_df(uploaded_file_obj):
         """Charge un fichier RH (terminated ou transferred) en DataFrame brut."""

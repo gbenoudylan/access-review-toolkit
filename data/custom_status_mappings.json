@@ -4,5 +4,10 @@
   "offline locked": "inactive",
   "false": "inactive",
   "locked": "inactive",
-  "true": "active"
+  "true": "active",
+  "unlocked": "active",
+  "activated": "active",
+  "deactivated": "inactive",
+  "ps": "active",
+  "lk": "inactive"
 }

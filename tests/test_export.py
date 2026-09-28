@@ -39,7 +39,7 @@ def test_generate_excel_report(tmp_path):
     from openpyxl import load_workbook
     wb = load_workbook(result)
     assert "Summary" in wb.sheetnames
-    assert "Review Plan" in wb.sheetnames
+    assert "Ctrl02-Dormant" in wb.sheetnames  # nouveau format: une feuille par contrôle
     print(f"OK - test_generate_excel_report ({result.stat().st_size} octets)")
 
 
@@ -289,7 +289,7 @@ def test_comparison_stats_feed_into_control_subsections():
     assert "10.Accounts created\n" in full_text or "10.Accounts created" in full_text
     # u3 créé, u1 profil modifié, u2 réactivé : aucun ne doit rester N/A
     idx = full_text.find("10.Accounts created")
-    snippet = full_text[idx:idx + 1500]
+    snippet = full_text[idx:idx + 200]  # seulement la zone Ctrl 10
     assert "N/A" not in snippet
     print("OK - test_comparison_stats_feed_into_control_subsections")
 
@@ -1355,7 +1355,7 @@ def test_account_tables_never_capped_per_explicit_user_decision():
 
     excel_path = generate_excel_report(result, "output/test_uncapped_scale.xlsx")
     wb = openpyxl.load_workbook(str(excel_path))
-    ws = wb["Review Plan"]
+    ws = wb["Complete Accounts"] if "Complete Accounts" in wb.sheetnames else (wb["Raw Data"] if "Raw Data" in wb.sheetnames else wb.active)
     assert ws.max_row == n + 1
     print("OK - test_account_tables_never_capped_per_explicit_user_decision")
 

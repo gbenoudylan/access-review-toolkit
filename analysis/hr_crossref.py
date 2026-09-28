@@ -382,8 +382,16 @@ def _find_column(
 # mouvement) : la RH y suit les personnes par NOM, jamais par identifiant
 # technique partagé avec l'IAM.
 _TRANSFER_NAME_COLUMNS = [
+    # Variantes longues
     "nom & prénoms", "nom et prénoms", "noms & prénoms", "nom prénoms",
     "nom & prenoms", "nom et prenoms", "nom complet", "full name",
+    "full_name", "fullname", "employee name", "employee_name",
+    "nom prénom", "prénom nom", "prenom nom", "nom prenom",
+    # Variantes COURTES — colonne "Name" ou "Nom" seuls (cas le plus fréquent)
+    "name", "nom", "noms", "names",
+    # Variantes francophones/africaines
+    "nom & prénom", "agent", "collaborateur", "employe", "employé",
+    "personnel", "salarie", "salarié", "identite", "identité",
 ]
 _TRANSFER_OLD_DEPT_COLUMNS = ["ancienne direction", "ancien departement", "old department", "ancien service"]
 _TRANSFER_NEW_DEPT_COLUMNS = ["nouvelle direction", "nouveau departement", "new department", "nouveau service"]

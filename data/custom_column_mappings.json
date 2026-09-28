@@ -7,11 +7,21 @@
   "node": "system",
   "expiry status": "account_status",
   "host": "system",
-  "expiry date": "last_login_date",
   "user logon": "username",
   "user status": "account_status",
   "member of group": "user_rights",
   "ou name": "user_rights",
   "last logon time": "last_login_date",
-  "profile": "user_rights"
+  "profile": "user_rights",
+  "role": "user_rights",
+  "hostname": "system",
+  "userid": "username",
+  "group id": "user_rights",
+  "samaccount": "username",
+  "createtimestamp": "account_created_date",
+  "pwdchangedtime": "password_last_set",
+  "sudo   privileges": "user_rights",
+  "user group": "user_rights",
+  "creation time": "account_created_date",
+  "latest login time": "last_login_date"
 }

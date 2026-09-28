@@ -14,6 +14,7 @@ COLUMN_MAPPING = {
         "nom d'utilisateur", "nom utilisateur", "identifiant utilisateur",
         "samaccountname", "uid",  # attributs LDAP/AD (LDIF)
         "sam account name", "logon name", "user logon name",  # variantes espacées (exports AD)
+        "samaccount",  # export Oracle Identity Manager (colonne "SAMACCOUNT", sans le suffixe "NAME")
         "userprincipalname",  # variante sans espace (export AD/Azure hybride)
         "user name",  # variante espacée très courante (ex. exports Windows/IAM génériques)
     ],
@@ -30,6 +31,8 @@ COLUMN_MAPPING = {
         "nom prenom", "employee_name",
         "displayname", "sn", "cn",  # LDAP
         "display name",  # variante espacée (export AD)
+        "samaccount2",  # export Oracle Identity Manager — second identifiant,
+        # observé porteur du nom affiché (qualité variable selon les comptes).
     ],
     "first_name": [
         # Séparé de 'full_name' : quand un export ne fournit que prénom/nom
@@ -112,6 +115,9 @@ COLUMN_MAPPING = {
         "account_status", "status", "statut", "etat_compte", "compte_status",
         "account_enabled", "statut_compte", "statut compte", "etat du compte",
         "useraccountcontrol",  # LDAP (décodé au parsing LDIF, voir ingestion)
+        "obuseraccountcontrol",  # export Oracle Identity Manager — équivalent
+        # fonctionnel de useraccountcontrol, mais déjà en clair ("activated"/
+        # "deactivated") : pas de décodage bit à bit à appliquer ici.
         "accountstatus",  # variante sans espace
         "identity accountstate",  # export IAM type WSO2 ('identity/accountState')
         "enabled", "is_enabled",  # PKI / AD exports (True/False) — NOM de colonne uniquement
@@ -129,13 +135,19 @@ COLUMN_MAPPING = {
         "account_lockout", "is_lockedout",
     ],
     "last_login_date": [
-        "last login (raw)", "last login raw", "latest login", "latest login date",  # export Oracle BIB/TABS/GGATE
+        "last login (raw)", "last login raw", "latest login", "latest login date", "latest login time",  # GUI NMS  # export Oracle BIB/TABS/GGATE
         "last_login_date", "last_login", "derniere_connexion",
         "date_derniere_connexion", "last_logon",
         "lastlogontimestamp", "whenchanged",  # LDAP
         "lastlogondate",  # variante sans espace
         "when changed",   # variante espacée
         "identity lastlogintime",  # export IAM type WSO2 ('identity/lastLoginTime')
+        "lastlogon",  # variante sans espace/underscore (export Oracle Identity Manager) —
+        # seule variante ajoutée pour ce type d'export : contrairement à
+        # whenChanged/modifyTimestamp (horodatage de toute modification, pas
+        # forcément une connexion), LastLogon reflète une vraie activité
+        # utilisateur. Mapper modifyTimestamp ici aussi créerait un conflit
+        # de colonnes dupliquées où la mauvaise valeur écraserait la bonne.
         # Oracle EBS : MODIFICATION_DATE est la dernière date de modification du
         # compte (changement de rôle, réinitialisation mdp...) — utilisée comme
         # proxy de dernière activité quand last_login_date n'est pas disponible
@@ -145,12 +157,14 @@ COLUMN_MAPPING = {
         "modified_date", "date_modif",
     ],
     "account_created_date": [
+        "creation time", "created time", "creation date",  # GUI NMS / NE exports
         "user created", "user creation date", "created date",
         "account_created_date", "date_creation", "created_date", "creation_date",
         "date_creation_compte",
         "whencreated",  # LDAP
         "when created",  # variante espacée (export AD) — score fuzzy insuffisant sans elle
         "created",  # mot seul (export SIEM/base de données)
+        "createtimestamp",  # attribut LDAP standard (Oracle Identity Manager, OpenLDAP...)
     ],
     "account_expiry_date": [
         "account_expiry_date", "account expiry date", "account expiry time",
@@ -175,6 +189,7 @@ COLUMN_MAPPING = {
         # ('identity/lastPasswordUpdateTime') — critique : sans cette
         # variante, le contrôle d'âge des mots de passe est
         # silencieusement désactivé sur ce type d'export.
+        "pwdchangedtime",  # attribut LDAP standard (Oracle Identity Manager)
     ],
     "password_expiry_date": [
         "password_expiry_date", "password expiry date", "expiration_mdp",
