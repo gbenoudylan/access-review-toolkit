@@ -23,5 +23,9 @@
   "sudo   privileges": "user_rights",
   "user group": "user_rights",
   "creation time": "account_created_date",
-  "latest login time": "last_login_date"
+  "latest login time": "last_login_date",
+  "group": "user_rights",
+  "pwdchange": "password_last_set",
+  "gecos": "description",
+  "pwdlock": "account_status"
 }

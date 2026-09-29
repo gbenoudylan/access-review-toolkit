@@ -64,10 +64,11 @@ TEMPLATE_CONTROLS = [
      "Accounts deleted since the previous review/Ensure all deletion are done according the "
      "process(Keep the justification)."),
     (14, "Expired password(Password age> 90days)",
-     "Password ages, calculated since the last modification, to detect accounts with a password "
-     "age greater than 90 days./Except service account ,All accounts that the age exceed 90 days "
-     "must be changed or disable.Any account that is exceptional must be recorded for "
-     "documentation."),
+     "Expectations: Except service accounts , all active user accounts must have a password "
+     "changed within the last 90 days. Accounts with expired passwords must be flagged to the "
+     "system owner for immediate reset or formal justification.\n"
+     " All services accounts must be changed on annually basis.\n"
+     "Note:As per policy , password of service account must be changed every 365 days"),
     (15, "3PP (Third-Party Personnel)",
      "Owner must identify the account belong to contractors, consultants, vendors, or external "
      "parties and confirm active contracts between MTN and third party and all active users are "
@@ -215,9 +216,7 @@ CONTROL_SUBSECTIONS = [
      "or access removal request. Unexpected deletions must be investigated.",
      "_deleted"),
     (14, "Expired password(Password age> 90days)",
-     "Expectations: All active user accounts must have a password changed within the "
-     "last 90 days. Accounts with expired passwords must be flagged to the system "
-     "owner for immediate reset or formal justification.",
+     "Expectations: Except service accounts , all active user accounts must have a password changed within the last 90 days. Accounts with expired passwords must be flagged to the system owner for immediate reset or formal justification.\n All services accounts must be changed on annually basis.\nNote:As per policy , password of service account must be changed every 365 days",
      "is_password_stale"),
     (15, "3PP (Third-Party Personnel)",
      "Expectations: Third-party accounts must be time-limited, regularly reviewed, "

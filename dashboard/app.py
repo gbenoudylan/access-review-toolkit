@@ -466,13 +466,16 @@ def main():
                  "plusieurs de ces fichiers.",
         )
         default_system = st.text_input(
-            "Nom du système (si absent du fichier)",
-            placeholder="ex. Active Directory, SIEM, CRM...",
-            help="Certains exports bruts (ex. extraction AD pure) ne "
-                 "précisent pas eux-mêmes de quel système ils viennent. "
-                 "Renseigne un nom ici s'il manque — sinon, le nom du "
-                 "fichier sera utilisé par défaut.",
+            "Nom du système / Périmètre",
+            placeholder="ex. Active Directory, BSS Seamfix, SIEM...",
+            help="Utilisé à deux endroits :\n"
+                 "• Comme système par défaut quand le fichier n'en précise pas.\n"
+                 "• Comme périmètre dans l'en-tête du rapport et dans le nom des fichiers générés "
+                 "(remplace 'Multi-systemes' quand plusieurs systèmes sont détectés).",
         )
+        # Alias utilisés dans la section rapport (application_scope)
+        # et pour le nommage des fichiers — valeur unique, saisie une seule fois.
+        application_scope = default_system
         extraction_date = st.date_input(
             "Date d'extraction de ce fichier", value=datetime.now().date(),
             help="Si ce fichier n'a pas été extrait aujourd'hui (revue d'une "
@@ -666,8 +669,14 @@ def main():
     all_main_raw_columns = [c for c in list(full_column_mapping.keys()) + [
         c for c in unmapped_columns if c not in full_column_mapping
     ] if _is_valid_col(c)]
+    # Toujours inclure TOUTES les colonnes brutes du fichier, qu'elles
+    # soient reconnues ou non — l'utilisateur doit pouvoir les configurer
+    raw_source_cols = df.attrs.get("raw_columns", []) or []
+    for _rc in raw_source_cols:
+        if _is_valid_col(_rc) and _rc not in all_main_raw_columns and _rc not in _INTERNAL_COLS:
+            all_main_raw_columns.append(_rc)
     if not all_main_raw_columns:
-        all_main_raw_columns = [c for c in df.columns if _is_valid_col(c)]
+        all_main_raw_columns = [c for c in df.columns if _is_valid_col(c) and c not in _INTERNAL_COLS]
 
     if missing_required:
         # Un champ indispensable (ex. 'username') reste introuvable même
@@ -1035,7 +1044,7 @@ def main():
         header_col1, header_col2 = st.columns(2)
         with header_col1:
             department = st.text_input("Département émetteur", placeholder="ex. Technology Department")
-            application_scope = st.text_input("Périmètre / Application", placeholder="ex. Active Directory")
+            # application_scope est défini dans la sidebar (champ "Nom du système / Périmètre")
             extraction_origin = st.text_input(
                 "Origine de l'extraction (nom du fichier)", placeholder="ex. Extraction ServiceNow mensuelle",
                 help="Remplace le nom de système déduit automatiquement dans le nom du fichier "
@@ -1132,7 +1141,7 @@ def main():
                 buf = BytesIO(tmp_xlsx.read_bytes())
             st.download_button(
                 "Télécharger le rapport Excel", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "xlsx", extraction_origin=extraction_origin),
+                file_name=default_report_filename(filtered, "xlsx", extraction_origin=extraction_origin, application_scope=application_scope),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
@@ -1181,7 +1190,7 @@ def main():
                 buf = BytesIO(tmp_pdf.read_bytes())
             st.download_button(
                 "Télécharger le rapport PDF", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "pdf", extraction_origin=extraction_origin), mime="application/pdf",
+                file_name=default_report_filename(filtered, "pdf", extraction_origin=extraction_origin, application_scope=application_scope), mime="application/pdf",
                 use_container_width=True,
             )
     with report_col3:
@@ -1213,7 +1222,7 @@ def main():
                 buf = BytesIO(tmp_docx.read_bytes())
             st.download_button(
                 "Télécharger le rapport Word", data=buf.getvalue(),
-                file_name=default_report_filename(filtered, "docx", extraction_origin=extraction_origin),
+                file_name=default_report_filename(filtered, "docx", extraction_origin=extraction_origin, application_scope=application_scope),
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
             )

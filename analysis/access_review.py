@@ -444,7 +444,7 @@ def _days_since(
             if parsed_dt.tzinfo is not None:
                 parsed_dt = parsed_dt.tz_convert("UTC").tz_localize(None)
             ref_naive = reference_datetime.replace(tzinfo=None)
-            return (ref_naive - parsed_dt.to_pydatetime()).days
+            return (ref_naive.date() - parsed_dt.to_pydatetime().date()).days
         except Exception:
             pass
 
@@ -465,7 +465,7 @@ def _days_since(
             if parsed_dt.tzinfo is not None:
                 parsed_dt = parsed_dt.tz_convert("UTC").tz_localize(None)
             ref_naive = reference_datetime.replace(tzinfo=None)
-            return (ref_naive - parsed_dt.to_pydatetime()).days
+            return (ref_naive.date() - parsed_dt.to_pydatetime().date()).days
         except Exception:
             pass
 
@@ -499,7 +499,7 @@ def _days_since(
     if ldap_match:
         try:
             parsed_dt = datetime.strptime(ldap_match.group(1), "%Y%m%d%H%M%S")
-            return (reference_datetime - parsed_dt).days
+            return (reference_datetime.date() - parsed_dt.date()).days
         except ValueError:
             return None
 
@@ -507,7 +507,7 @@ def _days_since(
     if re.fullmatch(r"\d{8}", text_value):
         try:
             parsed_dt = datetime.strptime(text_value, "%Y%m%d")
-            return (reference_datetime - parsed_dt).days
+            return (reference_datetime.date() - parsed_dt.date()).days
         except ValueError:
             pass
 
@@ -525,7 +525,7 @@ def _days_since(
         if 32874 <= serial <= 73050:  # ~ 01/01/1990 à 01/01/2100
             excel_epoch = datetime(1899, 12, 30)
             parsed_dt = excel_epoch + pd.Timedelta(days=serial)
-            return (reference_datetime - parsed_dt).days
+            return (reference_datetime.date() - parsed_dt.date()).days
         return None  # nombre hors plage plausible : probablement pas une date
 
     # dayfirst=True lève l'ambiguïté JJ/MM (voir plus haut), mais appliqué
@@ -574,7 +574,7 @@ def _days_since(
                     if candidate.date() > reference_datetime.date():
                         candidate = candidate.replace(year=candidate.year - 1)
                     parsed_dt = candidate
-                return (reference_datetime - parsed_dt).days
+                return (reference_datetime.date() - parsed_dt.date()).days
     except Exception:
         pass
 
@@ -606,7 +606,7 @@ def _days_since(
             parsed_dt = datetime.strptime(clean, fmt)
             if parsed_dt.tzinfo is not None:
                 parsed_dt = parsed_dt.replace(tzinfo=None)
-            return (reference_datetime - parsed_dt).days
+            return (reference_datetime.date() - parsed_dt.date()).days
         except (ValueError, OverflowError):
             continue
 
@@ -622,7 +622,7 @@ def _days_since(
             fuzzy=False,  # pas de fuzzy : évite de parser du texte non-date
         )
         parsed_dt = parsed_dt.replace(tzinfo=None)
-        return (reference_datetime - parsed_dt).days
+        return (reference_datetime.date() - parsed_dt.date()).days
     except Exception:
         pass
 
@@ -1130,7 +1130,10 @@ def analyze_access(
 
     df["is_password_stale"] = df["days_since_password_change"].apply(
         lambda d: d is not None and d > password_stale_threshold_days
-    ) | df["password_change_unknown"]
+    )
+    # Les dates inconnues sont traitées comme stale (pire cas audit)
+    if "password_change_unknown" in df.columns:
+        df["is_password_stale"] = df["is_password_stale"] | df["password_change_unknown"]
 
     if "password_status" in df.columns:
         df["has_non_expiring_password"] = df["password_status"].apply(_has_non_expiring_password)
@@ -1144,6 +1147,25 @@ def analyze_access(
     # suppression pure et simple).
     if "username" in df.columns:
         df["is_service_account"] = df["username"].apply(_is_service_account_name)
+        # Recalcul is_password_stale pour les comptes de service : seuil 365j
+        # Selon la politique : password de compte de service changé annuellement
+        _SERVICE_PWD_THRESHOLD = 365
+        if "days_since_password_change" in df.columns:
+            _svc_m = df["is_service_account"].astype(bool)
+            # Flag dédié pour l'affichage en section B du Ctrl 14
+            df["is_service_password_stale"] = (
+                _svc_m
+                & df["days_since_password_change"].apply(
+                    lambda d: d is not None and d > _SERVICE_PWD_THRESHOLD
+                )
+            )
+            if "password_change_unknown" in df.columns:
+                df["is_service_password_stale"] = (
+                    df["is_service_password_stale"]
+                    | (_svc_m & df["password_change_unknown"])
+                )
+            # Remplacer is_password_stale pour les comptes de service par le seuil 365j
+            df.loc[_svc_m, "is_password_stale"] = df.loc[_svc_m, "is_service_password_stale"]
         # Contrôle 4 (Test Accounts) : indice par convention de nommage
         # uniquement — jamais traité comme une certitude (voir _TEST_ACCOUNT_RE).
         df["is_test_account"] = df["username"].apply(_is_test_account_name)

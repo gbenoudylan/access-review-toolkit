@@ -168,6 +168,37 @@ def _match_column(
     return None
 
 
+def _derive_username_from_homedir(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fallback : si pas de colonne 'username' mais 'homedir' présente,
+    dérive le username depuis le dernier composant du chemin.
+    Ex. /home/svc_btpwspra → svc_btpwspra, /root → root.
+    Utilisé pour les exports BSS Q2 sans colonne USER/HOSTNAME.
+    """
+    if "username" in df.columns:
+        return df
+    # Chercher une colonne homedir
+    homedir_col = None
+    for col in df.columns:
+        if str(col).strip().lower() in ("homedir","home_dir","home dir","home directory","homedirectory"):
+            homedir_col = col
+            break
+    if homedir_col is None:
+        return df
+    def _extract(path):
+        if not path or str(path).strip().lower() in ("nan","none",""):
+            return None
+        p = str(path).strip().rstrip("/")
+        return p.split("/")[-1] or None
+    df = df.copy()
+    df["username"] = df[homedir_col].apply(_extract)
+    logger.info(
+        f"Username dérivé de '{homedir_col}' (colonne USER absente) — "
+        "vérifier si l'export est au format BSS Q2."
+    )
+    return df
+
+
 def _fix_generic_username(df: pd.DataFrame) -> pd.DataFrame:
     """
     Certains exports PKI/RBAC mettent un nom générique ("ADMINISTRATOR",
@@ -1840,6 +1871,7 @@ def _load_single_file(
         df = df.reset_index(drop=True)
 
     df = standardize_columns(df, column_mapping, custom_mappings=custom_mappings)
+    df = _derive_username_from_homedir(df)  # fallback BSS Q2
     df = _synthesize_full_name(df)
     df = _fix_generic_username(df)  # fallback Identity si Username est générique
     # Déduplication des exports "une ligne par permission" (PKI, certificats,

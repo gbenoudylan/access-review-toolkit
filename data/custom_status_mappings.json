@@ -9,5 +9,7 @@
   "activated": "active",
   "deactivated": "inactive",
   "ps": "active",
-  "lk": "inactive"
+  "lk": "inactive",
+  "0": "active",
+  "1": "inactive"
 }

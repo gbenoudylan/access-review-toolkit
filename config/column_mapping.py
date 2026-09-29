@@ -9,6 +9,7 @@ exports RH, ServiceNow IGA, etc.).
 
 COLUMN_MAPPING = {
     "username": [
+        "user",  # BSS Q3 format
         "username", "login", "identifiant", "compte", "account", "user",
         "sam_account_name", "user_principal_name", "upn",
         "nom d'utilisateur", "nom utilisateur", "identifiant utilisateur",
@@ -70,6 +71,7 @@ COLUMN_MAPPING = {
         # pas un nom, mais reste le bon signal "qui est le responsable")
     ],
     "system": [
+        "hostname", "host_name", "host",  # BSS Q3 format
         "system", "application", "systeme", "app", "target_system",
         "resource", "ressource",
     ],
@@ -130,11 +132,13 @@ COLUMN_MAPPING = {
         "acces_privilegie", "sudo privileges", "sudo", "root access",  # exports serveurs Linux/Unix
     ],
     "is_locked": [
+        "pwdlock", "pwd_lock",  # BSS: 1=locked, 0=not locked
         "is_locked", "locked", "account_locked", "verrouille", "verrouillé",
         "lock_status", "lockout_status", "lockedout", "locked_out",
         "account_lockout", "is_lockedout",
     ],
     "last_login_date": [
+        "lastlogin", "last login", "last_login",  # BSS format
         "last login (raw)", "last login raw", "latest login", "latest login date", "latest login time",  # GUI NMS  # export Oracle BIB/TABS/GGATE
         "last_login_date", "last_login", "derniere_connexion",
         "date_derniere_connexion", "last_logon",
@@ -180,6 +184,7 @@ COLUMN_MAPPING = {
     # connexion (ex. colonnes "Password Last Set", "Password Expiry Date"
     # d'un export Active Directory classique). ---
     "password_last_set": [
+        "pwdchange", "pwd_change", "password change",  # BSS format
         "password_last_set", "password last set", "derniere_modif_mdp",
         "dernier changement mot de passe", "pwdlastset",
         "last password reset date", "password reset date",  # variantes espacées

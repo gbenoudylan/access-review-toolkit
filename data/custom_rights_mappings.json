@@ -3,5 +3,8 @@
   "system": "admin",
   "user": "standard",
   "user-sudo": "standard",
-  "SUDO": "admin"
+  "SUDO": "admin",
+  "bt_admin_group": "admin",
+  "bt_admin_sudoers": "admin",
+  "sg_server_administration": "admin"
 }

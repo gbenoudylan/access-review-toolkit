@@ -509,7 +509,11 @@ def _current_quarter_label() -> str:
     return f"T{quarter} {now.year}"
 
 
-def default_report_filename(df: pd.DataFrame, extension: str, extraction_origin: str | None = None) -> str:
+def default_report_filename(
+    df: pd.DataFrame, extension: str,
+    extraction_origin: str | None = None,
+    application_scope: str | None = None,
+) -> str:
     """
     Calcule le nom de fichier recommandé pour un rapport généré :
     'Rapport_revue_acces_<origine>_<date DDMMAAAA>.<extension>' — utilisé
@@ -538,7 +542,9 @@ def default_report_filename(df: pd.DataFrame, extension: str, extraction_origin:
         elif len(systems) <= 3:
             system_label = "-".join(systems)
         else:
-            system_label = "Multi-systemes"
+            # Multi-systèmes : utiliser application_scope si renseigné,
+            # sinon "Multi-systemes"
+            system_label = application_scope.strip() if application_scope and application_scope.strip() else "Multi-systemes"
     else:
         system_label = "Global"
 
@@ -1221,6 +1227,34 @@ def _build_control_subsections(
             else:
                 count = value
                 comparison_detail = comparison_stats.get("profile_modified_detail") or []
+        elif key == "is_password_stale":
+            # Ctrl 14 : A = normaux > 90j, B = services > 365j
+            _ao14 = _active_accounts(df)
+            if "is_password_stale" not in _ao14.columns:
+                note = "N/A — column 'password_last_set' missing."
+            else:
+                _sm14 = _ao14.get("is_service_account", pd.Series(False, index=_ao14.index)).astype(bool)
+                _ns14 = _ao14[~_sm14 & (_ao14["is_password_stale"] == True)]
+                _ns14 = _ns14[~_ns14.apply(lambda r: is_finding_accepted(r,"is_password_stale"),axis=1)]
+                _sc14 = "is_service_password_stale" if "is_service_password_stale" in _ao14.columns else "is_password_stale"
+                _ss14 = _ao14[_sm14 & (_ao14[_sc14] == True)]
+                _ss14 = _ss14[~_ss14.apply(lambda r: is_finding_accepted(r,"is_password_stale"),axis=1)]
+                _tot14 = len(_ns14) + len(_ss14)
+                elements.append(Paragraph(f"<b>{_tot14}</b> account(s) concerned.", action_style))
+                elements.append(Spacer(1, 0.1*cm))
+                elements.append(_build_owner_tracking_table(available_width))
+                _tc14 = CONTROL_TABLE_COLUMNS.get("is_password_stale")
+                if len(_ns14):
+                    elements.append(Paragraph("<b>A — Regular accounts (password &gt; 90 days)</b>", note_style))
+                    elements.append(Spacer(1,0.1*cm))
+                    elements.extend(_build_capped_account_table(_ns14, available_width, columns=_tc14))
+                if len(_ss14):
+                    elements.append(Spacer(1,0.15*cm))
+                    elements.append(Paragraph("<b>B — Service accounts (password &gt; 365 days)</b>", note_style))
+                    elements.append(Spacer(1,0.1*cm))
+                    elements.extend(_build_capped_account_table(_ss14, available_width, columns=_tc14))
+                elements.append(Spacer(1,0.25*cm))
+                continue
         elif key in df.columns:
             # Exclure les Disabled — utiliser _active_accounts qui respecte
             # les mappings personnalisés (EXPIRED→active, etc.)
@@ -1279,18 +1313,74 @@ def _compute_comparison_stats(
         return str(v).strip().lower()
 
     key_col = "username"
+
+    # Stratégie de comparaison selon disponibilité du système
+    has_sys_curr = ("system" in df.columns and
+                    df["system"].notna().any() and df["system"].nunique() > 1)
+    has_sys_prev = ("system" in previous_df.columns and
+                    previous_df["system"].notna().any() and previous_df["system"].nunique() > 1)
+
+    created_display = []
+    deleted_display = []
+    created_usernames_list = []
+    deleted_usernames_list = []
+
+    if has_sys_curr and has_sys_prev:
+        # (username, system) — le plus précis
+        def _pair(r):
+            return (_norm_key(str(r.get(key_col,""))), _norm_key(str(r.get("system",""))))
+        curr_pairs = {_pair(r) for _, r in df.iterrows()}
+        prev_pairs = {_pair(r) for _, r in previous_df.iterrows()}
+        created_pairs = curr_pairs - prev_pairs
+        deleted_pairs = prev_pairs - curr_pairs
+        pair_to_row_curr = {_pair(r): dict(r) for _, r in df.iterrows()}
+        pair_to_row_prev = {_pair(r): dict(r) for _, r in previous_df.iterrows()}
+        # Display : "username (system)" pour le rapport
+        created_display = sorted(f"{u} ({s})" for u,s in created_pairs if u)
+        deleted_display = sorted(f"{u} ({s})" for u,s in deleted_pairs if u)
+        # Usernames purs pour filtrer df
+        created_usernames_list = [pair_to_row_curr[p].get(key_col,"") for p in created_pairs if p in pair_to_row_curr]
+        deleted_usernames_list = [pair_to_row_prev[p].get(key_col,"") for p in deleted_pairs if p in pair_to_row_prev]
+
+    elif has_sys_curr and not has_sys_prev:
+        # Q3 multi-systèmes, Q2 sans système → détecter les nouveaux systèmes
+        prev_usernames_set = set(previous_df[key_col].dropna().map(_norm_key))
+        curr_systems = set(df["system"].dropna().map(_norm_key))
+        prev_systems = (set(previous_df["system"].dropna().map(_norm_key))
+                        if "system" in previous_df.columns else set())
+        new_systems = curr_systems - prev_systems
+
+        # Comptes sur nouveaux systèmes = TOUS créés
+        new_sys_mask = df["system"].map(_norm_key).isin(new_systems) if new_systems else pd.Series(False, index=df.index)
+        existing_sys_accounts = df[~new_sys_mask]
+        extra_created_norm = set(existing_sys_accounts[key_col].dropna().map(_norm_key)) - prev_usernames_set
+
+        created_usernames_list = (
+            list(df[new_sys_mask][key_col].dropna()) +
+            list(df[df[key_col].map(_norm_key).isin(extra_created_norm)][key_col].dropna())
+        )
+        curr_usernames_set = set(df[key_col].dropna().map(_norm_key))
+        deleted_usernames_list = list(previous_df[~previous_df[key_col].map(_norm_key).isin(curr_usernames_set)][key_col].dropna())
+        created_display = sorted(set(str(u) for u in created_usernames_list if u))
+        deleted_display = sorted(set(str(u) for u in deleted_usernames_list if u))
+
+    else:
+        # Username uniquement (fallback)
+        curr_display = {_norm_key(v): v for v in reversed(df[key_col].dropna().tolist())}
+        prev_display = {_norm_key(v): v for v in reversed(previous_df[key_col].dropna().tolist())}
+        created_display = sorted(curr_display[k] for k in (set(curr_display)-set(prev_display)))
+        deleted_display = sorted(prev_display[k] for k in (set(prev_display)-set(curr_display)))
+        created_usernames_list = created_display
+        deleted_usernames_list = deleted_display
+
+    # Pour la logique de comparaison reactivated/modified, utiliser username uniquement
     current_series  = df[key_col].dropna()
     previous_series = previous_df[key_col].dropna()
     current_display  = {_norm_key(v): v for v in reversed(current_series.tolist())}
     previous_display = {_norm_key(v): v for v in reversed(previous_series.tolist())}
     current_keys  = set(current_display)
     previous_keys = set(previous_display)
-    created_keys  = current_keys - previous_keys
-    deleted_keys  = previous_keys - current_keys
     common        = current_keys & previous_keys
-
-    created_display = sorted(current_display[k]  for k in created_keys)
-    deleted_display = sorted(previous_display[k] for k in deleted_keys)
 
     reactivated_accounts     = []
     profile_modified_accounts = []
@@ -1347,13 +1437,17 @@ def _compute_comparison_stats(
             pass
 
     stats.update({
-        "created":  len(created_keys)  or None,
-        "deleted":  len(deleted_keys)  or None,
+        "created":  len(created_display) or None,
+        "deleted":  len(deleted_display) or None,
         "reactivated":      len(reactivated_accounts)     or None,
         "profile_modified": len(profile_modified_accounts) or None,
         "privilege_escalation": len(escalated_accounts)   or None,
-        "created_accounts":  created_display,
-        "deleted_accounts":  deleted_display,
+        # created_accounts = usernames purs (pour filtre df)
+        # created_accounts_display = "user (sys)" (pour PDF/Word)
+        "created_accounts":  sorted(set(str(u) for u in created_usernames_list if u)),
+        "created_accounts_display": created_display,
+        "deleted_accounts":  sorted(set(str(u) for u in deleted_usernames_list if u)),
+        "deleted_accounts_display": deleted_display,
         "reactivated_accounts":     reactivated_accounts,
         "profile_modified_accounts": profile_modified_accounts,
         "privilege_escalation_accounts": escalated_accounts,
@@ -1404,7 +1498,10 @@ def _build_review_comparison_section(
             "The review of the application accounts covers a total of accounts distributed as follows:",
             note_style,
         ))
-        statuses = sorted(set(current_counts.index) | set(previous_counts.index))
+        statuses = sorted(
+            {str(s) for s in set(current_counts.index) | set(previous_counts.index)
+             if s is not None and str(s).strip().lower() not in ("nan","none","")}
+        )
         rows = [["Type of Users", "Previous review", "Current review", "Variation"]]
         for status in statuses:
             prev = int(previous_counts.get(status, 0))
@@ -1960,7 +2057,10 @@ def generate_word_report(
         current_counts = df["account_status"].value_counts()
         if previous_df is not None and "account_status" in previous_df.columns:
             previous_counts = previous_df["account_status"].value_counts()
-            statuses = sorted(set(current_counts.index) | set(previous_counts.index))
+            statuses = sorted(
+            {str(s) for s in set(current_counts.index) | set(previous_counts.index)
+             if s is not None and str(s).strip().lower() not in ("nan","none","")}
+        )
             summary_rows = [["Type of Users", "Previous review", "Current review", "Variation"]]
             for status in statuses:
                 prev, curr = int(previous_counts.get(status, 0)), int(current_counts.get(status, 0))
