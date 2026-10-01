@@ -45,7 +45,7 @@ TEMPLATE_CONTROLS = [
      "(same profile or same privileges)./All of these duplicate account must be disabled to leave "
      "only one active account."),
     (9, "Active Non-compliant logins",
-     "Active accounts that do not follow the MTN LIBERIA naming convention, /These account must "
+     "Active accounts that do not follow the MTN naming convention, /These account must "
      "be identified and renamed using the naming convention if possible\nNaming convention:\nThe "
      "user ID format consists of the first letter of the user's first name followed by the "
      "user's last name.\nExample: Michael Brown → mbrown"),
@@ -198,8 +198,9 @@ CONTROL_SUBSECTIONS = [
      None),
     (10, "Accounts created",
      "Expectations: All new accounts must be created following an approved request "
-     "(e.g. ServiceNow ticket). The system owner must confirm that each new account "
-     "is authorized, properly configured, and assigned to a named individual.",
+     "(e.g. via ServiceNow ticket approved or via user access form approved). "
+     "The system owner must share that approved ticket ID or user access form approved "
+     "that was used to create the(se) account(s).",
      "_created"),
     (11, "Profile Modified",
      "Expectations: Any change to an account profile (role, permissions, access level) "

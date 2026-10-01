@@ -8,8 +8,14 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Cache NVD/EPSS et données runtime
+# Données runtime (décisions de revue, correspondances apprises, historique)
 data/review_decisions.json
+data/custom_*.json
+data/risk_acceptances.json
+data/trend_history.json
+
+# Cache pytest
+.pytest_cache/
 
 # Sorties générées localement
 output/

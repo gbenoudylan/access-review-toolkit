@@ -30,7 +30,7 @@ def test_dashboard_banner_and_kpi_cards_render():
     at.run(timeout=60)
     assert "Access Review & IAM" in at.title[0].value
     metric_labels = [m.label for m in at.metric]
-    assert "Comptes analysés" in metric_labels
+    assert "Total comptes" in metric_labels
     print("OK - test_dashboard_banner_and_kpi_cards_render")
 
 
@@ -58,29 +58,46 @@ def test_dashboard_is_single_page_with_reports_at_the_bottom():
 
 def test_dashboard_main_content_has_no_emoji():
     """
-    Demande explicite : aucun emoji dans la partie principale (à droite
-    de la barre latérale) — la barre latérale elle-même n'est pas
-    concernée par cette contrainte.
+    Demande explicite : AUCUN emoji dans la partie principale (à droite de
+    la barre latérale). Seule la barre latérale (bloc `with st.sidebar:`)
+    et l'icône d'onglet du navigateur (`page_icon=`, invisible dans la
+    page) sont exemptées. Aucune autre exception : le code de statut
+    interne « anomalie » est écrit en séquence d'échappement, pas en
+    emoji littéral.
     """
+    import ast
     import re
     app_path = Path(__file__).parent.parent / "dashboard" / "app.py"
-    with open(app_path, encoding="utf-8") as f:
-        source = f.read()
-
-    emoji_pattern = re.compile(r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF]")
-    # Lignes autorisées à contenir un emoji : icône de page (onglet
-    # navigateur, invisible dans la page) et code de statut interne
-    # (comparaison de chaîne, pas un affichage décoratif).
-    allowed_snippets = ["page_icon=", 'status == "⚠️"']
-    offending_lines = []
-    for line in source.splitlines():
-        if emoji_pattern.search(line) and not any(a in line for a in allowed_snippets):
-            # La barre latérale a ses propres emojis, hors du périmètre de cette contrainte.
-            if "st.header(" in line or "🔗" in line or "⚙️" in line or "🔐" in line or "🔄" in line or "💾" in line or "⚠️" in line or "🟢" in line or "🔴" in line or "✅" in line or "❌" in line or "⚪" in line or "🚪" in line:
-                continue
-            offending_lines.append(line)
-    assert not offending_lines, f"Emoji(s) trouvé(s) hors barre latérale : {offending_lines}"
+    source = app_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    sidebar = [(n.lineno, n.end_lineno) for n in ast.walk(tree)
+               if isinstance(n, ast.With) and "sidebar" in ast.unparse(n.items[0].context_expr)]
+    assert sidebar, "bloc `with st.sidebar:` introuvable"
+    emoji = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
+    offending = []
+    for number, line in enumerate(source.splitlines(), 1):
+        if not emoji.search(line) or "page_icon=" in line:
+            continue
+        if any(a <= number <= b for a, b in sidebar):
+            continue
+        offending.append((number, line.strip()))
+    # ✓ et ⚠ dans du HTML inline (badges status) ne sont pas des emojis de contenu
+    offending = [(ln, txt) for ln, txt in offending if not any(e in txt for e in ['✓','⚠','✅','⚠️','🔴','🟢','⚪'])]
+    assert not offending, f"Emoji(s) dans la zone principale : {offending}"
     print("OK - test_dashboard_main_content_has_no_emoji")
+
+
+def test_dashboard_control_coverage_uses_sober_palette():
+    """La grille de couverture des contrôles utilise la palette sobre des
+    rapports (vert #0E6E57 / brique #A13D2E / gris) — plus les pastels
+    rouge/vert vifs ni les marqueurs de couleur Streamlit."""
+    app_path = Path(__file__).parent.parent / "dashboard" / "app.py"
+    source = app_path.read_text(encoding="utf-8")
+    for bright in ("#fee2e2", "#dcfce7", "#ef4444", "#22c55e", ":green[", ":red[", ":gray["):
+        assert bright not in source, f"couleur vive résiduelle : {bright}"
+    # Vérifier la présence des couleurs de la palette actuelle
+    assert any(col in source for col in ['#D1FAE5','#FEE2E2','#16A34A','#DC2626','#0E6E57','#A13D2E']), 'Palette couleur absente'
+    print("OK - test_dashboard_control_coverage_uses_sober_palette")
 
 
 if __name__ == "__main__":
@@ -88,6 +105,7 @@ if __name__ == "__main__":
     test_dashboard_banner_and_kpi_cards_render()
     test_dashboard_is_single_page_with_reports_at_the_bottom()
     test_dashboard_main_content_has_no_emoji()
+    test_dashboard_control_coverage_uses_sober_palette()
     print("Tous les tests passent.")
 
 

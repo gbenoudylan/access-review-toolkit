@@ -112,6 +112,9 @@ def _translate_french_month(text_value: str) -> str:
     return _FRENCH_MONTH_RE.sub(lambda m: _FRENCH_MONTHS[m.group(1).lower()], text_value)
 
 
+_SIGNED_NUM_STATUS_RE = re.compile(r"^[+-]?\d+$")
+
+
 def _tokenize_status_value(value: str) -> set:
     """
     Découpe une valeur de statut en mots-clés individuels sur tout
@@ -126,7 +129,12 @@ def _tokenize_status_value(value: str) -> set:
     par recherche de sous-chaîne, sous peine de classer 'inactive'
     comme actif à tort.
     """
-    return set(re.split(r"[^a-z0-9]+", str(value).strip().lower())) - {""}
+    raw = str(value).strip().lower()
+    if _SIGNED_NUM_STATUS_RE.match(raw):
+        # Valeur purement numérique : le signe fait partie de la valeur.
+        # '-1' ne doit JAMAIS être lu comme '1' (actif).
+        return {str(int(raw))}
+    return set(re.split(r"[^a-z0-9]+", raw)) - {""}
 
 
 _NEGATION_TOKENS = {"not", "non", "no", "sans"}
@@ -217,15 +225,46 @@ _GENERIC_ACCOUNT_MARKERS = [
     "system", "manager", "backup", "operator", "developer", "superuser",
     "anonymous", "account", "public", "maintenance", "sales",
 ]
+# Valeurs équivalant à « nom non renseigné » (après strip + minuscules) —
+# jamais utilisées comme clé de regroupement pour la détection de doublons.
+_MISSING_NAME_PLACEHOLDERS = {"", "nan", "none", "null", "n/a", "na", "-", "--", "<na>"}
 _ORPHANED_ACCOUNT_RE = re.compile(
     "|".join(re.escape(m) for m in _GENERIC_ACCOUNT_MARKERS), re.IGNORECASE
 )
 
 
+# Comptes TECHNIQUES / applicatifs (serveurs, outils, agents) : ils ne
+# portent ni « admin » ni « user » dans leur nom mais n'identifient pas
+# non plus une personne précise (ex. 'oracle', 'changetracker',
+# 'bt_scan_unix', 'ansible_comp'). Ajoutés à la liste d'origine SANS la
+# modifier (mêmes résultats qu'avant pour tout ce qui était déjà détecté).
+# Deux niveaux de prudence, pour ne pas signaler de vrais noms de
+# personnes ('pam' dans 'Pamela', 'oam' dans 'Joamy') :
+#   - fragments longs et distinctifs : recherche de sous-chaîne ;
+#   - fragments courts : égalité avec un MOT ENTIER du nom (découpé sur
+#     tout séparateur non alphanumérique : '_', '.', '-'...).
+# Liste volontairement modifiable ici en un seul endroit.
+_TECHNICAL_ACCOUNT_SUBSTRINGS = [
+    "oracle", "ansible", "changetracker", "servnow", "stablenet",
+    "svc", "unix", "breakg",
+]
+_TECHNICAL_ACCOUNT_TOKENS = {"oam", "pam", "func", "scan", "bind"}
+# Préfixes d'applications internes (ex. mtnlss, mtnlmu, mtnlma).
+_TECHNICAL_ACCOUNT_PREFIXES = ("mtnl",)
+
+
 def _is_orphaned_account_name(username) -> bool:
     if username is None:
         return False
-    return bool(_ORPHANED_ACCOUNT_RE.search(str(username).strip()))
+    name = str(username).strip()
+    if _ORPHANED_ACCOUNT_RE.search(name):
+        return True
+    lowered = name.lower()
+    if any(m in lowered for m in _TECHNICAL_ACCOUNT_SUBSTRINGS):
+        return True
+    if lowered.startswith(_TECHNICAL_ACCOUNT_PREFIXES):
+        return True
+    return bool(set(re.split(r"[^a-z0-9]+", lowered)) & _TECHNICAL_ACCOUNT_TOKENS)
 
 
 def _is_test_account_name(username) -> bool:
@@ -1007,13 +1046,13 @@ def analyze_access(
             is_act, is_unk = r
             lk = bool(LOCKED_MARKERS_RE.search(str(v)))
             if is_unk:
-                label = "⚠️ Unknown (treated as Active)"
+                label = "Unknown (treated as Active)"
             elif lk:
-                label = "🔒 Locked (→ Disabled)"
+                label = "Locked (→ Disabled)"
             elif is_act:
-                label = "🟢 Active"
+                label = "Active"
             else:
-                label = "🔴 Disabled"
+                label = "Disabled"
             all_status_interpretation[v] = label
         df.attrs["all_status_values"] = all_status_interpretation
 
@@ -1033,7 +1072,7 @@ def analyze_access(
 
     if "account_status" in df.columns and "employee_status" in df.columns:
         df["is_terminated_but_active"] = df.apply(
-            lambda r: _is_active_account(r["account_status"])
+            lambda r: bool(r["is_active_for_audit"])
             and _is_terminated_employee(r["employee_status"]),
             axis=1,
         )
@@ -1086,7 +1125,56 @@ def analyze_access(
                     )
                 )
 
-    df["is_privileged_flag"] = privileged_from_flag | privileged_from_role | privileged_from_custom_rights
+    # Quatrième source : username lui-même.
+    # "root", "admin", "adm", "administrator", "superuser", "sysadmin"…
+    # sont des comptes privilégiés par nature, indépendamment des droits
+    # renseignés dans le fichier (colonne user_rights souvent absente sur Linux/Unix).
+    # Mots-clés qui, trouvés n'importe où dans le username, indiquent un
+    # compte privilégié. Triés du plus long au plus court pour éviter les
+    # faux-positifs sur les sous-chaînes courtes.
+    _PRIV_USERNAME_LONG = (
+        "administrator", "administrador", "superuser", "sysadmin",
+        "netadmin", "dbadmin", "sysop",
+        "admin",   # couvre : admin, jean.admin, svc_admin, mainadmin,
+                   #          radmin_user, adminville, bt_admin_group…
+        "root",    # couvre : root, root2, root_backup, proroot…
+    )
+    # Mots-clés courts : UNIQUEMENT correspondance exacte ou préfixe/suffixe
+    # avec séparateur — évite "cadmium" → "adm", "sarah" → "sa"
+    _PRIV_USERNAME_EXACT = {
+        "sa", "dba", "adm", "wheel", "sudo", "super",
+    }
+    _PRIV_ADM_PREFIX = ("adm_", "adm.", "adm-", "adm@")
+    _PRIV_ADM_SUFFIX = ("_adm", ".adm", "-adm", "@adm")
+
+    def _is_privileged_username(uname: str) -> bool:
+        if not uname or not isinstance(uname, str):
+            return False
+        low = uname.strip().lower()
+        # 1. Exact sur les courts
+        if low in _PRIV_USERNAME_EXACT:
+            return True
+        # 2. Préfixe/suffixe pour "adm"
+        if any(low.startswith(p) for p in _PRIV_ADM_PREFIX):
+            return True
+        if any(low.endswith(s) for s in _PRIV_ADM_SUFFIX):
+            return True
+        # 3. Substring pour les longs — "admin" et "root" suffisent
+        #    à couvrir tous les cas courants sans faux-positifs
+        if any(kw in low for kw in _PRIV_USERNAME_LONG):
+            return True
+        return False
+
+    privileged_from_username = pd.Series(False, index=df.index)
+    if "username" in df.columns:
+        privileged_from_username = df["username"].astype(str).apply(_is_privileged_username)
+
+    df["is_privileged_flag"] = (
+        privileged_from_flag
+        | privileged_from_role
+        | privileged_from_custom_rights
+        | privileged_from_username
+    )
 
     if "manager" in df.columns:
         df["has_no_manager"] = df["manager"].isna() | (df["manager"].astype(str).str.strip() == "")
@@ -1184,7 +1272,12 @@ def analyze_access(
         is_generic_name = df["username"].apply(_is_orphaned_account_name)
         if "account_status" in df.columns:
             status_str = df["account_status"].astype(str).fillna("").str.strip()
-            is_confirmed_inactive = (status_str != "") & ~df["account_status"].apply(_is_active_account)
+            # On s'appuie sur le statut DÉJÀ RÉSOLU plus haut (mappings
+            # manuels du dashboard > reconnaissance automatique > pire cas
+            # « potentiellement actif » pour une valeur inconnue). Appeler
+            # _is_active_account ici ignorait les corrections manuelles et
+            # traitait toute valeur inconnue (ex. 'Valid') comme inactive.
+            is_confirmed_inactive = (status_str != "") & ~df["is_active_for_audit"]
             df["is_orphaned_account"] = is_generic_name & ~is_confirmed_inactive
         else:
             df["is_orphaned_account"] = is_generic_name
@@ -1217,10 +1310,18 @@ def analyze_access(
     # Le nom d'affichage original (non modifié) reste utilisé partout
     # ailleurs dans les rapports.
     if "full_name" in df.columns and "account_status" in df.columns and "system" in df.columns:
-        active_mask = df["account_status"].apply(_is_active_account)
+        active_mask = df["is_active_for_audit"].astype(bool)
         normalized_name = (
             df["full_name"].astype(str).str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
         )
+        # Un nom complet VIDE ou de remplissage ('', 'nan', 'n/a'...) ne
+        # désigne aucune personne : le regrouper comme s'il s'agissait
+        # d'une même personne marquait à tort tous les comptes sans nom
+        # (précisément les comptes génériques/orphelins du contrôle 3)
+        # comme doublons les uns des autres, et leur faisait perdre leur
+        # vraie action recommandée au profit de 'Fusionner les doublons'.
+        missing_name = df["full_name"].isna() | normalized_name.isin(_MISSING_NAME_PLACEHOLDERS)
+        active_mask = active_mask & ~missing_name
         # Le système lui-même est normalisé pour le regroupement (mais pas
         # pour l'affichage) : deux comptes du même système peuvent être
         # enregistrés avec une casse différente selon la source d'export
@@ -1273,6 +1374,24 @@ def analyze_access(
         "Analyse terminée. Répartition des actions :\n"
         f"{df['review_action'].value_counts().to_string()}"
     )
+
+
+    # ── Normalisation finale des colonnes booléennes ─────────────────────
+    # Garantit le dtype bool (pas object/str) sur toutes les colonnes de flag.
+    # Évite TypeError dans les opérations & | ~ sur pandas Arrow backend.
+    _BOOL_FLAG_COLS = [
+        "is_dormant", "is_never_used", "is_active_for_audit", "is_privileged_flag",
+        "is_service_account", "is_test_account", "is_password_stale",
+        "is_service_password_stale", "is_orphaned_account", "is_duplicate_account",
+        "is_non_compliant_naming", "is_recently_created", "is_transferred_but_active",
+        "is_terminated_but_active", "password_change_unknown",
+    ]
+    for _bc in _BOOL_FLAG_COLS:
+        if _bc in df.columns:
+            try:
+                df[_bc] = df[_bc].fillna(False).astype(bool)
+            except (TypeError, ValueError):
+                df[_bc] = df[_bc].map(lambda v: bool(v) if v is not None else False)
 
     return df
 
@@ -1430,11 +1549,16 @@ def summarize(df: pd.DataFrame) -> dict:
         "privileged_accounts": int(df["is_privileged_flag"].sum()),
         "privileged_dormant": int((df["is_dormant"] & df["is_privileged_flag"]).sum()),
         "accounts_without_manager": int(df["has_no_manager"].sum()),
-        "password_stale": int(df["is_password_stale"].sum()),
+        # Comptes ACTIFS uniquement, comme le contrôle 14 des rapports :
+        # un compte désactivé au mot de passe ancien n'est pas un constat.
+        "password_stale": int(
+            (df["is_password_stale"] & df.get("is_active_for_audit", True)).sum()
+        ),
         "privileged_non_expiring_password": int(
             (df["is_privileged_flag"] & df["has_non_expiring_password"]).sum()
         ),
         "service_accounts": int(df.get("is_service_account", pd.Series(dtype=bool)).sum()),
+        "orphaned_accounts": int(df.get("is_orphaned_account", pd.Series(dtype=bool)).sum()),
         "duplicate_accounts": int(df.get("is_duplicate_account", pd.Series(dtype=bool)).sum()),
         "critical_risk": int((df["risk_level"] == "Critique").sum()),
         "temporal_inconsistencies": int(df.get("temporal_inconsistency", pd.Series(dtype=bool)).sum()),

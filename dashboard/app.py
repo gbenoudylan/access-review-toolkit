@@ -6,6 +6,7 @@ Lancement :
 """
 
 from __future__ import annotations
+import html
 import logging
 import sys
 import io
@@ -23,6 +24,7 @@ import streamlit as st
 from ingestion.ingest import load_file, load_file_with_mapping, IngestionError, compute_data_quality_report
 from ingestion.custom_column_mappings import (
     load_custom_column_mappings, save_custom_column_mapping, forget_custom_column_mapping,
+    IGNORED_COLUMN_SENTINEL,
     DEFAULT_STORE_PATH as MAIN_CUSTOM_MAPPING_STORE_PATH,
 )
 from ingestion.custom_status_mappings import (
@@ -230,11 +232,12 @@ def run_pipeline(
                 hr_names = [n for n in hr_names if n and n.lower() not in ("nan","none","")]
                 if hr_names:
                     from analysis.access_review import _is_active_account as _iaa
-                    is_active_mask = (
-                        df["account_status"].apply(_iaa)
-                        if "account_status" in df.columns
-                        else pd.Series(True, index=df.index)
-                    )
+                    if "is_active_for_audit" in df.columns:
+                        is_active_mask = df["is_active_for_audit"].fillna(True).astype(bool)
+                    elif "account_status" in df.columns:
+                        is_active_mask = df["account_status"].apply(_iaa)
+                    else:
+                        is_active_mask = pd.Series(True, index=df.index)
 
                     def _any_match(iam_name: str) -> bool:
                         if not iam_name or not iam_name.strip():
@@ -411,7 +414,11 @@ def _render_column_mapping_ui(
         if review_assignments and st.button("Enregistrer ces correspondances et relancer l'analyse", key=f"{key_prefix}_map_save"):
             for raw_col, standard_field in review_assignments.items():
                 if standard_field == "Ignorée":
-                    forget_custom_column_mapping(raw_col, store_path=store_path)
+                    # Marqueur explicite (pas juste "oublier" une éventuelle
+                    # correspondance manuelle antérieure) : sans ça, une
+                    # colonne auto-détectée par nom/fuzzy matching reprenait
+                    # la main aussitôt, rendant "Ignorée" inopérant.
+                    save_custom_column_mapping(raw_col, IGNORED_COLUMN_SENTINEL, store_path=store_path)
                 else:
                     target = (
                         f"{standard_field}__inverted_bool"
@@ -585,6 +592,12 @@ def main():
                 )
         elif use_sample:
             sample_path = Path(__file__).parent.parent / "data" / "export_test_A.csv"
+            if not sample_path.exists():
+                st.error(
+                    "Le fichier d'exemple 'data/export_test_A.csv' est introuvable. "
+                    "Décochez « Utiliser un fichier d'exemple » et importez votre propre export."
+                )
+                return
             with st.spinner("Traitement du fichier d'exemple..."):
                 df, unmapped_columns, hr_unmapped_columns, full_column_mapping, hr_full_column_mapping, unknown_status_values = run_pipeline(
                     sample_path.read_bytes(), sample_path.name,
@@ -604,7 +617,7 @@ def main():
         st.info("Vérifiez que le fichier contient au minimum : identifiant du compte, système.")
         return
     if df is None:
-        st.info("⬅️ Importez un fichier ou cochez 'Utiliser un fichier d'exemple' pour commencer.")
+        st.info("Importez un fichier ou cochez 'Utiliser un fichier d'exemple' dans la barre latérale pour commencer.")
         return
 
     ingestion_error = df.attrs.get("ingestion_error") if hasattr(df, "attrs") else None
@@ -646,6 +659,7 @@ def main():
         "temporal_inconsistency","review_action","risk_level","risk_score",
         "risk_score_reasons","sod_conflict","sod_conflict_detail",
         "transferred_name_ambiguous","accepted_finding_keys","hr_cross_referenced",
+        "is_service_password_stale","expired_finding_keys","accepted_findings_detail",
     })
 
     if not full_column_mapping and not unmapped_columns:
@@ -723,13 +737,14 @@ def main():
     n_rights = len(all_distinct_rights)
 
     with st.expander(
-        f"{'⚠️ ' if (missing_required or has_unknown_status) else ''}Configuration du fichier"
-        f" — {n_cols} colonnes · {n_status} statuts · {n_rights} droits",
+        "Configuration du fichier"
+        f" — {n_cols} colonnes · {n_status} statuts · {n_rights} droits"
+        f"{' — à vérifier' if (missing_required or has_unknown_status) else ''}",
         expanded=bool(missing_required or important_missing or important_empty or has_unknown_status),
     ):
         tab_cols, tab_status, tab_rights = st.tabs([
             f"Colonnes ({n_cols})",
-            f"Statuts ({n_status})" + (" ⚠️" if has_unknown_status else ""),
+            f"Statuts ({n_status})" + (" — à vérifier" if has_unknown_status else ""),
             f"Droits ({n_rights})",
         ])
 
@@ -783,7 +798,7 @@ def main():
             if col_assignments and st.button("Enregistrer colonnes et relancer", key="main_col_save"):
                 for raw_col, standard_field in col_assignments.items():
                     if standard_field == "Ignorée":
-                        forget_custom_column_mapping(raw_col, store_path=MAIN_CUSTOM_MAPPING_STORE_PATH)
+                        save_custom_column_mapping(raw_col, IGNORED_COLUMN_SENTINEL, store_path=MAIN_CUSTOM_MAPPING_STORE_PATH)
                     else:
                         target = f"{standard_field}__inverted_bool" if invert_choices.get(raw_col) else standard_field
                         save_custom_column_mapping(raw_col, target, store_path=MAIN_CUSTOM_MAPPING_STORE_PATH)
@@ -817,7 +832,7 @@ def main():
                     elif learned == "inactive":
                         display = "Inactif (corrigé)"
                     else:
-                        display = auto_label.replace("🟢 ", "").replace("🔴 ", "").replace("🔒 ", "").replace("⚠️ ", "")
+                        display = auto_label
                     options_s = [f"Garder ({display})", "Actif", "Disabled"]
                     choice = st.selectbox(
                         f"'{val_str}'",
@@ -1103,11 +1118,25 @@ def main():
                 previous_unmapped = list(previous_raw.attrs.get("unmapped_columns", []))
                 if not previous_raw.index.is_unique:
                     previous_raw = previous_raw.reset_index(drop=True)
+                # Mêmes paramètres que la revue courante : mappings manuels
+                # de statut et de droits, et date d'extraction PROPRE à
+                # l'ancienne revue comme référence d'ancienneté. Sans cela,
+                # les deux cycles seraient classés avec des règles
+                # différentes (faux « réactivés » / « profils modifiés »).
+                prev_status_maps = load_custom_status_mappings(store_path=STATUS_CUSTOM_MAPPING_STORE_PATH)
+                prev_rights_maps = load_custom_rights_mappings(store_path=RIGHTS_CUSTOM_MAPPING_STORE_PATH)
+                prev_reference_dt = (
+                    datetime.combine(previous_extraction_date, datetime.min.time())
+                    if previous_extraction_date else None
+                )
                 previous_df = analyze_access(
                     previous_raw,
                     dormant_threshold_days=dormant_threshold_days,
                     password_stale_threshold_days=password_stale_threshold_days,
                     never_used_threshold_days=never_used_threshold_days,
+                    reference_datetime=prev_reference_dt,
+                    custom_status_mappings=prev_status_maps if prev_status_maps else None,
+                    custom_rights_mappings=prev_rights_maps if prev_rights_maps else None,
                 )
             except IngestionError as e:
                 st.warning(f"Revue précédente ignorée (erreur d'ingestion) : {e}")
@@ -1129,14 +1158,16 @@ def main():
         if st.button("Générer le rapport Excel", use_container_width=True):
             with st.spinner("Génération..."):
                 tmp_xlsx = Path(tempfile.gettempdir()) / "rapport_revue_acces.xlsx"
-                previous_df_xl, _, previous_date_xl = _resolve_previous_df_and_logo()
+                previous_df_xl, _, _ = _resolve_previous_df_and_logo()
                 generate_excel_report(
                     filtered, tmp_xlsx,
                     period=period_label or "",
                     application_scope=application_scope or "",
                     current_extraction_date=extraction_date.strftime("%d/%m/%Y") if extraction_date else "",
                     previous_df=previous_df_xl,
-                    previous_extraction_date=previous_date_xl or "",
+                    previous_extraction_date=(
+                        previous_extraction_date.strftime("%d/%m/%Y") if previous_extraction_date else ""
+                    ),
                 )
                 buf = BytesIO(tmp_xlsx.read_bytes())
             st.download_button(
@@ -1231,32 +1262,133 @@ def main():
     st.divider()
 
     st.subheader("Vue d'ensemble")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Comptes analysés", summary["total_accounts"])
-    col2.metric("Comptes dormants", summary["dormant_accounts"])
-    col3.metric("Revue traitée", f"{workflow_summary.get('taux_traitement', 0)}%")
-    col4.metric("MDP périmé / non-expirant", summary.get("password_stale", 0))
+
+    # ── Métriques clés ────────────────────────────────────────────────
+    col1, col2, col3, col4, col5 = st.columns(5)
+    n_active = int(summary.get("active_accounts", df.get("is_active_for_audit", pd.Series(dtype=bool)).sum()))
+    # Les KPI reprennent les MÊMES chiffres que la grille des contrôles
+    # juste dessous (et que les rapports) : comptes actifs, risques
+    # acceptés exclus. Repli sur le résumé si un contrôle est N/A.
+    # Calcul des stats de comparaison pour Ctrl 10-13 (créés, supprimés,
+    # réactivés, profil modifié) — nécessaire dès la Vue d'ensemble,
+    # pas seulement lors de la génération du rapport.
+    from reporting.export import _compute_comparison_stats
+    _prev_df_cov, _, _ = _resolve_previous_df_and_logo()
+    _comp_stats_cov = (
+        _compute_comparison_stats(df, _prev_df_cov)
+        if _prev_df_cov is not None
+        else {}
+    )
+    coverage = compute_control_coverage(df, _comp_stats_cov)
+    _cov_counts = {number: count for number, _, _, count in coverage}
+
+    def _cov_count(number: int, fallback: int) -> int:
+        try:
+            return int(_cov_counts.get(number))
+        except (TypeError, ValueError):
+            return fallback
+
+    n_dorm   = _cov_count(2, int(summary["dormant_accounts"]))
+    n_stale  = _cov_count(14, int(summary.get("password_stale", 0)))
+    n_orph   = int(summary.get("orphaned_accounts", 0))
+    n_priv   = int(df["is_privileged_flag"].sum()) if "is_privileged_flag" in df.columns else 0
+    col1.metric("Total comptes", summary["total_accounts"])
+    col2.metric("Actifs", n_active)
+    col3.metric("Dormants", n_dorm, delta=None)
+    col4.metric("MDP périmé", n_stale)
+    col5.metric("Admins", n_priv)
 
     st.divider()
 
+    # ── 19 contrôles — vue permanente, style dashboard ───────────────
+    _WARN = "\u26a0\ufe0f"
+    n_ok   = sum(1 for *_, st_, _ in coverage if st_ == "OK")
+    n_warn = sum(1 for *_, st_, _ in coverage if st_ == _WARN)
+    n_na   = sum(1 for *_, st_, _ in coverage if st_ == "N/A")
+
+    # ── En-tête de section ───────────────────────────────────────────
+    st.markdown(
+        f"""<div style="display:flex;align-items:center;justify-content:space-between;
+                        margin-bottom:14px">
+              <div style="font-size:1.05rem;font-weight:700;color:#111827;letter-spacing:-.01em">
+                IAM Control Coverage
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <span style="background:#D1FAE5;color:#065F46;font-size:0.72rem;
+                      font-weight:600;padding:3px 10px;border-radius:99px">
+                  ✓&nbsp;{n_ok} Compliant
+                </span>
+                <span style="background:#FEE2E2;color:#991B1B;font-size:0.72rem;
+                      font-weight:600;padding:3px 10px;border-radius:99px">
+                  ⚠&nbsp;{n_warn} Finding{'s' if n_warn>1 else ''}
+                </span>
+                <span style="background:#F3F4F6;color:#6B7280;font-size:0.72rem;
+                      font-weight:600;padding:3px 10px;border-radius:99px">
+                  {n_na} N/A
+                </span>
+              </div>
+            </div>""",
+        unsafe_allow_html=True,
+    )
+
+    # ── Grille 2 colonnes ────────────────────────────────────────────
+    left_ctrls, right_ctrls = st.columns(2)
+    for i, (number, title, status, count_display) in enumerate(coverage):
+        col = left_ctrls if i % 2 == 0 else right_ctrls
+        is_warn = status == _WARN
+        is_ok   = status == "OK"
+
+        if is_warn:
+            bg, border, dot, count_col, lbl_col = \
+                "#F9FAFB", "#E5E7EB", "#374151", "#374151", "#374151"
+            badge = count_display
+        elif is_ok:
+            bg, border, dot, count_col, lbl_col = \
+                "#F9FAFB", "#E5E7EB", "#374151", "#374151", "#374151"
+            badge = count_display
+        else:
+            bg, border, dot, count_col, lbl_col = \
+                "#F9FAFB", "#E5E7EB", "#9CA3AF", "#9CA3AF", "#9CA3AF"
+            badge = "N/A"
+
+        col.markdown(
+            f"""<div style="display:flex;align-items:center;gap:10px;
+                            background:{bg};border:1px solid {border};
+                            border-radius:8px;padding:9px 14px;margin:4px 0;
+                            box-shadow:0 1px 2px rgba(0,0,0,.04)">
+                  <div style="width:8px;height:8px;border-radius:50%;
+                               background:{dot};flex-shrink:0"></div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:0.68rem;color:#9CA3AF;
+                                font-weight:600;text-transform:uppercase;
+                                letter-spacing:.04em;line-height:1.2">
+                      Ctrl {number:02d}
+                    </div>
+                    <div style="font-size:0.82rem;color:#1F2937;
+                                font-weight:500;line-height:1.35;
+                                white-space:nowrap;overflow:hidden;
+                                text-overflow:ellipsis"
+                         title="{html.escape(str(title))}">
+                      {html.escape(str(title))}
+                    </div>
+                  </div>
+                  <div style="text-align:right;flex-shrink:0">
+                    <div style="font-size:1.05rem;font-weight:700;
+                                color:{count_col};line-height:1">{badge}</div>
+                    <div style="font-size:0.65rem;color:#9CA3AF;
+                                line-height:1.4">{'compte(s)' if badge not in ('N/A','—') else ''}</div>
+                  </div>
+                </div>""",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ── Répartition par risque ────────────────────────────────────────
     st.subheader("Répartition par niveau de risque")
     vc = df["risk_level"].value_counts() if "risk_level" in df.columns else pd.Series(dtype=int)
     risk_counts = pd.Series({r: int(vc.get(r, 0)) for r in RISK_ORDER})
     st.bar_chart(risk_counts)
-
-    coverage = compute_control_coverage(df, {})
-    n_ok = sum(1 for _, _, status, _ in coverage if status == "OK")
-    n_warn = sum(1 for _, _, status, _ in coverage if status == "⚠️")
-    n_na = sum(1 for _, _, status, _ in coverage if status == "N/A")
-    with st.expander(f"Control Coverage — {n_ok + n_warn} / {len(coverage)} contrôles exécutés"):
-        st.caption(
-            f"{n_ok} OK · {n_warn} avec anomalie(s) · {n_na} non applicable (données insuffisantes)."
-        )
-        coverage_table = [
-            {"N°": number, "Contrôle": title, "Résultat": status, "Comptes": count_display}
-            for number, title, status, count_display in coverage
-        ]
-        st.dataframe(coverage_table, width="stretch", hide_index=True)
 
     st.divider()
 
@@ -1338,7 +1470,7 @@ def main():
                 st.write(f"Description : {desc}")
             with inv_col2:
                 st.markdown("**Droits & Privilèges**")
-                st.write(f"Privilégié : {'⚠️ Oui' if account.get('is_privileged_flag') else 'Non'}")
+                st.write(f"Privilégié : {'Oui' if account.get('is_privileged_flag') else 'Non'}")
                 # Afficher user_rights en priorité (droits réels octroyés),
                 # puis role (profil métier) — deux champs distincts dans Oracle EBS
                 for field_label, field_key in [("Droits (USER RIGHTS)", "user_rights"), ("Rôle", "role")]:
@@ -1573,6 +1705,7 @@ def main():
                 "is_dormant": "Comptes dormants", "is_never_used": "Jamais utilisés",
                 "is_password_stale": "Mots de passe périmés", "is_duplicate_account": "Doublons",
                 "is_locked": "Verrouillés", "is_terminated_but_active": "Partis, accès actif",
+                "is_orphaned_account": "Comptes génériques/orphelins",
                 "sod_conflict": "Conflits SoD", "total_accounts": "Total comptes",
             }
             available_metrics = {k: v for k, v in metric_options.items() if k in trend_history.columns}

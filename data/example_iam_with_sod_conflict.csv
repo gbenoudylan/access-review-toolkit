@@ -1,6 +1,11 @@
-username,system,role,account_status,last_login_date
-jkonan,Finance ERP,Créer paiement,Active,2026-08-15
-adoumbia,Finance ERP,Valider paiement,Active,2026-08-18
-kbrou,Finance ERP,"Créer paiement, Valider paiement",Active,2026-08-01
-mfofana,SIEM,Admin Système,Active,2026-01-10
-tkone,CRM,Standard,Active,2026-08-19
+username,full_name,system,account_status,employee_status,last_login_date,password_last_set,created_date,role,department
+jdupont,Jean Dupont,Active Directory,Active,Active,2026-09-20,2026-07-01,2019-03-12,Standard User,Finance
+mmartin,Marie Martin,Active Directory,Active,Active,2026-09-28,2026-08-15,2020-06-01,Create Payment; Approve Payment,Finance
+akone,Awa Koné,Active Directory,Active,Terminated,2026-08-30,2025-11-02,2018-01-15,Administrator,IT
+kyao,Koffi Yao,Active Directory,Active,Active,2025-12-01,2024-01-10,2017-09-04,Standard User,RH
+tbamba,Tidiane Bamba,Active Directory,Disabled,Active,2025-03-14,2024-05-20,2016-02-20,Standard User,Ventes
+svc_backup,Service Backup,Active Directory,Active,Active,2026-09-30,2023-01-01,2015-05-05,Service Account,IT
+test_user1,Test User,Active Directory,Active,Active,,2022-04-04,2022-04-04,Standard User,IT
+nkouame,Nadège Kouamé,Active Directory,Active,Active,2026-09-25,2026-09-01,2021-10-18,Standard User,Juridique
+nkouame2,Nadège Kouamé,Active Directory,Active,Active,2026-09-10,2026-06-01,2023-02-02,Standard User,Juridique
+admin_sys,Administrateur Système,Active Directory,Active,Active,2026-09-29,2025-01-01,2014-01-01,Domain Admin,IT

@@ -22,6 +22,7 @@ except ImportError:
     _HAS_RAPIDFUZZ = False
 
 from config.column_mapping import COLUMN_MAPPING, REQUIRED_FIELDS
+from ingestion.custom_column_mappings import IGNORED_COLUMN_SENTINEL as _IGNORED_COLUMN_SENTINEL
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger("ingestion")
@@ -105,6 +106,27 @@ def _normalize(text: str) -> str:
     return str(text).strip().lower().replace("_", " ").replace("-", " ").replace("/", " ")
 
 
+# Motif de valeurs typiquement des DONNÉES, jamais des libellés d'en-tête
+# (dates, nombres, marqueurs booléens, "NULL"/"N/A"...). Utilisé pour
+# repérer et écarter les lignes de données qui, par pure coïncidence,
+# contiennent une VALEUR identique à une variante de nom de colonne
+# connue (ex. une ligne avec loginId="admin" — "admin" est aussi listé
+# comme variante d'en-tête pour le champ 'is_privileged' — ou
+# lastName="User", "user" étant une variante d'en-tête pour 'username').
+# Sans ce garde-fou, une ligne de données pouvait obtenir un meilleur
+# score qu'une véritable ligne d'en-tête utilisant des libellés en
+# camelCase (loginId, firstName...) non reconnus par la liste de
+# variantes (qui utilise des espaces, pas le camelCase).
+_HEADER_DATA_VALUE_RE = re.compile(
+    r"^\d+$"                              # entier pur (booléens 0/1, compteurs)
+    r"|^(null|n/a|na|none|-|nan)$"        # marqueurs de valeur manquante
+    r"|^\d{4}-\d{2}-\d{2}"                # ISO 8601
+    r"|^\d{1,2}/\d{1,2}/\d{2,4}"          # MM/DD/YYYY ou DD/MM/YYYY
+    r"|^[a-z]{3}\s+\d{1,2}\s+\d{4}",      # Jan 31 2025...
+    re.IGNORECASE,
+)
+
+
 def _score_header_row(row: pd.Series, column_mapping: dict = None) -> int:
     column_mapping = column_mapping or COLUMN_MAPPING
     all_variants = {
@@ -119,14 +141,42 @@ def _score_header_row(row: pd.Series, column_mapping: dict = None) -> int:
     return score
 
 
+def _looks_like_data_row(row: pd.Series) -> bool:
+    """Une ligne d'EN-TÊTE ne contient normalement jamais de valeurs
+    typiques de données (dates, nombres purs, "NULL"...) — si une
+    majorité des cellules non vides y ressemblent, ce n'est pas un
+    en-tête, quel que soit son score de correspondance de variantes."""
+    cells = [str(c).strip() for c in row if not pd.isna(c) and str(c).strip() != ""]
+    if not cells:
+        return False
+    data_like = sum(1 for c in cells if _HEADER_DATA_VALUE_RE.match(c))
+    return data_like / len(cells) >= 0.5
+
+
 def _detect_header_row(raw: pd.DataFrame, column_mapping: dict = None, max_scan_rows: int = 15) -> int:
     best_row, best_score = 0, -1
+    fallback_row, fallback_score = 0, -1  # meilleure ligne même si elle ressemble à des données
     for i in range(min(max_scan_rows, len(raw))):
         score = _score_header_row(raw.iloc[i], column_mapping)
+        if score > fallback_score:
+            fallback_row, fallback_score = i, score
+        if _looks_like_data_row(raw.iloc[i]):
+            continue
         if score > best_score:
             best_row, best_score = i, score
     if best_score <= 0:
-        logger.warning("Aucune ligne d'en-tête reconnue, utilisation de la ligne 0.")
+        if fallback_score > 0:
+            # Aucune ligne "non-data" ne correspond, mais une ligne de
+            # données a un score positif par coïncidence : ne pas la
+            # choisir aveuglément, revenir à la ligne 0 (comportement
+            # prudent existant) plutôt que de prendre une ligne de
+            # données pour un en-tête.
+            logger.warning(
+                "Aucune ligne d'en-tête plausible reconnue (les seules lignes avec "
+                "correspondance ressemblent à des données) — utilisation de la ligne 0."
+            )
+        else:
+            logger.warning("Aucune ligne d'en-tête reconnue, utilisation de la ligne 0.")
         return 0
     logger.info(f"En-tête détecté à la ligne {best_row} (score={best_score}).")
     return best_row
@@ -144,7 +194,19 @@ def _match_column(
     # ou non — et c'est justement ce qui permet à l'outil de s'adapter à
     # des noms de colonnes jamais vus, sans toucher au code.
     if custom_mappings and col_norm in custom_mappings:
-        return custom_mappings[col_norm]
+        learned = custom_mappings[col_norm]
+        if learned == _IGNORED_COLUMN_SENTINEL:
+            # L'utilisateur a explicitement choisi "Ignorée" pour cette
+            # colonne dans le dashboard : ça doit rester ignoré, même si
+            # la colonne serait normalement auto-détectée (par nom exact
+            # ou fuzzy matching) sur un champ standard. Sans ce marqueur
+            # explicite, "Ignorée" ne faisait que supprimer une éventuelle
+            # correspondance manuelle antérieure (forget_custom_column_
+            # mapping), et la détection automatique reprenait aussitôt la
+            # main derrière — rendant le choix "Ignorée" inopérant pour
+            # toute colonne déjà reconnue par nom/fuzzy.
+            return None
+        return learned
 
     column_mapping = column_mapping or COLUMN_MAPPING
 
@@ -377,6 +439,7 @@ def standardize_columns(
     # celles restées sans correspondance.
     full_column_mapping = {}
     claimed_by: dict[str, str] = {}  # nom standard -> colonne originale déjà utilisée
+    claimed_manually: set[str] = set()  # champs standard déjà attribués via un mapping MANUEL
 
     # Deux colonnes brutes peuvent porter EXACTEMENT le même libellé (pas
     # juste équivalent) — ex. un export avec deux colonnes "Status". Dans
@@ -402,14 +465,32 @@ def standardize_columns(
     _BOOLEAN_TRUE_MARKERS = {"true", "1", "yes", "oui", "y"}
     _BOOLEAN_FALSE_MARKERS = {"false", "0", "no", "non", "n"}
 
+    explicitly_ignored_cols: set = set()  # colonnes marquées "Ignorée" à la main (dashboard)
+
     for col in df.columns:
         # Retire le suffixe temporaire ('__dupN') avant reconnaissance,
         # sans quoi il empêche le fuzzy matching de reconnaître la colonne.
         lookup_name = re.sub(r"__dup\d+$", "", str(col))
+        col_norm_for_ignore_check = _normalize(lookup_name)
+        if (
+            custom_mappings
+            and custom_mappings.get(col_norm_for_ignore_check) == _IGNORED_COLUMN_SENTINEL
+        ):
+            explicitly_ignored_cols.add(col)
         matched = _match_column(lookup_name, column_mapping, custom_mappings=custom_mappings)
         if not matched:
             unmatched.append(col)
             continue
+        # Un mapping MANUEL (appris via le dashboard) est une correction
+        # explicitement confirmée par un humain sur CETTE colonne précise
+        # — il doit toujours l'emporter sur une colonne auto-détectée pour
+        # la même cible, quel que soit l'ordre des colonnes dans le
+        # fichier source. Sans ça, une colonne auto-détectée arrivant
+        # avant la colonne mappée manuellement (ex. "Last Login" avant
+        # "Last Login1" mappée manuellement sur last_login_date) gagnait
+        # systématiquement, rendant le mapping manuel silencieusement
+        # inopérant.
+        is_manual = bool(custom_mappings and _normalize(lookup_name) in custom_mappings)
         full_column_mapping[col] = matched.replace("__inverted_bool", "")
         # Correction manuelle avec inversion de polarité (dashboard) :
         # certains champs sources sont des booléens de sens OPPOSÉ au
@@ -443,6 +524,28 @@ def standardize_columns(
         if matched not in claimed_by:
             claimed_by[matched] = col
             rename_map[col] = matched
+            if is_manual:
+                claimed_manually.add(matched)
+        elif is_manual and matched not in claimed_manually:
+            # Cette colonne est mappée manuellement, mais une colonne
+            # auto-détectée a déjà pris la cible en premier : on délogue
+            # cette dernière. La colonne manuelle devient la primaire (ses
+            # valeurs priment en cas de désaccord), l'ancienne colonne
+            # auto-détectée devient secondaire (ne comble que les trous).
+            old_primary_col = claimed_by[matched]
+            rename_map.pop(old_primary_col, None)
+            rename_map[col] = matched
+            claimed_by[matched] = col
+            claimed_manually.add(matched)
+            logger.info(
+                f"Mapping manuel prioritaire : '{col}' remplace '{old_primary_col}' "
+                f"comme colonne source de '{matched}' (auto-détectée en premier, mais "
+                f"non retenue)."
+            )
+            primary_filled = df[col].mask(df[col].astype(str).str.strip() == "")
+            secondary_filled = df[old_primary_col].mask(df[old_primary_col].astype(str).str.strip() == "")
+            df[col] = primary_filled.combine_first(secondary_filled)
+            df = df.drop(columns=[old_primary_col])
         else:
             primary_col = claimed_by[matched]
             # Avant de fusionner : deux colonnes candidates pour le même
@@ -504,6 +607,12 @@ def standardize_columns(
 
     for col in list(unmatched):
         if col not in df.columns:
+            continue
+        if col in explicitly_ignored_cols:
+            # L'utilisateur a explicitement choisi "Ignorée" pour cette
+            # colonne dans le dashboard — cette heuristique (contenu qui
+            # ressemble à des dates) ne doit jamais la recapturer derrière
+            # son dos, même si le contenu ressemble fortement à une date.
             continue
         sample = df[col].dropna().astype(str).str.strip()
         sample = sample[sample.str.len() > 5]
@@ -649,7 +758,14 @@ def compute_data_quality_report(df: pd.DataFrame) -> dict:
     if "account_status" in df.columns:
         non_empty = df["account_status"].notna() & (df["account_status"].astype(str).str.strip() != "")
         status_lower = df["account_status"].astype(str).str.strip().str.lower()
-        unknown_mask = non_empty & ~status_lower.isin(_KNOWN_STATUS_VOCABULARY)
+        if "status_is_unknown" in df.columns:
+            # DataFrame déjà analysé : on reprend la décision d'analyze_access
+            # (mappings manuels + formats composés 'Y-Active' compris),
+            # au lieu d'une liste de vocabulaire plus étroite qui signalait
+            # comme « inconnue » une valeur que l'utilisateur a déjà mappée.
+            unknown_mask = non_empty & df["status_is_unknown"].fillna(False).astype(bool)
+        else:
+            unknown_mask = non_empty & ~status_lower.isin(_KNOWN_STATUS_VOCABULARY)
         issues["unknown_status"] = int(unknown_mask.sum())
         problem_mask |= unknown_mask
 

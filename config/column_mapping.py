@@ -18,6 +18,7 @@ COLUMN_MAPPING = {
         "samaccount",  # export Oracle Identity Manager (colonne "SAMACCOUNT", sans le suffixe "NAME")
         "userprincipalname",  # variante sans espace (export AD/Azure hybride)
         "user name",  # variante espacée très courante (ex. exports Windows/IAM génériques)
+        "loginid", "login id", "login_id",  # export Oracle Identity Manager ("loginId")
     ],
     "user_id": [
         # Distinct du nom de connexion : souvent un identifiant employé/

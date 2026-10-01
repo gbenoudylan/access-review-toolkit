@@ -86,7 +86,7 @@ Ce script simule un vrai usage de bout en bout (import, analyse, génération de
 pip install pytest
 pytest tests/ -v
 ```
-Tous les tests doivent passer (~265 tests). Si l'un d'eux échoue, vérifie d'abord que l'étape 3 s'est bien terminée sans erreur avant de chercher plus loin.
+Tous les tests doivent passer (~284 tests). Si l'un d'eux échoue, vérifie d'abord que l'étape 3 s'est bien terminée sans erreur avant de chercher plus loin.
 
 ---
 

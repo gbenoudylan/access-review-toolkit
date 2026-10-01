@@ -46,6 +46,66 @@ from reporting.template_sections import (
 )
 from analysis.access_review import _is_active_account
 
+def _row_is_active(row) -> bool:
+    """Statut actif d'UNE ligne, en respectant les mappings personnalisés
+    quand l'analyse les a déjà appliqués (colonne is_active_for_audit),
+    avec repli sur la reconnaissance automatique sinon."""
+    resolved = row.get("is_active_for_audit")
+    if resolved is not None and pd.notna(resolved):
+        return bool(resolved)
+    return _is_active_account(row.get("account_status"))
+
+
+def _to_bool(series) -> "pd.Series":
+    """Convertit n'importe quelle série (bool, object, str, int) en bool.
+    Évite TypeError: operation 'rand_' not supported for dtype 'str'.
+    Gère les strings "false"/"0"/"no" → False, et Arrow backend dtype.
+    """
+    if hasattr(series, 'dtype') and series.dtype == bool:
+        return series
+    _FALSE_STRINGS = {"false", "0", "no", "none", "null", "nan", "", "n"}
+
+    def _coerce(v):
+        if v is None or (isinstance(v, float) and v != v):  # NaN
+            return False
+        if isinstance(v, str):
+            return v.strip().lower() not in _FALSE_STRINGS
+        try:
+            return bool(v)
+        except Exception:
+            return False
+
+    try:
+        # Essai rapide — fonctionne si pas de strings ambiguës
+        result = series.astype(bool)
+        # Vérifier si des strings sont présentes (dtype object)
+        if series.dtype == object:
+            return series.map(_coerce)
+        return result
+    except (TypeError, ValueError):
+        return series.map(_coerce)
+
+
+def _accepted_mask(d: pd.DataFrame, key: str) -> "pd.Series":
+    """
+    Série booléenne (même index que `d`) : True si le constat `key` est
+    couvert par une acceptation de risque sur cette ligne.
+
+    Remplace le motif `d.apply(lambda r: is_finding_accepted(r, key), axis=1)`,
+    qui plantait (TypeError: operation 'rand_' not supported for dtype 'str')
+    dès que `d` était VIDE : pandas renvoie alors un DataFrame vide, et non
+    une Series, ce qui casse `Series & ~DataFrame`. Ici le résultat est
+    TOUJOURS une Series de bool, quel que soit le contenu ou le dtype.
+    """
+    from analysis.risk_acceptance import is_finding_accepted
+    if d is None or len(d) == 0 or "accepted_finding_keys" not in d.columns:
+        return pd.Series(False, index=getattr(d, "index", None), dtype=bool)
+    return pd.Series(
+        [bool(is_finding_accepted(row, key)) for _, row in d.iterrows()],
+        index=d.index, dtype=bool,
+    )
+
+
 def _active_accounts(df: pd.DataFrame) -> pd.DataFrame:
     """Filtre les comptes actifs en respectant les mappings personnalisés."""
     if "is_active_for_audit" in df.columns:
@@ -338,8 +398,8 @@ def generate_excel_report(
         if flag_col not in active_df.columns:
             ws.cell(2, 1, "N/A — data not available for this control.")
             return ws, 0
-        subset = active_df[active_df[flag_col] == True]
-        subset = subset[~subset.apply(lambda r: is_finding_accepted(r, flag_col), axis=1)]
+        subset = active_df[_to_bool(active_df[flag_col])]
+        subset = subset[~_accepted_mask(subset, flag_col)]
         for ri, (_, row) in enumerate(subset.iterrows(), 2):
             _ws_row(ws, ri, [str(row.get(c, "") or "") for c in avail], avail)
         _autowidth(ws, avail)
@@ -355,7 +415,9 @@ def generate_excel_report(
     ws_s["A2"] = f"Period: {period}  |  System: {application_scope}  |  Extraction: {current_extraction_date}"
     ws_s["A2"].font = Font(italic=True, color="666666")
 
-    cov = compute_control_coverage(df, {})
+    # `comp` (et non {}) : sinon les contrôles 10 à 13 restent N/A dans le
+    # Summary alors que leurs feuilles contiennent bien la comparaison.
+    cov = compute_control_coverage(df, comp)
     ws_s.append([])
     ws_s.append(["#", "Control", "Status", "Count"])
     hi = ws_s.max_row
@@ -434,7 +496,7 @@ def generate_excel_report(
 
             # --- Ctrl10 Created : fallback sur is_recently_created (même logique que PDF)
             if comp_key == "created" and not account_names and "is_recently_created" in active_df.columns:
-                subset = active_df[active_df["is_recently_created"] == True]
+                subset = active_df[_to_bool(active_df["is_recently_created"])]
                 if len(subset):
                     cols_w = ["username","full_name","system","account_status",
                               "account_created_date","days_since_creation","user_rights"]
@@ -449,7 +511,7 @@ def generate_excel_report(
                     ws.cell(1, 1).font = Font(color="FFFFFF")
                     ws.column_dimensions["A"].width = 60
             elif not has_comparison and not detail and not account_names:
-                ws.cell(1, 1, "N/A — requires a previous review file for comparison.")
+                ws.cell(1, 1, "N/A — no account found.")
                 ws.cell(1, 1).fill = NA_FILL
                 ws.cell(1, 1).font = Font(color="FFFFFF")
                 ws.column_dimensions["A"].width = 60
@@ -648,7 +710,7 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
     def _count_excluding_accepted(key: str) -> int:
         if "accepted_finding_keys" not in df.columns:
             return int(df[key].sum())
-        mask = df[key] & ~df.apply(lambda r: is_finding_accepted(r, key), axis=1)
+        mask = _to_bool(df[key]) & ~_accepted_mask(df, key)
         return int(mask.sum())
 
     rows = []
@@ -699,9 +761,7 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
             elif "is_password_stale" in df.columns:
                 # Compter seulement les comptes ACTIFS avec mot de passe périmé
                 active_df = _active_accounts(df)
-                count = int((active_df["is_password_stale"] & ~active_df.apply(
-                    lambda r: is_finding_accepted(r, "is_password_stale"), axis=1
-                )).sum()) if "is_password_stale" in active_df.columns else 0
+                count = int((_to_bool(active_df["is_password_stale"]) & ~_accepted_mask(active_df, "is_password_stale")).sum()) if "is_password_stale" in active_df.columns else 0
                 status = "⚠️" if count > 0 else "OK"
                 count_display = str(count)
             else:
@@ -723,7 +783,7 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
                     count += _count_excluding_accepted("is_terminated_but_active")
                 if "is_transferred_but_active" in df.columns and transfer_data_present:
                     from analysis.risk_acceptance import is_finding_accepted as _ifa
-                    mask2 = df["is_transferred_but_active"] & ~df.apply(lambda r: _ifa(r, "is_transferred_but_active"), axis=1)
+                    mask2 = _to_bool(df["is_transferred_but_active"]) & ~_accepted_mask(df, "is_transferred_but_active")
                     count += int(mask2.sum())
                 status = "⚠️" if count > 0 else "OK"
                 count_display = str(count)
@@ -755,9 +815,7 @@ def compute_control_coverage(df: pd.DataFrame, comparison_stats: dict) -> list[t
             }
             if key in ACTIVE_ONLY_KEYS:
                 active_df = _active_accounts(df)
-                count = int((active_df[key] & ~active_df.apply(
-                    lambda r: is_finding_accepted(r, key), axis=1
-                )).sum()) if key in active_df.columns else 0
+                count = int((_to_bool(active_df[key]) & ~_accepted_mask(active_df, key)).sum()) if key in active_df.columns else 0
             else:
                 count = _count_excluding_accepted(key)
             status = "⚠️" if count > 0 else "OK"
@@ -1192,7 +1250,7 @@ def _build_control_subsections(
             # attributs) que dans la revue PRÉCÉDENTE.
             value = comparison_stats.get("deleted")
             if value is None:
-                note = "N/A — no previous review provided to establish the comparison."
+                note = "N/A — no account found."
             else:
                 count = value
                 names = comparison_stats.get("deleted_accounts") or []
@@ -1210,20 +1268,20 @@ def _build_control_subsections(
                 count = len(subset)
             else:
                 note = (
-                    "N/A — no previous review provided to establish the comparison, "
+                    "N/A — no account found."
                     "and no 'account_created_date' column either."
                 )
         elif key == "_reactivated":
             value = comparison_stats.get("reactivated")
             if value is None:
-                note = "N/A — no previous review provided to establish the comparison."
+                note = "N/A — no account found."
             else:
                 count = value
                 comparison_detail = comparison_stats.get("reactivated_detail") or []
         elif key == "_profile_modified":
             value = comparison_stats.get("profile_modified")
             if value is None:
-                note = "N/A — no previous review provided to establish the comparison."
+                note = "N/A — no account found."
             else:
                 count = value
                 comparison_detail = comparison_stats.get("profile_modified_detail") or []
@@ -1235,10 +1293,10 @@ def _build_control_subsections(
             else:
                 _sm14 = _ao14.get("is_service_account", pd.Series(False, index=_ao14.index)).astype(bool)
                 _ns14 = _ao14[~_sm14 & (_ao14["is_password_stale"] == True)]
-                _ns14 = _ns14[~_ns14.apply(lambda r: is_finding_accepted(r,"is_password_stale"),axis=1)]
+                _ns14 = _ns14[~_accepted_mask(_ns14, "is_password_stale")]
                 _sc14 = "is_service_password_stale" if "is_service_password_stale" in _ao14.columns else "is_password_stale"
                 _ss14 = _ao14[_sm14 & (_ao14[_sc14] == True)]
-                _ss14 = _ss14[~_ss14.apply(lambda r: is_finding_accepted(r,"is_password_stale"),axis=1)]
+                _ss14 = _ss14[~_accepted_mask(_ss14, "is_password_stale")]
                 _tot14 = len(_ns14) + len(_ss14)
                 elements.append(Paragraph(f"<b>{_tot14}</b> account(s) concerned.", action_style))
                 elements.append(Spacer(1, 0.1*cm))
@@ -1261,7 +1319,7 @@ def _build_control_subsections(
             active_only = _active_accounts(df)
             subset = active_only[active_only[key] == True]  # noqa: E712
             if len(subset):
-                subset = subset[~subset.apply(lambda r: is_finding_accepted(r, key), axis=1)]
+                subset = subset[~_accepted_mask(subset, key)]
             count = len(subset)
         else:
             note = f"N/A — column '{key}' missing from the ingested data."
@@ -1311,6 +1369,18 @@ def _compute_comparison_stats(
 
     def _norm_key(v):
         return str(v).strip().lower()
+
+    def _flag_true(v) -> bool:
+        # bool(float('nan')) vaut True : une valeur manquante ne doit jamais
+        # compter comme « privilégié ».
+        try:
+            if pd.isna(v):
+                return False
+        except (TypeError, ValueError):
+            pass
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "oui", "vrai")
+        return bool(v)
 
     key_col = "username"
 
@@ -1374,10 +1444,23 @@ def _compute_comparison_stats(
         deleted_usernames_list = deleted_display
 
     # Pour la logique de comparaison reactivated/modified, utiliser username uniquement
-    current_series  = df[key_col].dropna()
-    previous_series = previous_df[key_col].dropna()
-    current_display  = {_norm_key(v): v for v in reversed(current_series.tolist())}
-    previous_display = {_norm_key(v): v for v in reversed(previous_series.tolist())}
+    # Même granularité que créé/supprimé : si les DEUX revues sont
+    # multi-systèmes, la clé est (username, système). Sinon un même login
+    # présent sur deux systèmes était comparé sur sa seule 1re ligne, et un
+    # compte réactivé / modifié sur le 2e système passait inaperçu (ou
+    # était attribué au mauvais système).
+    use_pair = has_sys_curr and has_sys_prev
+
+    def _cmp_keys(d: pd.DataFrame) -> pd.Series:
+        base = d[key_col].map(_norm_key)
+        if use_pair:
+            base = base + "|" + d["system"].map(_norm_key)
+        return base.where(d[key_col].notna())
+
+    curr_keys_s = _cmp_keys(df)
+    prev_keys_s = _cmp_keys(previous_df)
+    current_display  = {k: v for k, v in zip(reversed(curr_keys_s.tolist()), reversed(df[key_col].tolist())) if pd.notna(k)}
+    previous_display = {k: v for k, v in zip(reversed(prev_keys_s.tolist()), reversed(previous_df[key_col].tolist())) if pd.notna(k)}
     current_keys  = set(current_display)
     previous_keys = set(previous_display)
     common        = current_keys & previous_keys
@@ -1390,9 +1473,9 @@ def _compute_comparison_stats(
 
     if common:
         try:
-            curr_idx = df.set_index(df[key_col].map(_norm_key))
-            prev_idx = previous_df.set_index(previous_df[key_col].map(_norm_key))
-            for norm_uname in common:
+            curr_idx = df.set_index(curr_keys_s)
+            prev_idx = previous_df.set_index(prev_keys_s)
+            for norm_uname in sorted(common):
                 curr_row = curr_idx.loc[norm_uname]
                 prev_row = prev_idx.loc[norm_uname]
                 if isinstance(curr_row, pd.DataFrame): curr_row = curr_row.iloc[0]
@@ -1402,8 +1485,8 @@ def _compute_comparison_stats(
 
                 # Réactivé
                 if "account_status" in df.columns and "account_status" in previous_df.columns:
-                    was_inactive  = not _is_active_account(prev_row.get("account_status"))
-                    is_active_now = _is_active_account(curr_row.get("account_status"))
+                    was_inactive  = not _row_is_active(prev_row)
+                    is_active_now = _row_is_active(curr_row)
                     if was_inactive and is_active_now:
                         reactivated_accounts.append(str(uname))
                         reactivated_detail.append({
@@ -1429,19 +1512,23 @@ def _compute_comparison_stats(
                         })
 
                 # Escalade de privilège
-                was_priv = bool(prev_row.get("is_privileged_flag", False))
-                is_priv  = bool(curr_row.get("is_privileged_flag", False))
+                was_priv = _flag_true(prev_row.get("is_privileged_flag", False))
+                is_priv  = _flag_true(curr_row.get("is_privileged_flag", False))
                 if not was_priv and is_priv:
                     escalated_accounts.append(str(uname))
-        except Exception:
-            pass
+        except Exception as exc:  # ne jamais masquer une erreur de comparaison
+            logger.error("Comparaison des revues interrompue : %s", exc, exc_info=True)
 
     stats.update({
-        "created":  len(created_display) or None,
-        "deleted":  len(deleted_display) or None,
-        "reactivated":      len(reactivated_accounts)     or None,
-        "profile_modified": len(profile_modified_accounts) or None,
-        "privilege_escalation": len(escalated_accounts)   or None,
+        # Comparaison réalisée : 0 est un RÉSULTAT valide (aucun compte créé,
+        # supprimé...), pas une absence de donnée. None est réservé au cas
+        # où la comparaison est impossible (retour anticipé plus haut) — sinon
+        # le Word affichait « None » et les contrôles 12/13 « N/A ».
+        "created":  len(created_display),
+        "deleted":  len(deleted_display),
+        "reactivated":      len(reactivated_accounts),
+        "profile_modified": len(profile_modified_accounts),
+        "privilege_escalation": len(escalated_accounts),
         # created_accounts = usernames purs (pour filtre df)
         # created_accounts_display = "user (sys)" (pour PDF/Word)
         "created_accounts":  sorted(set(str(u) for u in created_usernames_list if u)),
@@ -1455,6 +1542,44 @@ def _compute_comparison_stats(
         "reactivated_detail":      reactivated_detail,
     })
     return stats
+
+
+def _status_breakdown_rows(df: pd.DataFrame, previous_df=None) -> list[list[str]]:
+    """
+    Source UNIQUE du tableau « Type of Users » de la section a. Summary of
+    the review (PDF et Word). Garanties de cohérence :
+      - la somme des lignes == la ligne TOTAL (les statuts manquants sont
+        regroupés dans « Unknown » au lieu d'être silencieusement exclus) ;
+      - mêmes libellés des deux côtés (espaces retirés), donc aucun statut
+        n'apparaît à 0 par simple différence de typage ;
+      - ordre stable : effectif actuel décroissant, puis ordre alphabétique.
+    Retourne les lignes (en-tête incluse). Avec `previous_df` : 4 colonnes
+    (Previous / Current / Variation), sinon 2 colonnes (Current).
+    """
+    def _counts(d) -> dict:
+        ser = d["account_status"].map(
+            lambda v: "Unknown" if (pd.isna(v) or str(v).strip().lower() in ("", "nan", "none"))
+            else str(v).strip()
+        )
+        return {str(k): int(v) for k, v in ser.value_counts().items()}
+
+    curr = _counts(df)
+    has_prev = previous_df is not None and "account_status" in previous_df.columns
+    if not has_prev:
+        rows = [["Type of Users", "Current review"]]
+        for status in sorted(curr, key=lambda k: (-curr[k], k)):
+            rows.append([status, str(curr[status])])
+        rows.append(["TOTAL", str(len(df))])
+        return rows
+
+    prev = _counts(previous_df)
+    statuses = sorted(set(curr) | set(prev), key=lambda k: (-curr.get(k, 0), k))
+    rows = [["Type of Users", "Previous review", "Current review", "Variation"]]
+    for status in statuses:
+        p_, c_ = prev.get(status, 0), curr.get(status, 0)
+        rows.append([status, str(p_), str(c_), f"{c_ - p_:+d}"])
+    rows.append(["TOTAL", str(len(previous_df)), str(len(df)), f"{len(df) - len(previous_df):+d}"])
+    return rows
 
 
 def _build_review_comparison_section(
@@ -1491,23 +1616,13 @@ def _build_review_comparison_section(
         ))
         return elements, stats
 
-    current_counts = df["account_status"].value_counts()
-    if previous_df is not None and "account_status" in previous_df.columns:
-        previous_counts = previous_df["account_status"].value_counts()
+    has_prev_status = previous_df is not None and "account_status" in previous_df.columns
+    rows = _status_breakdown_rows(df, previous_df)
+    if has_prev_status:
         elements.append(Paragraph(
             "The review of the application accounts covers a total of accounts distributed as follows:",
             note_style,
         ))
-        statuses = sorted(
-            {str(s) for s in set(current_counts.index) | set(previous_counts.index)
-             if s is not None and str(s).strip().lower() not in ("nan","none","")}
-        )
-        rows = [["Type of Users", "Previous review", "Current review", "Variation"]]
-        for status in statuses:
-            prev = int(previous_counts.get(status, 0))
-            curr = int(current_counts.get(status, 0))
-            rows.append([str(status), str(prev), str(curr), f"{curr - prev:+d}"])
-        rows.append(["TOTAL", str(len(previous_df)), str(len(df)), f"{len(df) - len(previous_df):+d}"])
         comp_table = Table(rows, colWidths=[available_width * w for w in (0.35, 0.2, 0.2, 0.25)])
         comp_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6F1")),
@@ -1574,17 +1689,15 @@ def _build_review_comparison_section(
     else:
         elements.append(Paragraph(
             "The review of the application accounts covers a total of accounts distributed as "
-            "follows (no previous review provided for comparison):",
+            "follows:",
             note_style,
         ))
-        rows = [["Type of Users", "Current review"]]
-        for status, count in current_counts.items():
-            rows.append([str(status), str(int(count))])
-        rows.append(["TOTAL", str(len(df))])
         comp_table = Table(rows, colWidths=[available_width * 0.6, available_width * 0.4])
         comp_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6F1")),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#DCE6F1")),
             ("FONTNAME", (0, 0), (-1, -1), DEFAULT_FONT),
+            ("FONTNAME", (0, -1), (-1, -1), DEFAULT_FONT_BOLD),
             ("FONTNAME", (0, 0), (-1, 0), DEFAULT_FONT_BOLD),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -1890,6 +2003,18 @@ def _build_section_18_word(doc, df, terminated_df, transferred_df, is_finding_ac
     _add_finding_table(trans_finding)
 
 
+def _parse_extraction_date(s: str):
+    """Parse une date d'extraction en YYYY-MM-DD ou DD/MM/YYYY — robuste."""
+    if not s:
+        return datetime.now()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s.strip(), fmt)
+        except ValueError:
+            continue
+    return datetime.now()
+
+
 def generate_word_report(
     df: pd.DataFrame,
     output_path: str | Path,
@@ -1975,7 +2100,7 @@ def generate_word_report(
     doc.add_heading("Baseline evidence of the review", level=2)
     doc.add_paragraph("Data source: Email or automated reception")
     extraction_date_display = (
-        datetime.strptime(current_extraction_date, "%Y-%m-%d").strftime("%d/%m/%Y")
+        (_parse_extraction_date(current_extraction_date).strftime("%d/%m/%Y") if current_extraction_date else datetime.now().strftime("%d/%m/%Y"))
         if current_extraction_date else datetime.now().strftime("%d/%m/%Y")
     )
     review_date_display = datetime.now().strftime("%d/%m/%Y")
@@ -2053,20 +2178,16 @@ def generate_word_report(
     )
 
     doc.add_heading("a. Summary of the review", level=2)
-    if "account_status" in df.columns:
-        current_counts = df["account_status"].value_counts()
-        if previous_df is not None and "account_status" in previous_df.columns:
-            previous_counts = previous_df["account_status"].value_counts()
-            statuses = sorted(
-            {str(s) for s in set(current_counts.index) | set(previous_counts.index)
-             if s is not None and str(s).strip().lower() not in ("nan","none","")}
-        )
-            summary_rows = [["Type of Users", "Previous review", "Current review", "Variation"]]
-            for status in statuses:
-                prev, curr = int(previous_counts.get(status, 0)), int(current_counts.get(status, 0))
-                summary_rows.append([str(status), str(prev), str(curr), f"{curr - prev:+d}"])
-            summary_rows.append(["TOTAL", str(len(previous_df)), str(len(df)), f"{len(df) - len(previous_df):+d}"])
-            _docx_add_table(doc, summary_rows)
+    if "account_status" not in df.columns:
+        doc.add_paragraph("'account_status' column missing: breakdown by status unavailable.")
+    else:
+        has_prev_status = previous_df is not None and "account_status" in previous_df.columns
+        if has_prev_status:
+            doc.add_paragraph(
+                "The review of the application accounts covers a total of accounts distributed as follows:"
+            )
+        _docx_add_table(doc, _status_breakdown_rows(df, previous_df))
+        if has_prev_status and comparison_stats.get("created") is not None:
             doc.add_paragraph()
             _docx_add_table(doc, [
                 ["Indicator", "Count"],
@@ -2084,12 +2205,6 @@ def generate_word_report(
                 p = doc.add_paragraph()
                 p.add_run("Privilege Escalation — accounts concerned: ").bold = True
                 p.add_run(names_text)
-        else:
-            rows = [["Type of Users", "Current review"]]
-            for status, count in current_counts.items():
-                rows.append([str(status), str(int(count))])
-            rows.append(["TOTAL", str(len(df))])
-            _docx_add_table(doc, rows)
     doc.add_paragraph()
 
     # ---- IV. ACCOUNT DETAILS BY CONTROL ----
@@ -2106,40 +2221,15 @@ def generate_word_report(
     # Exceptions plus bas.
     df_all_accounts = df
     from analysis.risk_acceptance import is_finding_accepted
+    # Source UNIQUE de vérité : le même calcul que le PDF, l'Excel et le
+    # dashboard (compute_control_coverage). Le Word recomptait auparavant
+    # chaque contrôle lui-même, sur TOUS les comptes (inactifs inclus),
+    # alors que la section détail de chaque contrôle ne garde que les
+    # comptes actifs hors risques acceptés — d'où un sommaire différent
+    # du nombre réel (ex. Ctrl 14 : 8 au sommaire, 4 dans le détail).
     summary_rows = [["No.", "Control", "Result", "Findings"]]
-    dump_ok = all(
-        any(c in df.columns and df[c].notna().any() for c in candidates)
-        for _, candidates in DUMP_COMPLETENESS_COLUMNS
-    )
-    summary_rows.append(["1", "Dump completeness and accuracy", "OK" if dump_ok else "⚠", "—"])
-    for number, ctrl_title, _, key in CONTROL_SUBSECTIONS:
-        if key is None:
-            status, count_display = "N/A", "—"
-        elif key == "_active_count":
-            status = "OK"
-            count_display = str(len(_active_accounts(df)))
-        elif key == "_created":
-            value = comparison_stats.get("created")
-            if value is not None:
-                status, count_display = ("⚠" if value > 0 else "OK"), str(value)
-            elif "is_recently_created" in df.columns and "account_created_date" in df.columns:
-                count = int(df["is_recently_created"].sum())
-                status, count_display = ("⚠" if count > 0 else "OK"), str(count)
-            else:
-                status, count_display = "N/A", "—"
-        elif key in ("_deleted", "_reactivated", "_profile_modified"):
-            value = comparison_stats.get(key.lstrip("_"))
-            status, count_display = ("N/A", "—") if value is None else (("⚠" if value > 0 else "OK"), str(value))
-        elif key in df.columns:
-            if "accepted_finding_keys" in df.columns:
-                mask = df[key] & ~df.apply(lambda r: is_finding_accepted(r, key), axis=1)
-                count = int(mask.sum())
-            else:
-                count = int(df[key].sum())
-            status, count_display = ("⚠" if count > 0 else "OK"), str(count)
-        else:
-            status, count_display = "N/A", "—"
-        summary_rows.append([str(number), ctrl_title, status, count_display])
+    for number, ctrl_title, status, count_display in compute_control_coverage(df, comparison_stats):
+        summary_rows.append([str(number), ctrl_title, status.replace("⚠️", "⚠"), count_display])
     _docx_add_table(doc, summary_rows, col_widths_cm=[1, 8, 2, 3])
     doc.add_paragraph()
 
@@ -2188,7 +2278,7 @@ def generate_word_report(
             # uniquement retrouvable dans la revue précédente.
             value = comparison_stats.get("deleted")
             if value is None:
-                note = "N/A — no previous review provided to establish the comparison."
+                note = "N/A — no account found."
             else:
                 count = value
                 names = comparison_stats.get("deleted_accounts") or []
@@ -2206,20 +2296,20 @@ def generate_word_report(
                 count = len(subset)
             else:
                 note = (
-                    "N/A — no previous review provided to establish the comparison, "
-                    "and no 'account_created_date' column either."
+                    "N/A — no account found."
+                    "or no 'account_created_date' column either."
                 )
         elif key == "_reactivated":
             value = comparison_stats.get("reactivated")
             if value is None:
-                note = "N/A — no previous review provided to establish the comparison."
+                note = "N/A — no account found."
             else:
                 count = value
                 comparison_detail = comparison_stats.get("reactivated_detail") or []
         elif key == "_profile_modified":
             value = comparison_stats.get("profile_modified")
             if value is None:
-                note = "N/A — no previous review provided to establish the comparison."
+                note = "N/A — no account found."
             else:
                 count = value
                 comparison_detail = comparison_stats.get("profile_modified_detail") or []
@@ -2228,7 +2318,7 @@ def generate_word_report(
             active_only_w = _active_accounts(df)
             subset = active_only_w[active_only_w[key] == True]  # noqa: E712
             if len(subset):
-                subset = subset[~subset.apply(lambda r: is_finding_accepted(r, key), axis=1)]
+                subset = subset[~_accepted_mask(subset, key)]
             count = len(subset)
         else:
             note = f"N/A — column '{key}' missing from the ingested data."
@@ -2478,7 +2568,7 @@ def generate_pdf_report(
     elements.append(Paragraph("Baseline evidence of the review", section_style))
     elements.append(Paragraph("Data source: Email or automated reception", note_style))
     extraction_date_display_pdf = (
-        datetime.strptime(current_extraction_date, "%Y-%m-%d").strftime("%d/%m/%Y")
+        (_parse_extraction_date(current_extraction_date).strftime("%d/%m/%Y") if current_extraction_date else datetime.now().strftime("%d/%m/%Y"))
         if current_extraction_date else datetime.now().strftime("%d/%m/%Y")
     )
     elements.append(Paragraph(f"Date of extraction: {extraction_date_display_pdf}", note_style))

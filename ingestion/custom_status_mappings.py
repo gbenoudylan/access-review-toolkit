@@ -20,10 +20,22 @@ from analysis.file_lock import locked
 DEFAULT_STORE_PATH = Path(__file__).parent.parent / "data" / "custom_status_mappings.json"
 
 
+_SIGNED_NUM = re.compile(r"^[+-]?\d+$")
+
+
 def _normalize(value: str) -> str:
     """Même normalisation que pour les colonnes — insensible à la casse,
-    aux accents et aux espaces multiples."""
-    s = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode("ascii")
+    aux accents et aux espaces multiples.
+
+    EXCEPTION : une valeur purement numérique garde son signe ('-1' reste
+    '-1', '+1' et '01' deviennent '1'). Sans cela, le '-' était remplacé
+    par un espace et '-1' collisionnait avec '1' : mapper '-1' en
+    'disabled' désactivait aussi tous les comptes à '1'.
+    """
+    raw = str(value).strip()
+    if _SIGNED_NUM.match(raw):
+        return str(int(raw))
+    s = unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
 
 

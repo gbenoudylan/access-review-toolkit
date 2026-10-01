@@ -2,7 +2,7 @@
 
 Outil d'automatisation de la revue périodique des habilitations (Access
 Review IAM) : ingestion universelle de tout export d'accès, application
-des 18 contrôles standards du secteur, détection d'anomalies, workflow de
+des 19 contrôles standards du secteur, détection d'anomalies, workflow de
 validation humaine, et production d'un rapport d'audit exploitable —
 Excel, PDF ou Word.
 
@@ -27,7 +27,7 @@ archive ZIP contenant plusieurs de ces formats. Reconnaissance automatique
 des colonnes par correspondance approximative, fusion intelligente quand
 plusieurs sources décrivent les mêmes comptes.
 
-**Les 18 contrôles standards d'une revue IAM** — comptes dormants, jamais
+**Les 19 contrôles standards d'une revue IAM** — comptes dormants, jamais
 utilisés, orphelins, de test, de service, en doublon, mots de passe
 périmés, comptes administrateurs, employés partis mais encore actifs,
 convention de nommage, et plus. Chaque contrôle produit une liste
@@ -78,7 +78,7 @@ Export d'accès (n'importe quel format)
  ingestion/ingest.py          -> détection d'en-tête, standardisation,
         │                        contrôle qualité des données
         ▼
- analysis/access_review.py    -> les 18 contrôles, score de risque,
+ analysis/access_review.py    -> les 19 contrôles, score de risque,
         │                        action recommandée
         ▼
  analysis/sod_detection.py    -> conflits de séparation des tâches
@@ -127,15 +127,15 @@ streamlit run dashboard/app.py
 ```
 
 Import du fichier (ou fichier d'exemple fourni), seuils des contrôles
-configurables, croisement RH et matrice SoD personnalisée en option,
+configurables, listes d'employés partis et transférés en option,
 détail des comptes filtrable, fiche d'investigation, validation, et
 génération des rapports Excel/PDF/Word en un clic.
 
 ### Ligne de commande
 
 ```bash
-python -m analysis.access_review data/export_test_A.csv
-python -m reporting.export data/export_test_A.csv
+python3 -m analysis.access_review data/export_test_A.csv
+python3 -m reporting.export data/export_test_A.csv
 ```
 
 ## Tests
@@ -144,7 +144,7 @@ python -m reporting.export data/export_test_A.csv
 pytest tests/ -v
 ```
 
-**151 tests automatisés**, dont la majorité couvrent des cas réels
+**284 tests automatisés**, dont la majorité couvrent des cas réels
 rencontrés en pratique (formats de date ambigus selon la région ou le
 système source, encodages, caractères non-latins, structures de fichiers
 inhabituelles, valeurs tronquées) plutôt que des scénarios uniquement

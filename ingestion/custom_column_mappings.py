@@ -23,6 +23,14 @@ logger = logging.getLogger("custom_column_mappings")
 
 DEFAULT_STORE_PATH = Path(__file__).parent.parent / "data" / "custom_column_mappings.json"
 
+# Marqueur explicite pour "cette colonne doit être ignorée", distinct de
+# l'absence de correspondance. Choisir "Ignorée" dans le dashboard doit
+# FORCER l'ignorance même si la colonne serait normalement auto-détectée
+# (par nom exact ou fuzzy matching) — simplement oublier une éventuelle
+# correspondance manuelle antérieure ne suffit pas, la détection
+# automatique reprendrait aussitôt la main derrière.
+IGNORED_COLUMN_SENTINEL = "__ignored__"
+
 
 def _normalize_key(raw_column_name: str) -> str:
     """Même normalisation que ingestion.ingest._normalize (espaces/casse/

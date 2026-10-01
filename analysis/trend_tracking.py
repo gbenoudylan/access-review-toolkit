@@ -39,7 +39,7 @@ DEFAULT_TREND_STORE_PATH = Path(__file__).parent.parent / "data" / "trend_histor
 # ont le plus de sens à suivre dans la durée pour un comité de pilotage.
 TRACKED_BOOLEAN_METRICS = [
     "is_dormant", "is_never_used", "is_password_stale", "is_duplicate_account",
-    "is_locked", "is_terminated_but_active", "sod_conflict",
+    "is_locked", "is_terminated_but_active", "sod_conflict", "is_orphaned_account",
 ]
 
 

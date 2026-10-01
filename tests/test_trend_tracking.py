@@ -161,3 +161,17 @@ def test_system_filter_is_case_insensitive_across_cycles():
     assert result["total_accounts"].tolist() == [2, 2]
     store_path.unlink()
     print("OK - test_system_filter_is_case_insensitive_across_cycles")
+
+
+def test_orphaned_accounts_are_tracked_in_trend_history():
+    store_path = _fresh_store()
+    df = pd.DataFrame({
+        "username": ["admin_ci", "jdupont"], "full_name": ["", "Jean Dupont"],
+        "system": ["BSS", "BSS"], "account_status": ["Active", "Active"],
+    })
+    record_cycle_snapshot(analyze_access(df), "T1", store_path=store_path)
+    record_cycle_snapshot(analyze_access(df), "T2", store_path=store_path)
+    history = load_trend_history(store_path=store_path)
+    assert history["is_orphaned_account"].tolist() == [1, 1]
+    store_path.unlink()
+    print("OK - test_orphaned_accounts_are_tracked_in_trend_history")

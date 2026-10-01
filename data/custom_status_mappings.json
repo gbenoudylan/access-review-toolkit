@@ -10,6 +10,12 @@
   "deactivated": "inactive",
   "ps": "active",
   "lk": "inactive",
-  "0": "active",
-  "1": "inactive"
+  "0": "inactive",
+  "1": "active",
+  "2": "inactive",
+  "d": "inactive",
+  "a": "active",
+  "null": "inactive",
+  "p": "inactive",
+  "-1": "inactive"
 }

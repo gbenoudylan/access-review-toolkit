@@ -620,11 +620,14 @@ def flag_transferred_but_still_active(iam_df: pd.DataFrame, transferred_df: pd.D
     ambig_by_user = iam_usernames.apply(_iam_name_is_ambiguous)
     is_ambiguous  = ambig_by_name | ambig_by_user
 
-    is_active = (
-        iam_df["account_status"].apply(_is_active_account)
-        if "account_status" in iam_df.columns
-        else pd.Series(True, index=iam_df.index)
-    )
+    # Statut déjà résolu par analyze_access (mappings manuels inclus) quand
+    # disponible ; sinon reconnaissance automatique seule.
+    if "is_active_for_audit" in iam_df.columns:
+        is_active = iam_df["is_active_for_audit"].fillna(True).astype(bool)
+    elif "account_status" in iam_df.columns:
+        is_active = iam_df["account_status"].apply(_is_active_account)
+    else:
+        is_active = pd.Series(True, index=iam_df.index)
     iam_df["is_transferred_but_active"] = is_match & is_active
     iam_df["transferred_name_ambiguous"] = is_ambiguous & is_active
 
@@ -661,3 +664,21 @@ def flag_transferred_but_still_active(iam_df: pd.DataFrame, transferred_df: pd.D
     enriched = cross_reference_with_hr(iam_data, hr_df_raw_path=sys.argv[2])
     result = analyze_access(enriched)
     print(summarize(result))
+
+
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+    from ingestion.ingest import load_file
+
+    if len(sys.argv) < 3:
+        print("Usage : python -m analysis.hr_crossref <export_iam> <export_rh>")
+        sys.exit(1)
+
+    iam = load_file(sys.argv[1])
+    croise = cross_reference_with_hr(iam, hr_df_raw_path=sys.argv[2])
+    cols = [c for c in ["username", "full_name", "system", "account_status",
+                        "hr_employee_status", "employee_status"] if c in croise.columns]
+    print(croise[cols].to_string(index=False))

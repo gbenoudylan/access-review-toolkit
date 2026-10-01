@@ -42,8 +42,7 @@ continue de tourner en arrière-plan tant que le terminal reste ouvert.
 
 ## 2. Sauvegarder les données de l'outil (recommandé)
 
-Tout en haut de la barre latérale, un encadré **"Sauvegarde des données
-de l'outil"** te permet de télécharger en un clic tout ce que l'outil a
+Tout en haut de la barre latérale, un encadré **"Sauvegarde des données de l'outil"** te permet de télécharger en un clic tout ce que l'outil a
 appris ou enregistré (décisions de revue, correspondances de colonnes
 apprises, acceptations de risque, historique de tendance). Fais-le de
 temps en temps, et surtout avant de changer de machine — sans cette
@@ -55,17 +54,17 @@ sauvegarde, tout redémarrerait de zéro sur une nouvelle installation.
 
 Dans la barre latérale, section **Import** :
 
-1. Clique sur **Upload** sous "Export d'accès" et choisis ton fichier.
+1. Clique sur **Browse files** sous "Export d'accès (tous formats supportés)" et choisis ton fichier.
    Le format n'a pas d'importance — Excel, CSV, Word, PDF, une image
    scannée, une archive ZIP contenant plusieurs fichiers... tout est
    accepté tel quel, sans préparation de ta part.
-2. **Nom du système** — si ton fichier ne précise pas lui-même de quel
+2. **Nom du système / Périmètre** — si ton fichier ne précise pas lui-même de quel
    système proviennent les comptes (AD, SAP, SIEM...), renseigne-le ici.
    Sinon laisse vide.
 3. **Date d'extraction de ce fichier** — la date à laquelle le fichier a
    été généré. Sert de référence pour calculer l'ancienneté des
-   connexions et des comptes créés. Laisse vide pour utiliser la date du
-   jour par défaut.
+   connexions et des comptes créés. Le champ est pré-rempli avec la date du jour ;
+   modifie-la si l'extraction est plus ancienne.
 
 L'analyse se lance automatiquement dès qu'un fichier est importé — pas
 besoin de cliquer sur un bouton "Lancer".
@@ -74,13 +73,16 @@ besoin de cliquer sur un bouton "Lancer".
 
 Juste après l'import, si une colonne de ton fichier n'a pas pu être
 reconnue automatiquement (un intitulé inhabituel, propre à ton
-entreprise), un encadré **"Colonnes non reconnues ou champs vides"**
-apparaît, déplié automatiquement si un champ important manque. Pour
+entreprise), un encadré **"Configuration du fichier"** (onglets Colonnes,
+Statuts, Droits) apparaît, déplié automatiquement si un champ important
+manque ou si un statut est inconnu. Pour
 chaque colonne listée :
 
 1. Choisis dans le menu déroulant à quel champ standard elle correspond
    (ex. "dernière connexion", "statut du compte"...).
-2. Clique sur **Enregistrer ces correspondances et relancer l'analyse**.
+2. Clique sur **Enregistrer colonnes et relancer** (ou, pour les statuts
+   et les droits, **Enregistrer statuts et relancer** / **Enregistrer
+   droits et relancer**).
 
 **Cette correction est mémorisée** : la prochaine fois qu'un fichier
 contient une colonne portant exactement ce même nom, elle sera reconnue
@@ -89,26 +91,28 @@ automatiquement, sans que tu aies à recommencer.
 **Cas particulier — un indicateur inversé** : si la colonne correspond
 au statut du compte mais sous forme d'un "vrai/faux" signifiant
 l'inverse (ex. une colonne "accountDisabled" où *vrai* veut dire que le
-compte est désactivé), coche la case **"est un indicateur inversé"**
+compte est désactivé), coche la case **"… est un indicateur inversé"**
 qui apparaît à côté — sans ça, le sens serait interprété à l'envers.
 
 ### Revoir ou corriger une association déjà faite
 
 Si une correction a été enregistrée par erreur, un encadré
-**"Correspondances déjà apprises"** liste tout ce qui a été mémorisé,
+**"Corrections déjà enregistrées"** liste tout ce qui a été mémorisé,
 avec un bouton **Retirer** pour chacune. Une fois retirée, la colonne
 réapparaît comme non reconnue et peut être réassignée correctement.
 
 ---
 
-## 4. Croisement RH (optionnel)
+## 4. Employés partis — Terminated (optionnel)
 
-Sous **Croisement RH**, dans la barre latérale : importe un export RH
-(qui est vraiment employé) pour que l'outil confirme, pour chaque
-compte, si la personne est toujours dans l'entreprise. Le fonctionnement
-(colonnes non reconnues, correction, mémorisation) est **identique** à
-celui du fichier principal, avec son propre magasin de correspondances
-séparé.
+Sous **Employés partis — Terminated**, dans la barre latérale : importe
+la liste RH des employés dont le contrat est terminé (Excel ou CSV)
+pour que l'outil repère les comptes de personnes parties mais encore
+actifs (contrôle 18A).
+
+Le croisement complet avec un export RH (statut RH de chaque compte)
+n'est pas proposé dans le dashboard : il s'utilise en ligne de commande
+avec `python3 -m analysis.hr_crossref <export_iam> <export_rh>`.
 
 ---
 
@@ -128,7 +132,7 @@ colonnes non reconnues que les autres fichiers.
 
 ## 6. Seuils des contrôles
 
-Trois curseurs ajustent les seuils utilisés par l'analyse :
+Trois champs numériques, dans la barre latérale (**Seuils des contrôles**), ajustent les seuils utilisés par l'analyse :
 - **Seuil de dormance** — au-delà de combien de jours sans connexion un
   compte est considéré dormant (90 par défaut).
 - **Seuil d'ancienneté du mot de passe** — au-delà de combien de jours un
@@ -141,14 +145,14 @@ référentiel de contrôle interne.
 
 ---
 
-## 7. Matrice SoD personnalisée (optionnel)
+## 7. Détection SoD
 
-Par défaut, l'outil détecte les conflits de séparation des tâches (SoD)
-avec une matrice générique (ex. créateur de paiement + validateur de
-paiement). Pour utiliser la tienne : prépare un fichier à deux colonnes
-(rôle 1, rôle 2 — peu importe leur nom, seules les deux premières
-colonnes comptent), une paire de rôles incompatibles par ligne, puis
-importe-le ici.
+L'outil détecte les conflits de séparation des tâches (SoD) avec une
+matrice générique intégrée (ex. "create payment" + "approve payment").
+Le dashboard n'a pas de zone d'import pour une matrice personnalisée ;
+pour en utiliser une, prépare un fichier à deux colonnes (rôle 1, rôle 2,
+une paire incompatible par ligne) et passe-le à la fonction
+`load_custom_sod_matrix` du module `analysis/sod_detection.py`.
 
 ---
 
@@ -237,8 +241,8 @@ Pour chaque compte, décide d'un statut :
 - **Validé - accès légitime** — l'accès est justifié, rien à faire
 - **Révoqué** — l'accès doit être retiré
 
-Renseigne ton nom comme validateur, ajoute un commentaire si besoin, puis
-clique sur **Enregistrer les décisions**. Chaque décision est conservée
+Change le **Statut de revue** dans le tableau, renseigne ton nom dans
+**Validé par (ton nom)**, puis clique sur **Enregistrer les décisions**. Chaque décision est conservée
 avec la date et l'historique complet, d'une session à l'autre — rien
 n'est jamais perdu ou écrasé silencieusement.
 

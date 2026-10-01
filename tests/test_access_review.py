@@ -1293,3 +1293,149 @@ def test_status_values_combining_letter_code_and_word_recognized():
     assert _is_active_account("Not Active") == False
     assert _is_active_account("Non Actif") == False
     print("OK - test_status_values_combining_letter_code_and_word_recognized")
+
+
+# ---------------------------------------------------------------------
+# Contrôle 3 (Orphaned accounts) — non-régression
+# ---------------------------------------------------------------------
+
+def _orphan_df(rows):
+    return pd.DataFrame(rows, columns=["username", "full_name", "system", "account_status", "last_login_date"])
+
+
+def test_orphaned_account_flag_generic_names_active_only():
+    """Un nom générique actif est orphelin ; un compte dont le statut est
+    CONFIRMÉ inactif ne l'est pas ; un statut vide reste signalé (pire cas)."""
+    df = _orphan_df([
+        ("jdupont", "Jean Dupont", "BSS", "Active", "2026-09-01"),
+        ("admin_ci", "", "BSS", "Active", "2026-09-01"),
+        ("support01", "", "BSS", "Actif", "2026-09-01"),
+        ("guest", "", "BSS", "Disabled", "2026-09-01"),
+        ("Root", "", "BSS", "", "2026-09-01"),
+    ])
+    r = analyze_access(df).set_index("username")
+    assert bool(r.loc["jdupont", "is_orphaned_account"]) is False
+    assert bool(r.loc["admin_ci", "is_orphaned_account"]) is True
+    assert bool(r.loc["support01", "is_orphaned_account"]) is True
+    assert bool(r.loc["guest", "is_orphaned_account"]) is False
+    assert bool(r.loc["Root", "is_orphaned_account"]) is True
+    print("OK - test_orphaned_account_flag_generic_names_active_only")
+
+
+def test_blank_full_names_are_not_duplicates_of_each_other():
+    """Régression : des comptes sans nom complet (génériques) ne sont pas
+    'la même personne' — ils ne doivent pas être marqués doublons ni
+    perdre l'action 'orphelin' au profit de 'Fusionner les doublons'."""
+    df = _orphan_df([
+        ("admin_ci", "", "BSS", "Active", "2026-09-01"),
+        ("info.mtn", "", "BSS", "Active", "2026-09-01"),
+        ("sales2", "N/A", "BSS", "Active", "2026-09-01"),
+        ("root", None, "BSS", "Active", "2026-09-01"),
+    ])
+    r = analyze_access(df)
+    assert not r["is_duplicate_account"].any()
+    assert (r["review_action"] == "Vérifier (compte générique/orphelin présumé)").all()
+    print("OK - test_blank_full_names_are_not_duplicates_of_each_other")
+
+
+def test_real_duplicates_still_detected_with_names():
+    """Le correctif ci-dessus ne doit pas affaiblir la vraie détection."""
+    df = _orphan_df([
+        ("jdupont", "Jean Dupont", "BSS", "Active", "2026-09-01"),
+        ("jdupont2", " JEAN  DUPONT ", "BSS", "Active", "2026-09-01"),
+        ("adoumbia", "Awa Doumbia", "BSS", "Active", "2026-09-01"),
+    ])
+    r = analyze_access(df).set_index("username")
+    assert bool(r.loc["jdupont", "is_duplicate_account"]) is True
+    assert bool(r.loc["jdupont2", "is_duplicate_account"]) is True
+    assert bool(r.loc["adoumbia", "is_duplicate_account"]) is False
+    print("OK - test_real_duplicates_still_detected_with_names")
+
+
+def test_summarize_and_coverage_report_same_orphan_count():
+    """Le résumé (dashboard), la couverture des contrôles (PDF/Excel/
+    dashboard) et le flag brut doivent afficher le même nombre."""
+    from reporting.export import compute_control_coverage
+    df = _orphan_df([
+        ("jdupont", "Jean Dupont", "BSS", "Active", "2026-09-01"),
+        ("admin_ci", "", "BSS", "Active", "2026-09-01"),
+        ("support01", "", "BSS", "Active", "2026-09-01"),
+        ("guest", "", "BSS", "Disabled", "2026-09-01"),
+    ])
+    r = analyze_access(df)
+    assert summarize(r)["orphaned_accounts"] == 2
+    ctrl3 = [row for row in compute_control_coverage(r, {}) if row[0] == 3][0]
+    assert ctrl3[3] == "2"
+    print("OK - test_summarize_and_coverage_report_same_orphan_count")
+
+
+def test_orphan_appears_in_excel_ctrl03_sheet(tmp_path=None):
+    import tempfile, openpyxl
+    from reporting.export import generate_excel_report
+    df = _orphan_df([
+        ("jdupont", "Jean Dupont", "BSS", "Active", "2026-09-01"),
+        ("admin_ci", "", "BSS", "Active", "2026-09-01"),
+    ])
+    r = analyze_access(df)
+    out = Path(tempfile.mkdtemp()) / "orphan.xlsx"
+    generate_excel_report(r, out)
+    ws = openpyxl.load_workbook(out)["Ctrl03-Orphaned"]
+    names = [row[0].value for row in ws.iter_rows(min_row=2) if row[0].value]
+    assert names == ["admin_ci"]
+    print("OK - test_orphan_appears_in_excel_ctrl03_sheet")
+
+
+def test_orphaned_technical_accounts_detected_without_false_positives():
+    """Comptes techniques (sans mot générique classique) détectés ; vrais
+    noms de personnes, comptes fournisseurs nominatifs (comviva_prenom) et
+    comptes privilégiés nominatifs (prenom_pa) jamais signalés."""
+    from analysis.access_review import _is_orphaned_account_name as f
+    for n in ["oracle", "oam", "changetracker", "servnow", "stablenet", "breakg",
+              "bt_scan_unix", "bt_func_unix", "bt_bind_unix", "dev42unix", "uxsvc",
+              "ansible_comp", "ansible_sodr", "commviva_pam", "mtnlss", "mtnlmu",
+              "nntuser", "qualysuser", "netbackupuser",  # déjà détectés avant
+              "admin_ci", "support01"]:
+        assert f(n) is True, n
+    for n in ["friday", "sanjay", "pamela", "joamy", "michael", "kajalb",
+              "comviva_g.krishnan", "comviva_rahul", "adeyint_pa", "jeromee_pa",
+              "jayaraja_muddeb", "webaxn", None, ""]:
+        assert f(n) is False, n
+    print("OK - test_orphaned_technical_accounts_detected_without_false_positives")
+
+
+def test_orphaned_detection_respects_manual_status_mapping():
+    """
+    Régression : la détection des comptes orphelins (contrôle 3) doit
+    utiliser le statut résolu AVEC les mappings manuels du dashboard, pas
+    la seule reconnaissance automatique. Avant correction, un statut
+    inconnu (« Valid ») ou mappé à la main en « active » faisait
+    disparaître tous les comptes génériques de la liste des orphelins.
+    """
+    def frame(status):
+        return pd.DataFrame({
+            "username": ["admin", "support01", "jdupont"],
+            "system": ["AD", "AD", "AD"],
+            "account_status": [status] * 3,
+            "last_login_date": ["2026-09-01"] * 3,
+        })
+
+    # Mapping manuel « Valid » -> active : les 2 comptes génériques sont orphelins
+    r = analyze_access(frame("Valid"), custom_status_mappings={"valid": "active"})
+    assert r["is_orphaned_account"].tolist() == [True, True, False]
+
+    # Statut inconnu sans mapping : pire cas (potentiellement actif) -> signalés
+    r = analyze_access(frame("Valid"))
+    assert r["is_orphaned_account"].tolist() == [True, True, False]
+
+    # Statut explicitement inactif : jamais signalé
+    r = analyze_access(frame("Disabled"))
+    assert r["is_orphaned_account"].tolist() == [False, False, False]
+
+    # Mapping manuel « Disabled » -> active : la correction humaine l'emporte
+    r = analyze_access(frame("Disabled"), custom_status_mappings={"disabled": "active"})
+    assert r["is_orphaned_account"].tolist() == [True, True, False]
+    print("OK - test_orphaned_detection_respects_manual_status_mapping")
+
+
+if __name__ == "__main__":
+    test_orphaned_detection_respects_manual_status_mapping()
