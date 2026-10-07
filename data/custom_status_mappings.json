@@ -11,11 +11,13 @@
   "ps": "active",
   "lk": "inactive",
   "0": "inactive",
-  "1": "active",
+  "1": "inactive",
   "2": "inactive",
   "d": "inactive",
   "a": "active",
   "null": "inactive",
   "p": "inactive",
-  "-1": "inactive"
+  "-1": "inactive",
+  "closed": "inactive",
+  "approved": "active"
 }

@@ -732,15 +732,33 @@ def main():
     rights_learned      = load_custom_rights_mappings(store_path=RIGHTS_CUSTOM_MAPPING_STORE_PATH)
 
     has_unknown_status  = bool(unknown_status_values_this_run)
+
+    # Colonnes en conflit : plusieurs colonnes brutes mappées sur le même champ cible.
+    # Ex : "User" et "username" → toutes deux reconnues comme "username".
+    # L'utilisateur doit pouvoir ignorer l'une d'elles pour éviter la fusion imprévue.
+    _target_counts: dict = {}
+    for _raw, _tgt in full_column_mapping.items():
+        if _tgt and _tgt != "__ignored__":
+            _target_counts[_tgt] = _target_counts.get(_tgt, []) + [_raw]
+    conflicting_cols = {
+        _raw: _tgt
+        for _tgt, _raws in _target_counts.items()
+        if len(_raws) > 1
+        for _raw in _raws
+    }
+    has_conflicts = bool(conflicting_cols)
+
     n_cols   = len(all_main_raw_columns)
     n_status = len(all_status_in_file)
     n_rights = len(all_distinct_rights)
 
+    _needs_attention = bool(missing_required or important_missing or important_empty
+                            or has_unknown_status or has_conflicts)
     with st.expander(
         "Configuration du fichier"
         f" — {n_cols} colonnes · {n_status} statuts · {n_rights} droits"
-        f"{' — à vérifier' if (missing_required or has_unknown_status) else ''}",
-        expanded=bool(missing_required or important_missing or important_empty or has_unknown_status),
+        f"{' — ⚠ à vérifier' if _needs_attention else ''}",
+        expanded=_needs_attention,
     ):
         tab_cols, tab_status, tab_rights = st.tabs([
             f"Colonnes ({n_cols})",
@@ -761,6 +779,18 @@ def main():
             if important_empty:
                 st.warning("Champs présents mais entièrement vides : " + ", ".join(important_empty))
 
+            if has_conflicts:
+                conflict_lines = []
+                for _tgt, _raws in _target_counts.items():
+                    if len(_raws) > 1:
+                        conflict_lines.append(
+                            f"**{', '.join(f'`{r}`' for r in _raws)}** → toutes reconnues comme `{_tgt}`"
+                        )
+                st.warning(
+                    "⚠ **Colonnes en conflit** — plusieurs colonnes du fichier représentent le même champ. "
+                    "Mets l'une d'elles sur **Ignorée** pour garder celle qui contient la bonne valeur :\n\n"
+                    + "\n".join(f"- {l}" for l in conflict_lines)
+                )
             st.caption(
                 "Associe chaque colonne au champ qu'elle représente. "
                 "La correction est mémorisée pour tous les prochains fichiers portant ce même nom de colonne."
@@ -1010,7 +1040,7 @@ def main():
 
     period_label = st.text_input(
         "Période couverte par ce rapport",
-        placeholder="ex. T1 2026, Mars 2026...",
+        placeholder="ex. Q1 2026, Q3 2026...",
         help="Laisser vide pour utiliser automatiquement le trimestre courant. "
              "Ce champ permet de relancer ce même rapport à chaque cycle de revue "
              "sans modifier le code.",
@@ -1436,7 +1466,7 @@ def main():
     if "username" not in df.columns:
         st.info("Colonne 'username' absente : investigation de compte indisponible.")
     else:
-        usernames_available = sorted(df["username"].dropna().unique().tolist())
+        usernames_available = sorted(df["username"].dropna().unique().tolist(), key=str)
         if not usernames_available:
             st.info("Aucun compte exploitable dans ce fichier.")
         else:
@@ -1655,7 +1685,7 @@ def main():
 
     trend_period = st.text_input(
         "Période de ce cycle (pour l'historique)", value="",
-        placeholder="ex. T1 2026, Mars 2026...", key="trend_period_input",
+        placeholder="ex. Q1 2026, Q3 2026...", key="trend_period_input",
     )
     if st.button("Enregistrer ce cycle dans l'historique de tendance"):
         snapshot = record_cycle_snapshot(

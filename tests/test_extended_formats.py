@@ -240,10 +240,14 @@ def test_multi_sheet_excel_reads_all_sheets():
 
 
 def test_multi_sheet_excel_respects_explicit_default_system():
-    """Un default_system explicite doit primer sur les noms de feuilles."""
+    """Multi-feuilles : les noms de feuilles sont toujours conservés dans les données.
+    default_system n'écrase plus les noms de feuilles — il sert uniquement
+    au nom du fichier export (via application_scope dans default_report_filename).
+    """
     import tempfile
     import pandas as pd
     from ingestion.ingest import load_file
+    from reporting.export import default_report_filename
 
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp_path = tmp.name
@@ -255,8 +259,19 @@ def test_multi_sheet_excel_respects_explicit_default_system():
             writer, sheet_name="Feuille2", index=False
         )
 
-    df = load_file(tmp_path, default_system="Forcé")
-    assert set(df["system"]) == {"Forcé"}
+    df = load_file(tmp_path, default_system="BSS Seamfix")
+
+    # Les données conservent les noms de feuilles (pas "BSS Seamfix")
+    assert set(df["system"]) == {"Feuille1", "Feuille2"}, (
+        "Les noms de feuilles doivent être conservés dans les données, "
+        f"pas écrasés — obtenu : {set(df['system'])}"
+    )
+
+    # Le nom du rapport utilise bien application_scope
+    fname = default_report_filename(df, "pdf", application_scope="BSS Seamfix")
+    assert "BSS_Seamfix" in fname, (
+        f"application_scope doit apparaître dans le nom du fichier — obtenu : {fname}"
+    )
     print("OK - test_multi_sheet_excel_respects_explicit_default_system")
 
 

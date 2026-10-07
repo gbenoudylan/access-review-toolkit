@@ -127,6 +127,9 @@ COLUMN_MAPPING = {
         # "active" intentionnellement absent : c'est une VALEUR de statut
         # (ex. "Active", "Inactive"), pas un nom de colonne, et l'ajouter
         # ici confond le détecteur de header sur les fichiers sans en-tête.
+        "userstatus", "user_status", "user status",  # EMM / OIM format
+        "account_state", "account_state_flag", "account_lock_status",
+        "user_account_status", "login_status", "access_status",
     ],
     "is_privileged": [
         "is_privileged", "privileged", "admin", "is_admin", "compte_privilegie",
@@ -195,7 +198,9 @@ COLUMN_MAPPING = {
         # ('identity/lastPasswordUpdateTime') — critique : sans cette
         # variante, le contrôle d'âge des mots de passe est
         # silencieusement désactivé sur ce type d'export.
-        "pwdchangedtime",  # attribut LDAP standard (Oracle Identity Manager)
+        "pwdchangedtime",  # attribut LDAP standard (Oracle Identity Manager),
+        "last change password date", "last change pwd date", "last password change date",
+        "last_change_password_date", "last_password_change_date", "change_password_date"  # EMM
     ],
     "password_expiry_date": [
         "password_expiry_date", "password expiry date", "expiration_mdp",

@@ -568,7 +568,7 @@ def generate_excel_report(
 def _current_quarter_label() -> str:
     now = datetime.now()
     quarter = (now.month - 1) // 3 + 1
-    return f"T{quarter} {now.year}"
+    return f"Q{quarter} {now.year}"
 
 
 def default_report_filename(
@@ -594,8 +594,17 @@ def default_report_filename(
     Les caractères non sûrs pour un nom de fichier (espaces, /, etc.)
     sont remplacés par "_".
     """
+    # Priorité pour le libellé du nom de fichier :
+    # 1. extraction_origin (toujours absolu — ex. "NEWDBILL")
+    # 2. application_scope (nom saisi par l'utilisateur dans le champ Système/Périmètre)
+    #    → utilisé dès qu'il est fourni, que les données aient 1, 3 ou 10 systèmes.
+    #    Cela permet d'afficher "BSS_Seamfix" dans le nom du rapport même si
+    #    les données contiennent BIB, TABS, ECMSDB comme noms de feuilles.
+    # 3. Noms de systèmes déduits des données (≤ 3 → concaténés, > 3 → Multi-systemes)
     if extraction_origin and extraction_origin.strip():
         system_label = extraction_origin.strip()
+    elif application_scope and application_scope.strip():
+        system_label = application_scope.strip()
     elif "system" in df.columns:
         systems = sorted(df["system"].dropna().astype(str).str.strip().unique())
         systems = [s for s in systems if s]
@@ -604,16 +613,22 @@ def default_report_filename(
         elif len(systems) <= 3:
             system_label = "-".join(systems)
         else:
-            # Multi-systèmes : utiliser application_scope si renseigné,
-            # sinon "Multi-systemes"
-            system_label = application_scope.strip() if application_scope and application_scope.strip() else "Multi-systemes"
+            system_label = "Multi-systemes"
     else:
         system_label = "Global"
 
     system_label = re.sub(r"[^A-Za-z0-9\-]+", "_", system_label).strip("_") or "Global"
     date_label = datetime.now().strftime("%d%m%Y_%H%M")
     extension = extension.lstrip(".")
-    return f"Rapport_revue_acces_{system_label}_{date_label}.{extension}"
+    # Format : NomSystème_APPLICATION_Application User access & profile review QX YYYY_date_heure
+    now = datetime.now()
+    quarter = (now.month - 1) // 3 + 1
+    quarter_label = f"Q{quarter} {now.year}"
+    return (
+        f"{system_label}_APPLICATION_"
+        f"Application User access & profile review {quarter_label}"
+        f"_{date_label}.{extension}"
+    )
 
 
 # Poids relatifs de largeur par colonne (les colonnes non listées ont un
@@ -1414,23 +1429,23 @@ def _compute_comparison_stats(
 
     elif has_sys_curr and not has_sys_prev:
         # Q3 multi-systèmes, Q2 sans système → détecter les nouveaux systèmes
-        prev_usernames_set = set(previous_df[key_col].dropna().map(_norm_key))
-        curr_systems = set(df["system"].dropna().map(_norm_key))
-        prev_systems = (set(previous_df["system"].dropna().map(_norm_key))
+        prev_usernames_set = set(previous_df[key_col].dropna().map(lambda v: _norm_key(str(v))))
+        curr_systems = set(df["system"].dropna().map(lambda v: _norm_key(str(v))))
+        prev_systems = (set(previous_df["system"].dropna().map(lambda v: _norm_key(str(v))))
                         if "system" in previous_df.columns else set())
         new_systems = curr_systems - prev_systems
 
         # Comptes sur nouveaux systèmes = TOUS créés
-        new_sys_mask = df["system"].map(_norm_key).isin(new_systems) if new_systems else pd.Series(False, index=df.index)
+        new_sys_mask = df["system"].map(lambda v: _norm_key(str(v))).isin(new_systems) if new_systems else pd.Series(False, index=df.index)
         existing_sys_accounts = df[~new_sys_mask]
-        extra_created_norm = set(existing_sys_accounts[key_col].dropna().map(_norm_key)) - prev_usernames_set
+        extra_created_norm = set(existing_sys_accounts[key_col].dropna().map(lambda v: _norm_key(str(v)))) - prev_usernames_set
 
         created_usernames_list = (
             list(df[new_sys_mask][key_col].dropna()) +
-            list(df[df[key_col].map(_norm_key).isin(extra_created_norm)][key_col].dropna())
+            list(df[df[key_col].map(lambda v: _norm_key(str(v))).isin(extra_created_norm)][key_col].dropna())
         )
-        curr_usernames_set = set(df[key_col].dropna().map(_norm_key))
-        deleted_usernames_list = list(previous_df[~previous_df[key_col].map(_norm_key).isin(curr_usernames_set)][key_col].dropna())
+        curr_usernames_set = set(df[key_col].dropna().map(lambda v: _norm_key(str(v))))
+        deleted_usernames_list = list(previous_df[~previous_df[key_col].dropna().map(lambda v: _norm_key(str(v))).isin(curr_usernames_set)][key_col].dropna())
         created_display = sorted(set(str(u) for u in created_usernames_list if u))
         deleted_display = sorted(set(str(u) for u in deleted_usernames_list if u))
 
@@ -1438,8 +1453,8 @@ def _compute_comparison_stats(
         # Username uniquement (fallback)
         curr_display = {_norm_key(v): v for v in reversed(df[key_col].dropna().tolist())}
         prev_display = {_norm_key(v): v for v in reversed(previous_df[key_col].dropna().tolist())}
-        created_display = sorted(curr_display[k] for k in (set(curr_display)-set(prev_display)))
-        deleted_display = sorted(prev_display[k] for k in (set(prev_display)-set(curr_display)))
+        created_display = sorted((curr_display[k] for k in (set(curr_display)-set(prev_display))), key=str)
+        deleted_display = sorted((prev_display[k] for k in (set(prev_display)-set(curr_display))), key=str)
         created_usernames_list = created_display
         deleted_usernames_list = deleted_display
 
@@ -1452,9 +1467,9 @@ def _compute_comparison_stats(
     use_pair = has_sys_curr and has_sys_prev
 
     def _cmp_keys(d: pd.DataFrame) -> pd.Series:
-        base = d[key_col].map(_norm_key)
+        base = d[key_col].map(lambda v: _norm_key(str(v)))
         if use_pair:
-            base = base + "|" + d["system"].map(_norm_key)
+            base = base + "|" + d["system"].map(lambda v: _norm_key(str(v)))
         return base.where(d[key_col].notna())
 
     curr_keys_s = _cmp_keys(df)
@@ -1475,7 +1490,7 @@ def _compute_comparison_stats(
         try:
             curr_idx = df.set_index(curr_keys_s)
             prev_idx = previous_df.set_index(prev_keys_s)
-            for norm_uname in sorted(common):
+            for norm_uname in sorted(common, key=str):
                 curr_row = curr_idx.loc[norm_uname]
                 prev_row = prev_idx.loc[norm_uname]
                 if isinstance(curr_row, pd.DataFrame): curr_row = curr_row.iloc[0]
@@ -2043,7 +2058,7 @@ def generate_word_report(
     exécutif...) ; seul le moteur de rendu change.
     """
     output_path = Path(output_path)
-    period_label = period or f"T{(datetime.now().month - 1) // 3 + 1} {datetime.now().year}"
+    period_label = period or _current_quarter_label()
     # Word (contrairement à ReportLab) rejette purement et simplement les
     # caractères de contrôle avec une exception XML — nettoyage requis
     # avant toute écriture, comme déjà fait pour Excel.

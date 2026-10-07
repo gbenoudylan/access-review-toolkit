@@ -37,7 +37,7 @@ DORMANT_THRESHOLD_DAYS = 90  # seuil standard du secteur (souvent 60-90 jours)
 PASSWORD_STALE_THRESHOLD_DAYS = 90  # standard interne MTN : 90 jours pour les comptes standards
 RECENTLY_CREATED_THRESHOLD_DAYS = 90  # fenêtre du contrôle 10 "Accounts created"
 
-ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "y", "true", "1", "open"}
+ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "y", "true", "1", "open", "unlocked", "deverrouille", "deverrouillé"}
 
 # Valeurs de statut "verrouillé" — traitées comme actives pour l'audit
 # (le compte existe, ses rôles sont toujours là, il peut être déverrouillé)
@@ -45,7 +45,7 @@ ACTIVE_STATUS_VALUES = {"active", "actif", "enabled", "activé", "oui", "yes", "
 # Intentionnellement séparées d'ACTIVE_STATUS_VALUES et de
 # TERMINATED_STATUS_VALUES pour que la logique de résolution puisse
 # les reconnaître et les traiter différemment.
-LOCKED_STATUS_VALUES = {"locked", "verrouillé", "verrouille"}
+LOCKED_STATUS_VALUES = {"locked", "verrouillé", "verrouille", "pw_locked"}
 TERMINATED_STATUS_VALUES = {
     "terminated", "termine", "terminé", "parti", "departed", "left",
     # "inactive"/"inactif" = disabled
@@ -432,236 +432,424 @@ def _days_since(
     column_convention_status: str = "proven",
 ) -> float | None:
     """
-    Retourne le nombre de jours écoulés depuis une date, ou None si non
-    calculable. Gère aussi le format de date LDAP/Active Directory
-    (Generalized Time, ex. '20260807120000.0Z'), non reconnu nativement
-    par le parseur de dates générique.
+    Retourne le nombre de jours entiers écoulés depuis `date_value`, ou None
+    si la valeur signifie « jamais connecté » ou est non interprétable.
 
-    `dayfirst` et `yearfirst` : à déterminer par colonne via
-    _detect_dayfirst/_detect_yearfirst plutôt que de supposer une
-    convention unique valable pour tous les fichiers — différents
-    systèmes sources (ex. un outil IAM américain vs un export AD local)
-    peuvent utiliser des conventions différentes au sein d'une même
-    entreprise.
-
-    `column_convention_status` : statut retourné par _detect_dayfirst
-    ("proven" / "guessed" / "mixed"). Quand la colonne mélange RÉELLEMENT
-    deux conventions ("mixed" — plusieurs systèmes sources fusionnés,
-    chacun avec son propre format), une valeur qui a SA PROPRE preuve
-    individuelle (un groupe > 12) est toujours lue correctement quel que
-    soit ce statut ; mais une valeur individuellement ambiguë (les deux
-    groupes <= 12, ex. '03/04/2026') ne peut alors être rattachée en
-    toute confiance à aucune des deux conventions prouvées dans la
-    colonne — refusée explicitement plutôt que devinée via la convention
-    majoritaire, qui pourrait très bien ne pas être la sienne.
-
-    `reference_datetime` : date de référence pour le calcul de
-    l'ancienneté — datetime.now() par défaut, mais peut être fixée
-    explicitement pour qu'une revue reste rejouable à l'identique des
-    mois plus tard (reproductibilité d'audit : "pourquoi ce compte
-    était-il dormant lors de la revue du 15 juin ?" doit redonner
-    exactement le même résultat, pas un résultat qui dérive avec la date
-    du jour où on relance l'analyse).
+    Formats supportés (non exhaustif) :
+      ISO 8601     : 2026-09-01, 2026-09-01T14:30:00, 2026-09-01T14:30:00.123456+01:00
+      Européen     : 01/09/2026, 01.09.2026, 01-09-2026
+      US           : 09/01/2026, 09-01-2026
+      Mois textuel : 01 Sep 2026, Sep 01 2026, September 1 2026, 1st Sep 2026
+      Oracle EBS   : 01-Apr-26 05.13.24.623000 AM, 01-Apr-26 14.30.00 +01:00
+      LDAP/AD      : 20260901143000Z, 20260901143000+0100
+      RFC 2822     : Mon, 01 Sep 2026 14:30:00 +0100
+      Linux last   : Sep  1 14:30:06 +0100 2026
+      Unix ts      : 1756726200 (secondes), 1756726200000 (millisecondes)
+      Excel série  : 45901 (jours depuis 30/12/1899)
+      Windows nano : 2026-09-01T14:30:00.0000000+01:00
+      Mois i18n    : avril, agosto, março, febbraio, mai, juli, oktober…
+      Fuseaux      : +01:00, +01, +1:30, Z, UTC, GMT+1, (CET)
     """
+    # ══════════════════════════════════════════════════════════════════
+    # 0. RÉFÉRENCE
+    # ══════════════════════════════════════════════════════════════════
     reference_datetime = reference_datetime or datetime.now()
-    if pd.isna(date_value) or date_value is None:
+    _ref_date = reference_datetime.date()
+
+    def _days(dt):
+        """Calcule la différence en jours, en retirant tzinfo si présent."""
+        if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        if isinstance(dt, pd.Timestamp):
+            dt = dt.to_pydatetime()
+        return (_ref_date - dt.date()).days
+
+    # ══════════════════════════════════════════════════════════════════
+    # 1. TYPES NATIFS (pd.Timestamp, datetime, date)
+    # ══════════════════════════════════════════════════════════════════
+    if isinstance(date_value, datetime):
+        return _days(date_value)
+    if isinstance(date_value, pd.Timestamp) and not pd.isna(date_value):
+        return _days(date_value)
+    try:
+        import datetime as _dt_mod
+        if isinstance(date_value, _dt_mod.date) and not isinstance(date_value, datetime):
+            return (_ref_date - date_value).days
+    except Exception:
+        pass
+
+    # ══════════════════════════════════════════════════════════════════
+    # 2. VALEURS MANQUANTES
+    # ══════════════════════════════════════════════════════════════════
+    try:
+        if pd.isna(date_value) or date_value is None:
+            return None
+    except Exception:
+        pass
+
+    # ══════════════════════════════════════════════════════════════════
+    # 3. CONVERSION EN TEXTE
+    # ══════════════════════════════════════════════════════════════════
+    text = str(date_value).strip()
+    if not text:
         return None
 
-    text_value = str(date_value).strip()
+    _NEVER_MARKERS = {
+        "never", "jamais", "n/a", "na", "none", "null", "nan",
+        "nat", "-", "aucun", "aucune", "no data", "no info",
+        "not available", "not set", "undefined", "unknown",
+        "non défini", "non defini", "", "<na>", "<null>",
+    }
+    if text.lower() in _NEVER_MARKERS:
+        return None
 
-    # Format date Linux (commande `last`) : "Nov 26 22:23:06 +0100 2025"
-    # Mois abrégé + Jour + Heure + Timezone + Année (année en FIN)
-    _linux_last_pattern = re.compile(
-        r"^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{1,2}:\d{2}:\d{2})\s+([+-]\d{4})\s+(\d{4})$"
-    )
-    m_linux = _linux_last_pattern.match(text_value.strip())
-    if m_linux:
-        month, day, time_, tz, year = m_linux.groups()
-        try:
-            reconstructed = f"{day} {month} {year} {time_} {tz}"
-            parsed_dt = pd.to_datetime(reconstructed, format="%d %b %Y %H:%M:%S %z", dayfirst=True)
-            if parsed_dt.tzinfo is not None:
-                parsed_dt = parsed_dt.tz_convert("UTC").tz_localize(None)
-            ref_naive = reference_datetime.replace(tzinfo=None)
-            return (ref_naive.date() - parsed_dt.to_pydatetime().date()).days
-        except Exception:
-            pass
+    # ══════════════════════════════════════════════════════════════════
+    # 4. ENTIERS PURS : numéro Excel, Unix timestamp, Windows FILETIME
+    # ══════════════════════════════════════════════════════════════════
+    if re.fullmatch(r"\d+(\.\d+)?", text):
+        n = float(text)
+        # Excel : jours depuis 30/12/1899 (plage 1990-2100)
+        if 32874 <= n <= 73050:
+            return _days(datetime(1899, 12, 30) + pd.Timedelta(days=n))
+        # Unix timestamp secondes (2001-2286)
+        if 1_000_000_000 <= n < 10_000_000_000:
+            from datetime import timezone as _tz
+            return _days(datetime.fromtimestamp(n, tz=_tz.utc))
+        # Unix timestamp millisecondes
+        if 1_000_000_000_000 <= n < 10_000_000_000_000:
+            from datetime import timezone as _tz
+            return _days(datetime.fromtimestamp(n / 1000, tz=_tz.utc))
+        # Windows FILETIME (100 ns depuis 01/01/1601)
+        if n > 100_000_000_000_000:
+            try:
+                from datetime import timezone as _tz
+                windows_epoch = datetime(1601, 1, 1, tzinfo=_tz.utc)
+                return _days(windows_epoch + pd.Timedelta(microseconds=int(n) / 10))
+            except Exception:
+                pass
+        # YYYYMMDD : 8 chiffres dans la plage calendaire (1900-2100)
+        # 20260901 = 20 260 901 > 73 050 (Excel) mais < 1B (Unix) → traité ici
+        if len(text.split('.')[0]) == 8 and 19000101 <= int(n) <= 21001231:
+            try:
+                return _days(datetime.strptime(text.split('.')[0], "%Y%m%d"))
+            except ValueError:
+                pass
+        return None  # nombre hors plage connue
 
-    # Format Oracle nanoseconde : "2/14/2021 8:40:26.000000000 AM +00:00"
-    # Les 9 chiffres après la virgule sont des nanosecondes — non supporté
-    # nativement par strptime. On les retire avant de parser.
-    _nano_pattern = re.compile(
-        r"^(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2})\.\d+(\s*[AP]M\s*.*)$",
-        re.IGNORECASE,
-    )
-    nano_m = _nano_pattern.match(text_value)
-    if nano_m:
-        text_value = nano_m.group(1) + nano_m.group(2).rstrip()
-        # Supprimer le timezone tronqué "+00:" → "+00:00"
-        text_value = re.sub(r"\+00:0?$", "+00:00", text_value)
-        try:
-            parsed_dt = pd.to_datetime(text_value, dayfirst=False)
-            if parsed_dt.tzinfo is not None:
-                parsed_dt = parsed_dt.tz_convert("UTC").tz_localize(None)
-            ref_naive = reference_datetime.replace(tzinfo=None)
-            return (ref_naive.date() - parsed_dt.to_pydatetime().date()).days
-        except Exception:
-            pass
-
-    # Colonne prouvée "mixed" (voir _detect_dayfirst) : une valeur qui n'a
-    # PAS sa propre preuve individuelle (ni premier ni second groupe > 12)
-    # ne peut être rattachée en confiance à aucune des deux conventions
-    # cohabitant dans la colonne — refusée plutôt que devinée au hasard
-    # via la convention majoritaire.
+    # ══════════════════════════════════════════════════════════════════
+    # 5. GARDES : valeurs ambiguës à refuser explicitement
+    # ══════════════════════════════════════════════════════════════════
+    # Colonne "mixed" : valeur ambiguë (JJ et MM tous deux ≤ 12)
     if column_convention_status == "mixed":
-        ambiguous_match = _AMBIGUOUS_DATE_START_RE.match(text_value)
-        if ambiguous_match:
-            first, second = int(ambiguous_match.group(1)), int(ambiguous_match.group(2))
-            if first <= 12 and second <= 12:
+        _amb = _AMBIGUOUS_DATE_START_RE.match(text)
+        if _amb:
+            a, b = int(_amb.group(1)), int(_amb.group(2))
+            if a <= 12 and b <= 12:
                 return None
 
-    # Motif tronqué rencontré en pratique (export coupant le jour de la
-    # semaine ET le mois, ne laissant qu'un nombre isolé en tête — ex.
-    # '4 20:09:01 +0000 2025' au lieu de 'Fri Nov 4 20:09:01 +0000 2025').
-    # Sans le mois, la date réelle est indéterminable : pandas devine
-    # silencieusement ce nombre isolé comme un MOIS avec jour=1 inventé
-    # (ex. '4 ...' lu comme 1er avril), ce qui produit une date fausse
-    # sans la moindre erreur. On refuse explicitement de deviner ici —
-    # mieux vaut aucune date que la mauvaise.
-    if _TRUNCATED_DATE_RE.match(text_value):
+    # Date Linux tronquée sans mois ("4 20:09:01 +0000 2025")
+    if _TRUNCATED_DATE_RE.match(text):
         return None
 
-    if _COMMA_SEPARATED_NUMERIC_DATE_RE.match(text_value):
+    if _COMMA_SEPARATED_NUMERIC_DATE_RE.match(text):
         return None
 
-    ldap_match = _LDAP_GENERALIZED_TIME_RE.match(text_value)
-    if ldap_match:
+    # Epoch UNIX date (01/01/1970 ou 1970-01-01) → "jamais connecté"
+    _EPOCH_QUICK = {
+        "1970-01-01", "01/01/1970", "1/1/1970", "01-01-1970",
+        "1970/01/01", "1970-01-01 00:00:00", "01/01/1970 00:00:00",
+    }
+    if text.lower() in _EPOCH_QUICK or text.startswith("1970-01-01"):
+        return None  # traité plus haut comme "jamais connecté" via _EPOCH_THRESHOLD
+
+    # ══════════════════════════════════════════════════════════════════
+    # 6. PRÉTRAITEMENT UNIVERSEL
+    # ══════════════════════════════════════════════════════════════════
+
+    # 6a. Tronquer toute précision sub-microseconde (> 6 décimales).
+    # Python strptime/%f ne gère que 6 décimales max.
+    # Exemples : .0000000 (7), .000000000 (9, Oracle/nanosecondes), .1234567 (7 Windows)
+    text = re.sub(r"(\d{2}:\d{2}:\d{2})\.( \d{6})\d+", r"\1.\2", text)
+    # AM/PM immédiatement après les décimales (Oracle nanoseconde format) :
+    # "8:40:26.000000000 AM" → "8:40:26.000000 AM"  (déjà couvert par regex ci-dessus)
+    # Cas sans décimales superflues mais avec point mal placé (Oracle compact) :
+    text = re.sub(
+        r"(\d{1,2}:\d{2}:\d{2})\.\d{9}(\s*[APap][Mm])",
+        r"\1\2", text,
+    )
+
+    # 6c. Suffixes ordinaux anglais: "1st" "2nd" "3rd" "4th" … "31st"
+    text = re.sub(r"\b(\d+)(st|nd|rd|th)\b", r"\1", text, flags=re.IGNORECASE)
+
+    # 6d. Noms de fuseaux entre parenthèses: "+01:00 (CET)" → "+01:00"
+    text = re.sub(r"\s*\([A-Z][A-Z0-9+\-]{1,6}\)\s*$", "", text).rstrip()
+
+    # 6e. Normalisation des offsets timezone
+    # IMPORTANT : n'appliquer QUE si le texte contient une composante heure (HH:MM).
+    # Sinon "2026-09-01" serait muté en "2026-09-01:00" (le -01 final capturé).
+    if re.search(r"\d{1,2}:\d{2}", text):
+        #   +1:00  → +01:00 (heure sur 1 chiffre)
+        text = re.sub(r"([+-])(\d)(:\d{2})$", r"\g<1>0\2\3", text)
+        #   +01    → +01:00 (heure seule, 2 chiffres)
+        text = re.sub(r"([+-])(\d{2})$", r"\g<1>\2:00", text)
+        #   +1     → +01:00 (heure seule, 1 chiffre)
+        text = re.sub(r"([+-])(\d)$", r"\g<1>0\2:00", text)
+        #   Z → +00:00
+        text = re.sub(r"[Zz]$", "+00:00", text)
+
+    # 6f. Date seule suivie d'un offset: "2026-09-01 +01:00" → "2026-09-01"
+    _dt_tz = re.match(r"^(\d{4}-\d{2}-\d{2})\s*[+-]\d", text)
+    if _dt_tz:
+        text = _dt_tz.group(1)
+
+    # 6g. Traduction des noms de mois non-anglais (i18n étendu)
+    _MONTH_MAP = {
+        # Français
+        "janvier": "Jan", "janv": "Jan",
+        "février": "Feb", "fevrier": "Feb", "fev": "Feb", "fév": "Feb",
+        "mars": "Mar",
+        "avril": "Apr", "avr": "Apr",
+        "mai": "May",
+        "juin": "Jun",
+        "juillet": "Jul", "juil": "Jul",
+        "août": "Aug", "aout": "Aug",
+        "septembre": "Sep", "sept": "Sep",
+        "octobre": "Oct",
+        "novembre": "Nov",
+        "décembre": "Dec", "decembre": "Dec", "déc": "Dec",
+        # Allemand
+        "januar": "Jan", "jänner": "Jan",
+        "februar": "Feb",
+        "märz": "Mar", "maerz": "Mar",
+        "juni": "Jun",
+        "juli": "Jul",
+        "august": "Aug",
+        "september": "Sep",
+        "oktober": "Oct",
+        "dezember": "Dec",
+        # Espagnol
+        "enero": "Jan", "ene": "Jan",
+        "febrero": "Feb",
+        "marzo": "Mar",
+        "abril": "Apr", "abr": "Apr",
+        "mayo": "May",
+        "junio": "Jun",
+        "julio": "Jul",
+        "agosto": "Aug", "ago": "Aug",
+        "septiembre": "Sep",
+        "octubre": "Oct",
+        "noviembre": "Nov",
+        "diciembre": "Dec", "dic": "Dec",
+        # Portugais
+        "fevereiro": "Feb",
+        "março": "Mar", "marco": "Mar",
+        "junho": "Jun",
+        "julho": "Jul",
+        "setembro": "Sep", "set": "Sep",
+        "outubro": "Oct", "out": "Oct",
+        "novembro": "Nov",
+        "dezembro": "Dec", "dez": "Dec",
+        # Italien
+        "gennaio": "Jan", "gen": "Jan",
+        "febbraio": "Feb",
+        "aprile": "Apr",
+        "maggio": "May", "mag": "May",
+        "giugno": "Jun", "giu": "Jun",
+        "luglio": "Jul", "lug": "Jul",
+        "settembre": "Sep",
+        "ottobre": "Oct", "ott": "Oct",
+        "dicembre": "Dec",
+        # Néerlandais
+        "januari": "Jan",
+        "februari": "Feb",
+        "maart": "Mar", "mrt": "Mar",
+        "mei": "May",
+        "augustus": "Aug",
+        "oktober": "Oct",
+        # Suédois / Norvégien / Danois
+        "januari": "Jan", "januar": "Jan",
+        "februari": "Feb", "februar": "Feb",
+        "mars": "Mar",
+        "april": "Apr",
+        "maj": "May", "mai": "May",
+        "juni": "Jun",
+        "juli": "Jul",
+        "augusti": "Aug",
+        "september": "Sep",
+        "oktober": "Oct",
+        "november": "Nov",
+        "december": "Dec",
+        # Polonais (abréviations)
+        "sty": "Jan", "lut": "Feb", "mar": "Mar", "kwi": "Apr",
+        "cze": "Jun", "lip": "Jul", "sie": "Aug", "wrz": "Sep",
+        "paz": "Oct", "lis": "Nov", "gru": "Dec",
+        # Turc
+        "ocak": "Jan", "şubat": "Feb", "subat": "Feb", "mart": "Mar",
+        "nisan": "Apr", "mayıs": "May", "mayis": "May",
+        "haziran": "Jun", "temmuz": "Jul", "ağustos": "Aug", "agustos": "Aug",
+        "eylül": "Sep", "eylul": "Sep", "ekim": "Oct",
+        "kasım": "Nov", "kasim": "Nov", "aralık": "Dec", "aralik": "Dec",
+        # Africain (Haoussa, Swahili abréviations courantes)
+        "januwari": "Jan", "fabrairu": "Feb",
+        # Abréviations courantes non-standard
+        "jui": "Jun", "aou": "Aug",
+    }
+    def _translate_months(s: str) -> str:
+        """Remplace les noms de mois non-anglais dans la chaîne."""
+        result = s
+        s_lower = s.lower()
+        for fr_month, en_month in sorted(_MONTH_MAP.items(), key=lambda x: -len(x[0])):
+            if fr_month in s_lower:
+                idx = s_lower.find(fr_month)
+                result = result[:idx] + en_month + result[idx + len(fr_month):]
+                s_lower = result.lower()
+        return result
+    text = _translate_months(text)
+
+    # 6h. Prétraitement Oracle : points dans l'heure + timezone
+    #   "01-Apr-26 14.30.00 +01:00" → "01-Apr-26 14:30:00 +01:00"
+    #   "01-Apr-18 05.13.24.623000 AM" → "01-Apr-18 05:13:24.623000 AM"
+    _oracle_re = re.match(
+        r"^(\d{1,2}-[A-Za-z]{3}-\d{2,4})\s+(\d{1,2})\.(\d{2})\.(\d{2})"
+        r"(\.(\d+))?\s*(AM|PM|[+-]\d{2}:?\d{2}(?::\d{2})?)$",
+        text.strip(), re.IGNORECASE,
+    )
+    if _oracle_re:
+        g = _oracle_re.groups()
+        micro = f".{g[5]}" if g[5] else ""
+        suf = g[6].upper() if g[6] and g[6].upper() in ("AM", "PM") else (g[6] or "")
+        text = f"{g[0]} {g[1]}:{g[2]}:{g[3]}{micro} {suf}".rstrip()
+
+    # 6i. Compact LDAP / AD : 20260901143000[.0]Z ou +HHMM
+    ldap_m = _LDAP_GENERALIZED_TIME_RE.match(text)
+    if ldap_m:
         try:
-            parsed_dt = datetime.strptime(ldap_match.group(1), "%Y%m%d%H%M%S")
-            return (reference_datetime.date() - parsed_dt.date()).days
+            return _days(datetime.strptime(ldap_m.group(1), "%Y%m%d%H%M%S"))
         except ValueError:
             return None
 
-    # YYYYMMDD sans heure (ex. "20260622") — 8 chiffres seuls
-    if re.fullmatch(r"\d{8}", text_value):
+    # 6j. YYYYMMDD seul (8 chiffres) — après LDAP
+    if re.fullmatch(r"\d{8}", text):
         try:
-            parsed_dt = datetime.strptime(text_value, "%Y%m%d")
-            return (reference_datetime.date() - parsed_dt.date()).days
+            return _days(datetime.strptime(text, "%Y%m%d"))
         except ValueError:
             pass
 
-    # Numéro de série Excel (ex. 45678) : un export Excel dont la colonne
-    # a perdu son format "Date" affiche parfois le nombre brut de jours
-    # depuis le 30/12/1899. pd.to_datetime() sur un simple entier
-    # l'interprète par défaut comme des nanosecondes depuis 1970, ce qui
-    # produit une date totalement fausse (des dizaines d'années d'écart)
-    # sans la moindre erreur visible. On détecte ce cas précisément :
-    # une valeur purement numérique, sans séparateur de date (-, /, :),
-    # dans une plage plausible pour un export récent (env. 1990-2100).
-    is_bare_number = re.fullmatch(r"\d+(\.\d+)?", text_value) is not None
-    if is_bare_number:
-        serial = float(text_value)
-        if 32874 <= serial <= 73050:  # ~ 01/01/1990 à 01/01/2100
-            excel_epoch = datetime(1899, 12, 30)
-            parsed_dt = excel_epoch + pd.Timedelta(days=serial)
-            return (reference_datetime.date() - parsed_dt.date()).days
-        return None  # nombre hors plage plausible : probablement pas une date
+    # 6k. Format Linux "last" : "Sep  1 14:30:06 +0100 2026"
+    _linux_m = re.match(
+        r"^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{1,2}:\d{2}:\d{2})\s+([+-]\d{4})\s+(\d{4})$",
+        text,
+    )
+    if _linux_m:
+        mo, d, t, tz, yr = _linux_m.groups()
+        try:
+            return _days(datetime.strptime(f"{d} {mo} {yr} {t} {tz}", "%d %b %Y %H:%M:%S %z"))
+        except Exception:
+            pass
 
-    # dayfirst=True lève l'ambiguïté JJ/MM (voir plus haut), mais appliqué
-    # à un format déjà commençant par l'année (ISO, ex. '2026-09-01') il
-    # produit l'effet inverse : pandas peut alors interpréter le second et
-    # troisième groupe comme JOUR-MOIS plutôt que MOIS-JOUR, inversant
-    # silencieusement une date par ailleurs déjà non ambiguë (le 1er
-    # septembre devient le 9 janvier). On ne force donc dayfirst que
-    # lorsque l'année n'est PAS le premier groupe du texte.
-    #
-    # Dans un format à 3 groupes ('A-B-C'), le groupe du MILIEU est
-    # toujours le mois, quelle que soit la convention (AAAA-MM-JJ,
-    # JJ-MM-AAAA, MM-JJ-AAAA) — seule l'identité du 1er groupe (jour ou
-    # année) reste ambiguë quand l'année est écrite sur 2 chiffres. Un
-    # 1er groupe > 31 ne peut alors être qu'une année (aucun jour ne
-    # dépasse 31) : ex. '26-01-15' pour 2026-01-15, sans quoi il aurait
-    # été lu comme le 26 janvier 2015 (décalage de 11 ans, silencieux).
-    year_first_4digit = bool(re.match(r"^\d{4}[-/.]", text_value))
-    year_first = year_first_4digit or yearfirst
+    # ══════════════════════════════════════════════════════════════════
+    # 7. STRATÉGIE 1 : pandas (rapide, gère la convention dayfirst)
+    # ══════════════════════════════════════════════════════════════════
+    year_first_4digit = bool(re.match(r"^\d{4}[-/.]", text))
+    _yf = year_first_4digit or yearfirst
+    _df = dayfirst and not _yf
+    has_no_year = not re.search(r"\d{4}", text)
 
-    # Mois en français ('Avril', 'Mars'...) non reconnus par le parseur
-    # par défaut (anglais) : traduits avant analyse. Les abréviations qui
-    # ressemblent par coïncidence à l'anglais ('Sept.', 'Oct.') passaient
-    # déjà, ce qui masquait le problème pour les mois complets.
-    translated_text = _translate_french_month(text_value)
-    parse_input = translated_text if translated_text != text_value else date_value
-
-    # Date sans année (ex. 'Fri Jan 17 16:05') : pandas suppose l'année 1.
-    has_no_year = not re.search(r"\d{4}", text_value)
-
-    # ── Stratégie 1 : pandas avec la convention détectée ──────────────
     try:
         import warnings
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*dayfirst.*")
             warnings.filterwarnings("ignore", message=".*nanoseconds.*")
-            parsed = pd.to_datetime(
-                parse_input, errors="coerce",
-                dayfirst=dayfirst and not year_first,
-                yearfirst=year_first and not year_first_4digit,
-            )
+            parsed = pd.to_datetime(text, errors="coerce", dayfirst=_df,
+                                    yearfirst=_yf and not year_first_4digit)
             if not pd.isna(parsed):
-                parsed_dt = parsed.to_pydatetime().replace(tzinfo=None)
-                if has_no_year and parsed_dt.year < 1900:
-                    candidate = parsed_dt.replace(year=reference_datetime.year)
-                    if candidate.date() > reference_datetime.date():
-                        candidate = candidate.replace(year=candidate.year - 1)
-                    parsed_dt = candidate
-                return (reference_datetime.date() - parsed_dt.date()).days
+                dt = parsed.to_pydatetime()
+                if has_no_year and getattr(dt, "year", 1900) < 1900:
+                    dt = dt.replace(year=_ref_date.year)
+                    if dt.date() > _ref_date:
+                        dt = dt.replace(year=dt.year - 1)
+                return _days(dt)
     except Exception:
         pass
 
-    # ── Stratégie 2 : formats ISO et courants via liste exhaustive ─────
-    _EXPLICIT_FORMATS = [
-        # Avec heure + timezone offset
-        "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z",
-        "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%d %H:%M:%S.%f%z",
-        "%d/%m/%Y %H:%M:%S%z", "%m/%d/%Y %H:%M:%S%z",
-        # Sans timezone
-        "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f",
-        "%d/%m/%Y %H:%M:%S", "%m/%d/%Y %H:%M:%S",
-        "%d-%m-%Y %H:%M:%S", "%d.%m.%Y %H:%M:%S",
-        # Date seule
-        "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y",
-        "%d-%m-%Y", "%m-%d-%Y",
-        "%d.%m.%Y", "%Y.%m.%d",
-        "%d %b %Y", "%d %B %Y",
-        "%b %d, %Y", "%B %d, %Y",
-        "%b %d %Y", "%Y/%m/%d",
-        # Avec AM/PM
-        "%m/%d/%Y %I:%M:%S %p", "%d/%m/%Y %I:%M:%S %p",
-        "%m/%d/%Y %I:%M %p",
+    # ══════════════════════════════════════════════════════════════════
+    # 8. STRATÉGIE 2 : formats explicites (exhaustif, ordonné par fréquence)
+    # ══════════════════════════════════════════════════════════════════
+    _FMTS = [
+        # ── ISO 8601 ─────────────────────────────────────────────────
+        "%Y-%m-%dT%H:%M:%S%z",       "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S",         "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S%z",       "%Y-%m-%d %H:%M:%S.%f%z",
+        "%Y-%m-%d %H:%M:%S",         "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M",            "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S",         "%Y/%m/%d %H:%M", "%Y/%m/%d",
+        "%Y.%m.%d %H:%M:%S",         "%Y.%m.%d",
+        # ── Européen JJ/MM/AAAA ──────────────────────────────────────
+        "%d/%m/%Y %H:%M:%S%z",       "%d/%m/%Y %H:%M:%S.%f%z",
+        "%d/%m/%Y %H:%M:%S",         "%d/%m/%Y %H:%M:%S.%f",
+        "%d/%m/%Y %H:%M",            "%d/%m/%Y",
+        "%d/%m/%y %H:%M:%S",         "%d/%m/%y",
+        "%d-%m-%Y %H:%M:%S",         "%d-%m-%Y %H:%M", "%d-%m-%Y",
+        "%d-%m-%y",
+        "%d.%m.%Y %H:%M:%S",         "%d.%m.%Y %H:%M", "%d.%m.%Y",
+        "%d.%m.%y",
+        # ── US MM/DD/YYYY ─────────────────────────────────────────────
+        "%m/%d/%Y %H:%M:%S%z",       "%m/%d/%Y %H:%M:%S.%f%z",
+        "%m/%d/%Y %H:%M:%S",         "%m/%d/%Y %H:%M", "%m/%d/%Y",
+        "%m/%d/%y",
+        "%m-%d-%Y %H:%M:%S",         "%m-%d-%Y",
+        # ── Avec AM/PM ───────────────────────────────────────────────
+        "%Y-%m-%d %I:%M:%S %p",      "%Y-%m-%d %I:%M %p",
+        "%m/%d/%Y %I:%M:%S %p",      "%m/%d/%Y %I:%M %p",
+        "%m/%d/%Y %I:%M:%S.%f %p",   "%m/%d/%Y %I:%M:%S %p %z",
+        "%m/%d/%Y %I:%M:%S.%f %p %z",
+        "%d/%m/%Y %I:%M:%S %p",      "%d/%m/%Y %I:%M %p",
+        "%d/%m/%Y %I.%M.%S %p",      "%m/%d/%Y %I.%M.%S %p",
+        # ── Avec nom de mois — DD Mon YYYY ──────────────────────────
+        "%d %b %Y %H:%M:%S%z",       "%d %b %Y %H:%M:%S",
+        "%d %b %Y %H:%M",            "%d %b %Y",
+        "%d %B %Y %H:%M:%S",         "%d %B %Y",
+        "%d-%b-%Y %H:%M:%S%z",       "%d-%b-%Y %H:%M:%S.%f%z",
+        "%d-%b-%Y %H:%M:%S",         "%d-%b-%Y %H:%M", "%d-%b-%Y",
+        "%d-%b-%y %H:%M:%S%z",       "%d-%b-%y %H:%M:%S.%f%z",
+        "%d-%b-%y %H:%M:%S",         "%d-%b-%y %H:%M", "%d-%b-%y",
+        # ── Avec nom de mois — Mon DD, YYYY ─────────────────────────
+        "%b %d, %Y %H:%M:%S",        "%b %d, %Y",
+        "%B %d, %Y %H:%M:%S",        "%B %d, %Y",
+        "%b %d %Y %H:%M:%S",         "%b %d %Y",
+        # ── RFC 2822 ─────────────────────────────────────────────────
+        "%a, %d %b %Y %H:%M:%S %z",  "%d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S",
+        # ── Oracle EBS (points dans l'heure → déjà convertis en 6g) ─
+        "%d-%b-%y %I:%M:%S.%f %p",   "%d-%b-%Y %I:%M:%S.%f %p",
+        "%d-%b-%y %I:%M:%S %p",      "%d-%b-%Y %I:%M:%S %p",
+        "%d-%b-%y %H:%M:%S %z",      "%d-%b-%Y %H:%M:%S %z",
+        "%d-%b-%y %H:%M:%S.%f %z",   "%d-%b-%Y %H:%M:%S.%f %z",
+        # ── Oracle (points encore non convertis — rare) ───────────────
+        "%d-%b-%y %I.%M.%S.%f %p",   "%d-%b-%Y %I.%M.%S.%f %p",
+        "%d-%b-%y %I.%M.%S %p",      "%d-%b-%Y %I.%M.%S %p",
+        "%d-%b-%y %H.%M.%S.%f",      "%d-%b-%Y %H.%M.%S.%f",
+        "%d-%b-%y %H.%M.%S",         "%d-%b-%Y %H.%M.%S",
+        # ── Divers avec points dans l'heure ──────────────────────────
+        "%Y-%m-%d %H.%M.%S.%f",      "%Y-%m-%d %H.%M.%S",
+        # ── Formats 2 chiffres d'année ───────────────────────────────
+        "%y-%m-%d",                   "%y/%m/%d",
     ]
-    clean = text_value.rstrip()
-    for fmt in _EXPLICIT_FORMATS:
+
+    for fmt in _FMTS:
         try:
-            parsed_dt = datetime.strptime(clean, fmt)
-            if parsed_dt.tzinfo is not None:
-                parsed_dt = parsed_dt.replace(tzinfo=None)
-            return (reference_datetime.date() - parsed_dt.date()).days
+            dt = datetime.strptime(text.rstrip(), fmt)
+            return _days(dt)
         except (ValueError, OverflowError):
             continue
 
-    # ── Stratégie 3 : dateutil — fallback universel ─────────────────────
-    # dateutil.parser.parse reconnaît pratiquement tous les formats texte
-    # connus. C'est le filet de sécurité final avant d'abandonner.
+    # ══════════════════════════════════════════════════════════════════
+    # 9. STRATÉGIE 3 : dateutil — filet universel (fuzzy=False)
+    # ══════════════════════════════════════════════════════════════════
     try:
-        from dateutil import parser as _dateutil_parser
-        parsed_dt = _dateutil_parser.parse(
-            translated_text,
-            dayfirst=dayfirst,
-            yearfirst=year_first,
-            fuzzy=False,  # pas de fuzzy : évite de parser du texte non-date
-        )
-        parsed_dt = parsed_dt.replace(tzinfo=None)
-        return (reference_datetime.date() - parsed_dt.date()).days
+        from dateutil import parser as _dup
+        dt = _dup.parse(text, dayfirst=_df, yearfirst=_yf, fuzzy=False)
+        return _days(dt)
     except Exception:
         pass
 
@@ -759,6 +947,16 @@ def _is_privileged_role_value(role_str: str) -> bool:
     low = role_str.strip().lower()
     if _STD_RE.search(low):
         return True
+    # Groupe/rôle qui correspond à un motif de groupe d'admins
+    # "adminusergroup", "admin_group", "admingroup" → oui
+    # "Administrative Assistant" → non (pas un groupe IAM)
+    _ADMIN_GROUP_RE = re.compile(
+        r"^admin(?:usergroup|usergrp|user_?grp|group|grp|_?group|_?grp|_?usr|s)?$"
+        r"|^admin[_\-]",   # admin_sql, admin-db
+        re.IGNORECASE,
+    )
+    if _ADMIN_GROUP_RE.match(low):
+        return True
     return any(sub in low for sub in _MTN_PRIVILEGED_SUBSTRINGS)
 
 def analyze_access(
@@ -845,12 +1043,45 @@ def analyze_access(
         "no data", "never logged in", "aucune donnée", "aucune donnee",
         "no info", "no information",
     }
+    # Dates EPOCH Unix (1970-01-01 / 01/01/1970) = jamais connecté.
+    # Certains exports encodent l'absence de connexion par la date zéro Unix
+    # plutôt que par un champ vide. On les normalise ici exactement comme
+    # un champ vide ou la valeur littérale "never".
+    # IMPORTANT : on utilise _days_since() pour la détection, pas du string
+    # matching — ça couvre tous les formats (ISO, FR, avec timezone, Timestamp
+    # pandas, etc.) sans exception.
+    _EPOCH_THRESHOLD_DAYS = 19700  # ≈ 54 ans depuis 1970 — tout résultat ≥ ce seuil = EPOCH
+
     if "last_login_date" in df.columns:
         stripped_lower = df["last_login_date"].astype(str).str.strip().str.lower()
+
+        def _is_epoch_date(raw_val):
+            """Retourne True si la valeur représente la date EPOCH Unix (≈ 1970-01-01).
+            Fonctionne quel que soit le format : string, Timestamp, timezone, etc.
+            """
+            if raw_val is None:
+                return False
+            s = str(raw_val).strip().lower()
+            if not s or s in ("nan", "none", "nat", ""):
+                return False
+            # Court-circuit sur les marqueurs textuels connus (rapide)
+            _quick = {
+                "1970-01-01", "01/01/1970", "1/1/1970", "01-01-1970",
+                "1970-01-01 00:00:00", "01/01/1970 00:00:00", "1970/01/01",
+            }
+            if s in _quick or s.startswith("1970-01-01"):
+                return True
+            # Fallback : parser la date et vérifier qu'elle est ≥ seuil EPOCH
+            d = _days_since(raw_val, reference_datetime=reference_datetime)
+            return d is not None and d >= _EPOCH_THRESHOLD_DAYS
+
+        epoch_login = df["last_login_date"].apply(_is_epoch_date)
+
         never_logged_in = (
             df["last_login_date"].isna()
             | (stripped_lower == "")
             | stripped_lower.isin(NEVER_LOGGED_IN_MARKERS)
+            | epoch_login
         )
         df.attrs["_login_data_present"] = True
     else:
@@ -878,6 +1109,13 @@ def analyze_access(
                 f"{int(use_precomputed.sum())} compte(s) sans date brute."
             )
 
+    # Les comptes "jamais connectés" (blank, "never", EPOCH 1970) ne sont
+    # pas des comptes dormants — ils n'ont jamais eu de session.
+    # On annule leurs days_since_last_login pour qu'is_dormant reste False
+    # et qu'ils atterrissent uniquement dans is_never_used (Ctrl 06).
+    if "days_since_last_login" in df.columns:
+        df.loc[never_logged_in, "days_since_last_login"] = None
+
     df["is_dormant"] = df["days_since_last_login"].apply(
         lambda d: d is not None and d > dormant_threshold_days
     )
@@ -900,7 +1138,7 @@ def analyze_access(
         )
         # Uniquement les comptes avec date PRÉSENTE mais illisible → dormant par défaut
         # Les comptes BLANK restent dans never_logged_in → is_never_used
-        df["is_dormant"] = df["is_dormant"] | df["last_login_date_unparseable"]
+        df["is_dormant"] = df["is_dormant"].astype(bool) | df["last_login_date_unparseable"].astype(bool)
     else:
         df["last_login_date_unparseable"] = False
 
@@ -980,7 +1218,7 @@ def analyze_access(
     else:
         is_locked_from_col = pd.Series(False, index=df.index)
 
-    df["is_locked"] = is_locked_from_status | is_locked_from_col
+    df["is_locked"] = is_locked_from_status.astype(bool) | is_locked_from_col.astype(bool)
 
     if "account_status" in df.columns:
         # 1. D'abord les mappings appris manuellement (mémorisés via le dashboard)
@@ -1062,8 +1300,8 @@ def analyze_access(
                 f"(pire cas audit) : {unknown_vals}. Associez-les dans le dashboard pour "
                 f"affiner l'analyse."
             )
-        df["is_dormant"] = df["is_dormant"] & is_active_status
-        df["is_never_used"] = df["is_never_used"] & is_active_status
+        df["is_dormant"] = df["is_dormant"].astype(bool) & is_active_status.astype(bool)
+        df["is_never_used"] = df["is_never_used"].astype(bool) & is_active_status.astype(bool)
     else:
         df["is_locked"] = False
         df["status_is_unknown"] = False
@@ -1221,7 +1459,7 @@ def analyze_access(
     )
     # Les dates inconnues sont traitées comme stale (pire cas audit)
     if "password_change_unknown" in df.columns:
-        df["is_password_stale"] = df["is_password_stale"] | df["password_change_unknown"]
+        df["is_password_stale"] = df["is_password_stale"].astype(bool) | df["password_change_unknown"].astype(bool)
 
     if "password_status" in df.columns:
         df["has_non_expiring_password"] = df["password_status"].apply(_has_non_expiring_password)
@@ -1278,7 +1516,7 @@ def analyze_access(
             # _is_active_account ici ignorait les corrections manuelles et
             # traitait toute valeur inconnue (ex. 'Valid') comme inactive.
             is_confirmed_inactive = (status_str != "") & ~df["is_active_for_audit"]
-            df["is_orphaned_account"] = is_generic_name & ~is_confirmed_inactive
+            df["is_orphaned_account"] = is_generic_name.astype(bool) & ~is_confirmed_inactive.astype(bool)
         else:
             df["is_orphaned_account"] = is_generic_name
     else:

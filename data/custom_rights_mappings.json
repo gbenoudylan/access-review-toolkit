@@ -7,5 +7,7 @@
   "bt_admin_group": "admin",
   "bt_admin_sudoers": "admin",
   "sg_server_administration": "admin",
-  "USER": "standard"
+  "USER": "standard",
+  "Dealer_admin": "admin",
+  "Dealer_Admin_ViewOnly": "admin"
 }

@@ -154,6 +154,9 @@ def _looks_like_data_row(row: pd.Series) -> bool:
 
 
 def _detect_header_row(raw: pd.DataFrame, column_mapping: dict = None, max_scan_rows: int = 15) -> int:
+    # Score de la ligne 0 (l'en-tête "naturel" — le plus sûr par défaut).
+    row0_score = _score_header_row(raw.iloc[0], column_mapping) if len(raw) > 0 else 0
+
     best_row, best_score = 0, -1
     fallback_row, fallback_score = 0, -1  # meilleure ligne même si elle ressemble à des données
     for i in range(min(max_scan_rows, len(raw))):
@@ -164,13 +167,32 @@ def _detect_header_row(raw: pd.DataFrame, column_mapping: dict = None, max_scan_
             continue
         if score > best_score:
             best_row, best_score = i, score
+
+    # Sécurité ligne 0 : si les colonnes du fichier ne sont pas encore
+    # dans le mapping (format nouveau → score partout faible), une ligne
+    # de données peut accidentellement obtenir un score légèrement positif
+    # via des correspondances fortuites (valeurs comme "Admin", "LOCKED",
+    # "username" utilisé comme valeur…) et l'emporter sur la vraie ligne
+    # d'en-tête en ligne 0.
+    #
+    # Règle : on ne quitte la ligne 0 que si une autre ligne a un score
+    # STRICTEMENT supérieur à max(row0_score, 2).  Cela garantit :
+    # - Fichier avec colonnes reconnues (score 0 ≥ 4) → ligne 0 reste
+    #   en tête sauf si un vrai titre multi-ligne la devance clairement.
+    # - Fichier avec colonnes inconnues (score 0 = 0) → une ligne à
+    #   score 1–2 (coïncidence) ne peut pas voler la place.
+    # - Fichier avec titres + vrai en-tête ligne 3 (score 4+) → la
+    #   détection fonctionne toujours.
+    _MIN_ADVANTAGE = max(row0_score, 2)  # avantage minimum pour déplacer l'en-tête
+    if best_row != 0 and best_score <= _MIN_ADVANTAGE:
+        logger.warning(
+            f"Ligne {best_row} (score={best_score}) écartée au profit de la ligne 0 "
+            f"(score={row0_score}) — avantage insuffisant ({best_score} ≤ {_MIN_ADVANTAGE})."
+        )
+        best_row, best_score = 0, row0_score
+
     if best_score <= 0:
         if fallback_score > 0:
-            # Aucune ligne "non-data" ne correspond, mais une ligne de
-            # données a un score positif par coïncidence : ne pas la
-            # choisir aveuglément, revenir à la ligne 0 (comportement
-            # prudent existant) plutôt que de prendre une ligne de
-            # données pour un en-tête.
             logger.warning(
                 "Aucune ligne d'en-tête plausible reconnue (les seules lignes avec "
                 "correspondance ressemblent à des données) — utilisation de la ligne 0."
@@ -621,6 +643,15 @@ def standardize_columns(
         is_date_like = sample.apply(lambda v: bool(_DATE_PATTERNS.match(v))).mean()
         if is_date_like < 0.80:
             continue
+        # Colonne mono-valeur → date d'extraction globale, pas une date par compte.
+        # Ex : colonne "Date" avec la même valeur sur toutes les lignes.
+        # On l'exclut de l'auto-détection pour ne pas écraser un vrai champ.
+        if sample.nunique() <= 1:
+            logger.info(
+                f"Colonne '{col}' ignorée de l'auto-détection date "
+                f"(mono-valeur = date d'extraction probable)."
+            )
+            continue
         for target in _DATE_TARGETS:
             if target not in _already_target:
                 rename_map[col] = target
@@ -632,6 +663,16 @@ def standardize_columns(
                     f"mappée automatiquement sur '{target}'."
                 )
                 break
+
+    # Supprimer les colonnes explicitement ignorées AVANT le rename.
+    # Sans ça, une colonne ignorée dont le nom coïncide avec la cible
+    # d'un rename (ex. "username" ignorée + "User" → "username") crée
+    # deux colonnes portant le même nom → df["username"] retourne un
+    # DataFrame plutôt qu'une Series → TypeError dans validate_required_fields.
+    cols_to_drop = [c for c in explicitly_ignored_cols if c in df.columns
+                    and c not in rename_map]  # ne pas dropper si elle est renommée
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
 
     result = df.rename(columns=rename_map)
     result.attrs["unmapped_columns"] = unmatched
@@ -1884,18 +1925,28 @@ def _read_excel_all_sheets(
 
     # ── Toujours empiler — jamais fusionner ──────────────────────────────
     # Règle unique : chaque feuille = un système distinct.
-    # Le nom de la feuille est utilisé comme système si absent.
-    # Le default_system explicite prime sur le nom de feuille.
+    #
+    # PRIORITÉ SYSTÈME (données) :
+    #   1. Valeurs déjà présentes dans la colonne "system" du fichier → intouchables
+    #   2. Nom de la feuille Excel → utilisé quand la colonne system est absente/vide
+    #   3. default_system → utilisé UNIQUEMENT quand il n'y a qu'UNE SEULE feuille
+    #      ET aucune colonne system dans le fichier (cas "rien du tout").
+    #
+    # default_system sert en revanche TOUJOURS pour le nom du fichier export
+    # (géré dans default_report_filename, pas ici).
+    is_multi_sheet = len(sheet_dfs) > 1
     frames = []
     for sname, sdf in sheet_dfs.items():
         sdf = sdf.copy()
-        sys_to_use = default_system if default_system else sname
+        # Pour multi-feuilles : toujours le nom de feuille, jamais default_system.
+        # Pour feuille unique sans colonne system : utiliser default_system si fourni.
+        sys_fallback = sname if is_multi_sheet else (default_system or sname)
         if "system" not in sdf.columns:
-            sdf["system"] = sys_to_use
+            sdf["system"] = sys_fallback
         else:
             empty = sdf["system"].isna() | (sdf["system"].astype(str).str.strip() == "")
             if empty.any():
-                sdf.loc[empty, "system"] = sys_to_use
+                sdf.loc[empty, "system"] = sys_fallback
         frames.append(sdf)
     return _combine_mapping_attrs(
         list(sheet_dfs.values()),

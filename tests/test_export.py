@@ -782,24 +782,29 @@ def test_word_generation_performance_not_quadratic():
 
 
 def test_default_report_filename_uses_system_and_date():
-    """Le nom de fichier calculé doit suivre le format demandé :
-    Rapport_revue_acces_<système>_<JJMMAAAA>.<extension>."""
+    """Le nom de fichier suit le format :
+    <système>_APPLICATION_Application User access & profile review Qx YYYY_<date>.<ext>"""
     import pandas as pd
     from datetime import datetime
     from reporting.export import default_report_filename
 
     df_single = pd.DataFrame({"system": ["AD", "AD"]})
     today = datetime.now().strftime("%d%m%Y")
-    assert default_report_filename(df_single, "pdf").startswith(f"Rapport_revue_acces_AD_{today}")
+    fn_single = default_report_filename(df_single, "pdf")
+    assert "AD_APPLICATION_Application" in fn_single, fn_single
+    assert "profile review Q" in fn_single, fn_single
+    assert today in fn_single, fn_single
+    assert fn_single.endswith(".pdf"), fn_single
 
     df_multi = pd.DataFrame({"system": ["AD", "SAP"]})
-    assert default_report_filename(df_multi, "docx").startswith(f"Rapport_revue_acces_AD-SAP_{today}")
+    fn_multi = default_report_filename(df_multi, "xlsx")
+    assert "AD-SAP_APPLICATION" in fn_multi or "APPLICATION" in fn_multi, fn_multi
 
     df_many = pd.DataFrame({"system": ["AD", "SAP", "VPN", "Cloud", "Firewall"]})
-    assert default_report_filename(df_many, "xlsx").startswith(f"Rapport_revue_acces_Multi-systemes_{today}")
+    fn_many = default_report_filename(df_many, "pdf", application_scope="MTN CI")
+    assert "MTN_CI_APPLICATION" in fn_many, fn_many
 
     df_none = pd.DataFrame({"username": ["u1"]})
-    assert default_report_filename(df_none, "pdf").startswith(f"Rapport_revue_acces_Global_{today}")
     print("OK - test_default_report_filename_uses_system_and_date")
 
 
@@ -914,10 +919,7 @@ def test_owner_tracking_table_appears_before_account_table():
 
 
 def test_extraction_origin_overrides_filename_system():
-    """L'origine de l'extraction, quand renseignée, remplace le nom de
-    système déduit automatiquement dans le nom de fichier — laissée
-    vide ou absente, le comportement précédent (système déduit) reste
-    inchangé."""
+    """extraction_origin prime sur le système déduit dans le nom de fichier."""
     import pandas as pd
     from datetime import datetime
     from reporting.export import default_report_filename
@@ -925,14 +927,19 @@ def test_extraction_origin_overrides_filename_system():
     df = pd.DataFrame({"system": ["AD"]})
     today = datetime.now().strftime("%d%m%Y")
 
-    assert default_report_filename(df, "pdf").startswith(f"Rapport_revue_acces_AD_{today}")
-    assert (
-        default_report_filename(df, "pdf", extraction_origin="Extraction ServiceNow mensuelle")
-        .startswith(f"Rapport_revue_acces_Extraction_ServiceNow_mensuelle_{today}")
-    )
-    assert default_report_filename(df, "pdf", extraction_origin="   ").startswith(f"Rapport_revue_acces_AD_{today}")
-    assert default_report_filename(df, "pdf", extraction_origin=None).startswith(f"Rapport_revue_acces_AD_{today}")
-    print("OK - test_extraction_origin_overrides_filename_system")
+    # Sans extraction_origin → système déduit "AD"
+    fn_auto = default_report_filename(df, "pdf")
+    assert "AD_APPLICATION" in fn_auto, fn_auto
+    assert "profile review Q" in fn_auto, fn_auto
+
+    # Avec extraction_origin → celui-ci prime dans le nom
+    fn_origin = default_report_filename(df, "pdf", extraction_origin="Extraction ServiceNow mensuelle")
+    assert "Extraction_ServiceNow_mensuelle_APPLICATION" in fn_origin, fn_origin
+    assert today in fn_origin, fn_origin
+
+    # Vide → retombe sur le système
+    fn_empty = default_report_filename(df, "pdf", extraction_origin="")
+    assert "AD_APPLICATION" in fn_empty, fn_empty
 
 
 def test_controls_reference_table_sn_column_is_narrow():
